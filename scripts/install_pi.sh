@@ -13,6 +13,7 @@ PB_PORT_DEFAULT=8090
 VIEWER_BIN_NAME="frame-viewer"
 PB_BIN_PATH="/opt/pocketbase/pocketbase"
 PB_DATA_DIR="/var/lib/pocketbase"
+PB_MIGRATIONS_DIR="$PB_DATA_DIR/pb_migrations"
 VIEWER_CONFIG="/etc/frame-viewer/config.toml"
 VIEWER_CACHE="/var/cache/frame-viewer"
 REPO_URL="${REPO_URL:-https://github.com/jasonarmbrecht/spomienka.git}"
@@ -111,10 +112,27 @@ if $PB_ON_PI; then
   echo "Setting up PocketBase..."
   sudo mkdir -p /opt/pocketbase "$PB_DATA_DIR"
   sudo chown "$USER":"$USER" /opt/pocketbase "$PB_DATA_DIR"
+  sudo mkdir -p "$PB_MIGRATIONS_DIR"
+  sudo chown "$USER":"$USER" "$PB_MIGRATIONS_DIR"
   PB_URL="https://github.com/pocketbase/pocketbase/releases/download/v${PB_VERSION}/pocketbase_${PB_VERSION}_linux_arm64.zip"
   curl -L "$PB_URL" -o /tmp/pb.zip
   unzip -o /tmp/pb.zip -d /opt/pocketbase
   sudo chmod +x "$PB_BIN_PATH"
+
+  # Import PocketBase schema so the viewer has required collections.
+  if [[ -f "$REPO_ROOT/backend/pb_schema.json" ]]; then
+    echo "Importing PocketBase schema..."
+    /opt/pocketbase/pocketbase migrate collections import \
+      "$REPO_ROOT/backend/pb_schema.json" \
+      --dir "$PB_DATA_DIR" \
+      --migrationsDir "$PB_MIGRATIONS_DIR"
+    /opt/pocketbase/pocketbase migrate up \
+      --dir "$PB_DATA_DIR" \
+      --migrationsDir "$PB_MIGRATIONS_DIR"
+  else
+    echo "Warning: backend/pb_schema.json not found; skipping schema import."
+  fi
+
   sudo tee /etc/systemd/system/pocketbase.service >/dev/null <<EOF
 [Unit]
 Description=PocketBase
@@ -122,7 +140,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$PB_BIN_PATH serve --http=0.0.0.0:${PB_PORT_DEFAULT} --dir $PB_DATA_DIR
+ExecStart=$PB_BIN_PATH serve --http=0.0.0.0:${PB_PORT_DEFAULT} --dir $PB_DATA_DIR --migrationsDir $PB_MIGRATIONS_DIR
 WorkingDirectory=/opt/pocketbase
 Restart=always
 User=$USER

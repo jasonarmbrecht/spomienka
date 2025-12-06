@@ -1,6 +1,7 @@
 use anyhow::Result;
 use reqwest::Client;
 use serde::Deserialize;
+use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,16 +24,24 @@ struct ListResponse<T> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let api = std::env::var("POCKETBASE_URL").unwrap_or_else(|_| "http://localhost:8090".into());
+    // Allow slow polling so the systemd service does not exit immediately.
+    let refresh_ms: u64 = std::env::var("REFRESH_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30_000);
     let client = Client::new();
 
-    let media = fetch_playlist(&client, &api).await?;
-    println!("Fetched {} published items", media.len());
+    loop {
+        match fetch_playlist(&client, &api).await {
+            Ok(media) => println!("Fetched {} published items", media.len()),
+            Err(err) => eprintln!("Failed to fetch playlist: {err:?}"),
+        }
 
+        sleep(Duration::from_millis(refresh_ms)).await;
+    }
     // TODO: initialize renderer (SDL2/wgpu) and video playback (gstreamer/ffmpeg).
     // TODO: preload next asset, render blurred background + main image/video, apply fade transitions.
     // TODO: cache assets on disk and run realtime subscription for updates.
-
-    Ok(())
 }
 
 async fn fetch_playlist(client: &Client, api: &str) -> Result<Vec<Media>> {

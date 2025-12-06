@@ -1,86 +1,187 @@
-{
-  "collections": [
-    {
-      "name": "media",
-      "type": "base",
-      "schema": [
-        { "name": "file", "type": "file", "required": true, "options": { "maxSelect": 1 } },
-        { "name": "type", "type": "select", "required": true, "options": { "values": ["image", "video"] } },
-        { "name": "status", "type": "select", "required": true, "options": { "values": ["pending", "published", "rejected"] } },
-        { "name": "title", "type": "text", "required": false },
-        { "name": "owner", "type": "relation", "required": true, "options": { "collectionId": "_pb_users_auth_" } },
-        { "name": "approvedBy", "type": "relation", "required": false, "options": { "collectionId": "_pb_users_auth_" } },
-        { "name": "takenAt", "type": "date", "required": false },
-        { "name": "width", "type": "number", "required": false },
-        { "name": "height", "type": "number", "required": false },
-        { "name": "duration", "type": "number", "required": false },
-        { "name": "orientation", "type": "text", "required": false },
-        { "name": "tags", "type": "json", "required": false },
-        { "name": "deviceScopes", "type": "json", "required": false },
-        { "name": "checksum", "type": "text", "required": false },
-        { "name": "displayUrl", "type": "url", "required": false },
-        { "name": "blurUrl", "type": "url", "required": false },
-        { "name": "thumbUrl", "type": "url", "required": false },
-        { "name": "videoUrl", "type": "url", "required": false },
-        { "name": "posterUrl", "type": "url", "required": false }
-      ],
-      "indexes": [
-        "CREATE INDEX idx_media_status ON media (status)",
-        "CREATE INDEX idx_media_owner ON media (owner)",
-        "CREATE INDEX idx_media_tags ON media (tags)"
-      ],
-      "listRule": "@request.auth.id != '' && (status = 'published' || owner = @request.auth.id)",
-      "viewRule": "@request.auth.id != '' && (status = 'published' || owner = @request.auth.id)",
-      "createRule": "@request.auth.id != ''",
-      "updateRule": "@request.auth.role = 'admin' || owner = @request.auth.id && status = 'pending'",
-      "deleteRule": "@request.auth.role = 'admin'"
-    },
-    {
-      "name": "approvals",
-      "type": "base",
-      "schema": [
-        { "name": "media", "type": "relation", "required": true, "options": { "collectionId": "media" } },
-        { "name": "reviewer", "type": "relation", "required": true, "options": { "collectionId": "_pb_users_auth_" } },
-        { "name": "status", "type": "select", "required": true, "options": { "values": ["approved", "rejected"] } },
-        { "name": "notes", "type": "text", "required": false }
-      ],
-      "indexes": ["CREATE INDEX idx_approvals_media ON approvals (media)"],
-      "listRule": "@request.auth.role = 'admin'",
-      "viewRule": "@request.auth.role = 'admin'",
-      "createRule": "@request.auth.role = 'admin'",
-      "updateRule": "@request.auth.role = 'admin'",
-      "deleteRule": "@request.auth.role = 'admin'"
-    },
-    {
-      "name": "devices",
-      "type": "base",
-      "schema": [
-        { "name": "name", "type": "text", "required": true },
-        { "name": "apiKey", "type": "text", "required": true },
-        { "name": "lastSeen", "type": "date", "required": false },
-        { "name": "config", "type": "json", "required": false }
-      ],
-      "indexes": ["CREATE INDEX idx_devices_apiKey ON devices (apiKey)"],
-      "listRule": "@request.auth.role = 'admin'",
-      "viewRule": "@request.auth.role = 'admin'",
-      "createRule": "@request.auth.role = 'admin'",
-      "updateRule": "@request.auth.role = 'admin'",
-      "deleteRule": "@request.auth.role = 'admin'"
-    },
-    {
-      "name": "plugins",
-      "type": "base",
-      "schema": [
-        { "name": "manifest", "type": "json", "required": true },
-        { "name": "checksum", "type": "text", "required": false },
-        { "name": "enabled", "type": "bool", "required": true }
-      ],
-      "listRule": "@request.auth.role = 'admin'",
-      "viewRule": "@request.auth.role = 'admin'",
-      "createRule": "@request.auth.role = 'admin'",
-      "updateRule": "@request.auth.role = 'admin'",
-      "deleteRule": "@request.auth.role = 'admin'"
-    }
-  ]
-}
+[
+  {
+    "id": "k5wmc7p6b8ydbdj",
+    "name": "media",
+    "type": "base",
+    "system": false,
+    "schema": [
+      {
+        "id": "f_file",
+        "name": "file",
+        "type": "file",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "unique": false,
+        "options": { "mimeTypes": [], "thumbs": [], "maxSelect": 1, "maxSize": 52428800, "protected": false }
+      },
+      {
+        "id": "f_type",
+        "name": "type",
+        "type": "select",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "unique": false,
+        "options": { "maxSelect": 1, "values": ["image", "video"] }
+      },
+      {
+        "id": "f_status",
+        "name": "status",
+        "type": "select",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "unique": false,
+        "options": { "maxSelect": 1, "values": ["pending", "published", "rejected"] }
+      },
+      {
+        "id": "f_title",
+        "name": "title",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "unique": false,
+        "options": { "min": null, "max": null, "pattern": "" }
+      },
+      {
+        "id": "f_owner",
+        "name": "owner",
+        "type": "relation",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "unique": false,
+        "options": { "collectionId": "_pb_users_auth_", "cascadeDelete": false, "minSelect": null, "maxSelect": 1, "displayFields": [] }
+      },
+      {
+        "id": "f_appr",
+        "name": "approvedBy",
+        "type": "relation",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "unique": false,
+        "options": { "collectionId": "_pb_users_auth_", "cascadeDelete": false, "minSelect": null, "maxSelect": 1, "displayFields": [] }
+      },
+      { "id": "f_taken", "name": "takenAt", "type": "date", "system": false, "required": false, "presentable": false, "unique": false, "options": { "min": "", "max": "" } },
+      { "id": "f_width", "name": "width", "type": "number", "system": false, "required": false, "presentable": false, "unique": false, "options": { "min": null, "max": null, "noDecimal": false } },
+      { "id": "f_height", "name": "height", "type": "number", "system": false, "required": false, "presentable": false, "unique": false, "options": { "min": null, "max": null, "noDecimal": false } },
+      { "id": "f_dur", "name": "duration", "type": "number", "system": false, "required": false, "presentable": false, "unique": false, "options": { "min": null, "max": null, "noDecimal": false } },
+      { "id": "f_orient", "name": "orientation", "type": "text", "system": false, "required": false, "presentable": false, "unique": false, "options": { "min": null, "max": null, "pattern": "" } },
+      { "id": "f_tags", "name": "tags", "type": "json", "system": false, "required": false, "presentable": false, "unique": false, "options": { "maxSize": 1048576 } },
+      { "id": "f_scope", "name": "deviceScopes", "type": "json", "system": false, "required": false, "presentable": false, "unique": false, "options": { "maxSize": 1048576 } },
+      { "id": "f_checksum", "name": "checksum", "type": "text", "system": false, "required": false, "presentable": false, "unique": false, "options": { "min": null, "max": null, "pattern": "" } },
+      { "id": "f_disp", "name": "displayUrl", "type": "url", "system": false, "required": false, "presentable": false, "unique": false, "options": { "onlyDomains": [], "exceptDomains": [] } },
+      { "id": "f_blur", "name": "blurUrl", "type": "url", "system": false, "required": false, "presentable": false, "unique": false, "options": { "onlyDomains": [], "exceptDomains": [] } },
+      { "id": "f_thumb", "name": "thumbUrl", "type": "url", "system": false, "required": false, "presentable": false, "unique": false, "options": { "onlyDomains": [], "exceptDomains": [] } },
+      { "id": "f_video", "name": "videoUrl", "type": "url", "system": false, "required": false, "presentable": false, "unique": false, "options": { "onlyDomains": [], "exceptDomains": [] } },
+      { "id": "f_poster", "name": "posterUrl", "type": "url", "system": false, "required": false, "presentable": false, "unique": false, "options": { "onlyDomains": [], "exceptDomains": [] } }
+    ],
+    "indexes": [
+      "CREATE INDEX idx_media_status ON media (status)",
+      "CREATE INDEX idx_media_owner ON media (owner)",
+      "CREATE INDEX idx_media_tags ON media (tags)"
+    ],
+    "listRule": "@request.auth.id != '' && (status = 'published' || owner = @request.auth.id)",
+    "viewRule": "@request.auth.id != '' && (status = 'published' || owner = @request.auth.id)",
+    "createRule": "@request.auth.id != ''",
+    "updateRule": "@request.auth.role = 'admin' || owner = @request.auth.id && status = 'pending'",
+    "deleteRule": "@request.auth.role = 'admin'",
+    "options": {}
+  },
+  {
+    "id": "w6u7d2j9h1x0v8s",
+    "name": "approvals",
+    "type": "base",
+    "system": false,
+    "schema": [
+      {
+        "id": "a_media",
+        "name": "media",
+        "type": "relation",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "unique": false,
+        "options": { "collectionId": "k5wmc7p6b8ydbdj", "cascadeDelete": false, "minSelect": null, "maxSelect": 1, "displayFields": [] }
+      },
+      {
+        "id": "a_reviewer",
+        "name": "reviewer",
+        "type": "relation",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "unique": false,
+        "options": { "collectionId": "_pb_users_auth_", "cascadeDelete": false, "minSelect": null, "maxSelect": 1, "displayFields": [] }
+      },
+      {
+        "id": "a_status",
+        "name": "status",
+        "type": "select",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "unique": false,
+        "options": { "maxSelect": 1, "values": ["approved", "rejected"] }
+      },
+      {
+        "id": "a_notes",
+        "name": "notes",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "unique": false,
+        "options": { "min": null, "max": null, "pattern": "" }
+      }
+    ],
+    "indexes": ["CREATE INDEX idx_approvals_media ON approvals (media)"],
+    "listRule": "@request.auth.role = 'admin'",
+    "viewRule": "@request.auth.role = 'admin'",
+    "createRule": "@request.auth.role = 'admin'",
+    "updateRule": "@request.auth.role = 'admin'",
+    "deleteRule": "@request.auth.role = 'admin'",
+    "options": {}
+  },
+  {
+    "id": "z3q4n6m2t9p1r7a",
+    "name": "devices",
+    "type": "base",
+    "system": false,
+    "schema": [
+      { "id": "d_name", "name": "name", "type": "text", "system": false, "required": true, "presentable": false, "unique": false, "options": { "min": null, "max": null, "pattern": "" } },
+      { "id": "d_key", "name": "apiKey", "type": "text", "system": false, "required": true, "presentable": false, "unique": true, "options": { "min": null, "max": null, "pattern": "" } },
+      { "id": "d_seen", "name": "lastSeen", "type": "date", "system": false, "required": false, "presentable": false, "unique": false, "options": { "min": "", "max": "" } },
+      { "id": "d_cfg", "name": "config", "type": "json", "system": false, "required": false, "presentable": false, "unique": false, "options": { "maxSize": 1048576 } }
+    ],
+    "indexes": ["CREATE INDEX idx_devices_apiKey ON devices (apiKey)"],
+    "listRule": "@request.auth.role = 'admin'",
+    "viewRule": "@request.auth.role = 'admin'",
+    "createRule": "@request.auth.role = 'admin'",
+    "updateRule": "@request.auth.role = 'admin'",
+    "deleteRule": "@request.auth.role = 'admin'",
+    "options": {}
+  },
+  {
+    "id": "c8n9f5k3h2w6x1e",
+    "name": "plugins",
+    "type": "base",
+    "system": false,
+    "schema": [
+      { "id": "p_manifest", "name": "manifest", "type": "json", "system": false, "required": true, "presentable": false, "unique": false, "options": { "maxSize": 1048576 } },
+      { "id": "p_check", "name": "checksum", "type": "text", "system": false, "required": false, "presentable": false, "unique": false, "options": { "min": null, "max": null, "pattern": "" } },
+      { "id": "p_enabled", "name": "enabled", "type": "bool", "system": false, "required": true, "presentable": false, "unique": false, "options": {} }
+    ],
+    "indexes": [],
+    "listRule": "@request.auth.role = 'admin'",
+    "viewRule": "@request.auth.role = 'admin'",
+    "createRule": "@request.auth.role = 'admin'",
+    "updateRule": "@request.auth.role = 'admin'",
+    "deleteRule": "@request.auth.role = 'admin'",
+    "options": {}
+  }
+]
 
