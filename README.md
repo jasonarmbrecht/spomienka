@@ -1,35 +1,39 @@
-# Digital Picture Frame (PocketBase + React Admin + Rust Viewer)
+# Spomienka
 
-PocketBase backend for auth/media, React admin for uploads/approvals, and a native Rust viewer on Raspberry Pi with blurred backgrounds, fades, and plugin-friendly architecture. A single installer script can set up the Pi (viewer + optional PocketBase + optional local admin UI).
+A digital picture frame system for Raspberry Pi with web-based photo/video uploads, approval workflows, and native fullscreen viewing. Features automatic media processing, blurred backgrounds, smooth transitions, and device-specific playlists.
 
-## Repo layout
-- `backend/` – PocketBase schema (`pb_schema.json`), hooks/media pipeline notes.
-- `admin/` – React (Vite) admin SPA using PocketBase SDK.
-- `viewer/` – Rust viewer targeting Pi (SDL2 + gstreamer; wgpu-ready).
-- `docs/` – Architecture and installer notes.
-- `scripts/` – Pi installer.
+## Installation
 
-## Easiest path: installer on the Pi
-```
-chmod +x scripts/install_pi.sh
-./scripts/install_pi.sh
-```
-Or one-line fetch + run on the Pi:
-```
+Run this single command on your Raspberry Pi:
+
+```bash
 wget -O /tmp/install_pi.sh https://raw.githubusercontent.com/jasonarmbrecht/spomienka/main/scripts/install_pi.sh && chmod +x /tmp/install_pi.sh && /tmp/install_pi.sh
 ```
-The script is interactive and can:
-- Install deps (SDL2, gstreamer, ffmpeg, rustup, etc.).
-- Run PocketBase locally (HTTP by default; TLS optional).
-- Build/serve the admin UI locally (optional).
-- Build and install the viewer with a systemd unit.
-- Auto-fetch this repo if only the script is downloaded (defaults to github.com/jasonarmbrecht/spomienka, branch main).
-See `docs/installer.md` for details and environment overrides (`REPO_URL`, `REPO_BRANCH`).
 
-## Manual notes
-- Backend: run PocketBase, import `backend/pb_schema.json`, add `role` field to users, wire ffmpeg/exif hooks.
-- Admin: `cd admin && npm install && npm run dev` (set `VITE_PB_URL`).
-- Viewer: `cd viewer && cargo run --release` on the Pi; see `viewer/README.md` for systemd example.
+The interactive installer will set up everything: dependencies, PocketBase backend, admin UI, and the Rust viewer with systemd autostart.
 
-See `docs/architecture.md` for flows, approvals, transitions, and plugin model.
+## Architecture
 
+- **Backend**: PocketBase (authentication, media storage, approvals, realtime sync)
+- **Admin**: React SPA for uploads, approvals, library management, and settings
+- **Viewer**: Rust native app for Raspberry Pi with fullscreen kiosk mode
+
+## Documentation
+
+- [Architecture Details](docs/architecture.md) - Data model, flows, and planned features
+- [Installer Guide](docs/installer.md) - Advanced installation options and configuration
+- Component READMEs: [admin/](admin/README.md), [backend/](backend/README.md), [viewer/](viewer/README.md)
+
+## Repository Structure
+
+```
+├── admin/        React admin interface (Vite + PocketBase SDK)
+├── backend/      PocketBase schema and hooks for media processing
+├── viewer/       Rust viewer application for Raspberry Pi
+├── scripts/      Installation scripts
+└── docs/         Architecture and setup documentation
+```
+
+## License
+
+See individual component directories for licensing details.
