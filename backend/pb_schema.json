@@ -1,0 +1,86 @@
+{
+  "collections": [
+    {
+      "name": "media",
+      "type": "base",
+      "schema": [
+        { "name": "file", "type": "file", "required": true, "options": { "maxSelect": 1 } },
+        { "name": "type", "type": "select", "required": true, "options": { "values": ["image", "video"] } },
+        { "name": "status", "type": "select", "required": true, "options": { "values": ["pending", "published", "rejected"] } },
+        { "name": "title", "type": "text", "required": false },
+        { "name": "owner", "type": "relation", "required": true, "options": { "collectionId": "_pb_users_auth_" } },
+        { "name": "approvedBy", "type": "relation", "required": false, "options": { "collectionId": "_pb_users_auth_" } },
+        { "name": "takenAt", "type": "date", "required": false },
+        { "name": "width", "type": "number", "required": false },
+        { "name": "height", "type": "number", "required": false },
+        { "name": "duration", "type": "number", "required": false },
+        { "name": "orientation", "type": "text", "required": false },
+        { "name": "tags", "type": "json", "required": false },
+        { "name": "deviceScopes", "type": "json", "required": false },
+        { "name": "checksum", "type": "text", "required": false },
+        { "name": "displayUrl", "type": "url", "required": false },
+        { "name": "blurUrl", "type": "url", "required": false },
+        { "name": "thumbUrl", "type": "url", "required": false },
+        { "name": "videoUrl", "type": "url", "required": false },
+        { "name": "posterUrl", "type": "url", "required": false }
+      ],
+      "indexes": [
+        "CREATE INDEX idx_media_status ON media (status)",
+        "CREATE INDEX idx_media_owner ON media (owner)",
+        "CREATE INDEX idx_media_tags ON media (tags)"
+      ],
+      "listRule": "@request.auth.id != '' && (status = 'published' || owner = @request.auth.id)",
+      "viewRule": "@request.auth.id != '' && (status = 'published' || owner = @request.auth.id)",
+      "createRule": "@request.auth.id != ''",
+      "updateRule": "@request.auth.role = 'admin' || owner = @request.auth.id && status = 'pending'",
+      "deleteRule": "@request.auth.role = 'admin'"
+    },
+    {
+      "name": "approvals",
+      "type": "base",
+      "schema": [
+        { "name": "media", "type": "relation", "required": true, "options": { "collectionId": "media" } },
+        { "name": "reviewer", "type": "relation", "required": true, "options": { "collectionId": "_pb_users_auth_" } },
+        { "name": "status", "type": "select", "required": true, "options": { "values": ["approved", "rejected"] } },
+        { "name": "notes", "type": "text", "required": false }
+      ],
+      "indexes": ["CREATE INDEX idx_approvals_media ON approvals (media)"],
+      "listRule": "@request.auth.role = 'admin'",
+      "viewRule": "@request.auth.role = 'admin'",
+      "createRule": "@request.auth.role = 'admin'",
+      "updateRule": "@request.auth.role = 'admin'",
+      "deleteRule": "@request.auth.role = 'admin'"
+    },
+    {
+      "name": "devices",
+      "type": "base",
+      "schema": [
+        { "name": "name", "type": "text", "required": true },
+        { "name": "apiKey", "type": "text", "required": true },
+        { "name": "lastSeen", "type": "date", "required": false },
+        { "name": "config", "type": "json", "required": false }
+      ],
+      "indexes": ["CREATE INDEX idx_devices_apiKey ON devices (apiKey)"],
+      "listRule": "@request.auth.role = 'admin'",
+      "viewRule": "@request.auth.role = 'admin'",
+      "createRule": "@request.auth.role = 'admin'",
+      "updateRule": "@request.auth.role = 'admin'",
+      "deleteRule": "@request.auth.role = 'admin'"
+    },
+    {
+      "name": "plugins",
+      "type": "base",
+      "schema": [
+        { "name": "manifest", "type": "json", "required": true },
+        { "name": "checksum", "type": "text", "required": false },
+        { "name": "enabled", "type": "bool", "required": true }
+      ],
+      "listRule": "@request.auth.role = 'admin'",
+      "viewRule": "@request.auth.role = 'admin'",
+      "createRule": "@request.auth.role = 'admin'",
+      "updateRule": "@request.auth.role = 'admin'",
+      "deleteRule": "@request.auth.role = 'admin'"
+    }
+  ]
+}
+

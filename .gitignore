@@ -1,0 +1,30 @@
+# Node/React
+node_modules/
+dist/
+*.local
+.env
+.env.*
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# Rust
+target/
+Cargo.lock
+
+# PocketBase data (runtime)
+pb_data/
+pb_public/
+pb_migrations/
+/var/lib/pocketbase
+
+# Coverage/logs
+coverage/
+*.log
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+

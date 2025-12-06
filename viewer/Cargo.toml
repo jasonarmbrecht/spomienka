@@ -1,0 +1,18 @@
+[package]
+name = "frame-viewer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+config = "0.14"
+
+[features]
+# Later: add rendering/video crates (wgpu, sdl2, gstreamer) behind feature flags.
+render = []
+video = []
+
