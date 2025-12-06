@@ -136,6 +136,16 @@
         "presentable": false,
         "unique": false,
         "options": { "min": null, "max": null, "pattern": "" }
+      },
+      {
+        "id": "a_reviewed",
+        "name": "reviewedAt",
+        "type": "date",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "unique": false,
+        "options": { "min": "", "max": "" }
       }
     ],
     "indexes": ["CREATE INDEX idx_approvals_media ON approvals (media)"],

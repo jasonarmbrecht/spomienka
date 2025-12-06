@@ -4,7 +4,7 @@ set -euo pipefail
 # Digital Frame installer for Raspberry Pi 4 (64-bit)
 # - Installs deps (SDL2, gstreamer, ffmpeg), rustup, optional PocketBase, optional local admin UI
 # - Builds viewer and sets up systemd units
-# - Can auto-fetch this repository if only the script is present
+# - Clones repository to $HOME/spomienka for persistent installation
 # TLS is optional; default is HTTP for LAN use.
 
 PB_VERSION="${PB_VERSION:-0.22.14}"
@@ -18,6 +18,7 @@ VIEWER_CONFIG="/etc/frame-viewer/config.toml"
 VIEWER_CACHE="/var/cache/frame-viewer"
 REPO_URL="${REPO_URL:-https://github.com/jasonarmbrecht/spomienka.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
+INSTALL_DIR="$HOME/spomienka"
 ADMIN_PORT_SELECTED="not installed"
 
 ask_yes_no() {
@@ -49,20 +50,41 @@ require_cmd sudo
 # Locate or fetch repo so we have viewer/admin/backend assets
 ORIG_SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd "$ORIG_SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+
+# Check if we're already running from the install directory or need to clone
 if [[ ! -f "$REPO_ROOT/admin/package.json" || ! -d "$REPO_ROOT/viewer" ]]; then
-  echo "Project files not found next to script. Fetching repo from ${REPO_URL} (branch ${REPO_BRANCH})..."
-  TMP_DIR=$(mktemp -d)
+  echo "Project files not found next to script. Cloning repo to ${INSTALL_DIR}..."
+  
+  # Remove existing install directory if it exists (clean install)
+  if [[ -d "$INSTALL_DIR" ]]; then
+    echo "Existing installation found at $INSTALL_DIR. Backing up..."
+    mv "$INSTALL_DIR" "${INSTALL_DIR}.backup.$(date +%Y%m%d%H%M%S)"
+  fi
+  
   if command -v git >/dev/null 2>&1; then
-    git clone --depth=1 --branch "$REPO_BRANCH" "$REPO_URL" "$TMP_DIR/spomienka"
-    REPO_ROOT="$TMP_DIR/spomienka"
+    git clone --depth=1 --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR"
   else
     echo "git not found; using tarball download..."
-    curl -L "${REPO_URL%.git}/archive/refs/heads/${REPO_BRANCH}.tar.gz" -o "$TMP_DIR/repo.tar.gz"
-    tar -xzf "$TMP_DIR/repo.tar.gz" -C "$TMP_DIR"
-    REPO_ROOT="$(echo "$TMP_DIR"/spomienka-*)"
+    mkdir -p "$INSTALL_DIR"
+    curl -L "${REPO_URL%.git}/archive/refs/heads/${REPO_BRANCH}.tar.gz" -o "/tmp/spomienka-repo.tar.gz"
+    tar -xzf "/tmp/spomienka-repo.tar.gz" -C "/tmp"
+    mv /tmp/spomienka-*/* "$INSTALL_DIR/"
+    rm -rf /tmp/spomienka-* /tmp/spomienka-repo.tar.gz
   fi
-  ORIG_SCRIPT_DIR="$REPO_ROOT/scripts"
-  echo "Fetched repo into $REPO_ROOT"
+  REPO_ROOT="$INSTALL_DIR"
+  echo "Repository cloned to $INSTALL_DIR"
+elif [[ "$REPO_ROOT" != "$INSTALL_DIR" ]]; then
+  # Running from source checkout but not in install dir - copy to install dir
+  echo "Copying project to ${INSTALL_DIR}..."
+  if [[ -d "$INSTALL_DIR" ]]; then
+    echo "Existing installation found at $INSTALL_DIR. Backing up..."
+    mv "$INSTALL_DIR" "${INSTALL_DIR}.backup.$(date +%Y%m%d%H%M%S)"
+  fi
+  cp -r "$REPO_ROOT" "$INSTALL_DIR"
+  REPO_ROOT="$INSTALL_DIR"
+  echo "Project copied to $INSTALL_DIR"
+else
+  echo "Running from install directory: $INSTALL_DIR"
 fi
 
 ARCH=$(uname -m)
@@ -164,6 +186,11 @@ if $ADMIN_LOCAL; then
     curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
     sudo apt install -y nodejs
   fi
+  
+  # Install serve globally so systemd can use it reliably
+  echo "Installing 'serve' package globally..."
+  sudo npm install -g serve
+  
   ADMIN_PORT=$(ask_value "Admin UI port" "$ADMIN_PORT_DEFAULT")
   echo "Building admin SPA against PocketBase at ${PB_HOST}..."
   (
@@ -172,6 +199,10 @@ if $ADMIN_LOCAL; then
     VITE_PB_URL="${PB_HOST}" npm run build
   )
   ADMIN_PORT_SELECTED="$ADMIN_PORT"
+  
+  # Get the path to globally installed serve
+  SERVE_PATH=$(command -v serve)
+  
   sudo tee /etc/systemd/system/frame-admin.service >/dev/null <<EOF
 [Unit]
 Description=Frame Admin UI
@@ -179,8 +210,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-WorkingDirectory=$REPO_ROOT/admin
-ExecStart=$(command -v npx) serve -s dist -l ${ADMIN_PORT}
+WorkingDirectory=${INSTALL_DIR}/admin
+ExecStart=${SERVE_PATH} -s dist -l ${ADMIN_PORT}
 Restart=always
 User=$USER
 Environment=NODE_ENV=production
@@ -227,9 +258,8 @@ Wants=network-online.target
 
 [Service]
 Environment=RUST_LOG=info
-Environment=POCKETBASE_URL=${PB_HOST}
 ExecStart=/usr/local/bin/${VIEWER_BIN_NAME}
-WorkingDirectory=/home/$USER
+WorkingDirectory=$HOME
 Restart=always
 User=$USER
 
@@ -240,10 +270,12 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now frame-viewer
 
-SUMMARY_FILE="/tmp/spomienka-install-summary.txt"
+SUMMARY_FILE="$HOME/spomienka-install-summary.txt"
 cat > "$SUMMARY_FILE" <<EOF
 === Spomienka Install Summary ===
 Status: completed (script uses 'set -e' so earlier errors would have aborted)
+
+Installation Directory: ${INSTALL_DIR}
 
 PocketBase:
   Location: $([ "$PB_ON_PI" = true ] && echo "local on this Pi" || echo "remote")
@@ -255,12 +287,14 @@ Admin UI:
   Mode: $([ "$ADMIN_LOCAL" = true ] && echo "local on this Pi" || echo "not installed (deploy elsewhere)")
   URL: $([ "$ADMIN_LOCAL" = true ] && echo "http://$(hostname -I | awk '{print $1}'):${ADMIN_PORT_SELECTED}" || echo "N/A")
   Build target PocketBase: ${PB_HOST}
+  Source: ${INSTALL_DIR}/admin
 
 Viewer:
   Service: frame-viewer (systemd) ENABLED
   Binary: /usr/local/bin/${VIEWER_BIN_NAME}
   Config: $VIEWER_CONFIG
   Cache: $VIEWER_CACHE
+  Source: ${INSTALL_DIR}/viewer
 
 Device credentials (as provided):
   Device ID: ${DEVICE_ID:-"(none)"}
@@ -270,9 +304,9 @@ Notes:
 - PocketBase admin credentials are not generated by this installer; create an admin user in PocketBase if needed.
 - Logs: journalctl -u pocketbase -f (if installed), journalctl -u frame-admin -f (if installed), journalctl -u frame-viewer -f
 - If the GL driver was changed, a reboot is recommended.
+- To update, run: cd ${INSTALL_DIR} && git pull && ./scripts/install_pi.sh
 EOF
 
 echo "=== Install complete ==="
 cat "$SUMMARY_FILE"
 echo "Summary saved to $SUMMARY_FILE"
-
