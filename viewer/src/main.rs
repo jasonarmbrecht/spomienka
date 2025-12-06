@@ -3,13 +3,15 @@ use reqwest::Client;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Fields are parsed but not all are used yet.
 struct Media {
     id: String,
     r#type: String,
-    displayUrl: Option<String>,
-    blurUrl: Option<String>,
-    videoUrl: Option<String>,
-    posterUrl: Option<String>,
+    display_url: Option<String>,
+    blur_url: Option<String>,
+    video_url: Option<String>,
+    poster_url: Option<String>,
     duration: Option<f32>,
 }
 
