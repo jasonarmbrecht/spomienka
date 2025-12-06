@@ -1,26 +1,30 @@
-# Admin SPA (React + Vite)
+# Admin SPA
 
-Purpose: authenticated uploads, approvals, library browsing, and settings for the digital frame. Uses PocketBase JS SDK.
+Web interface for authenticated uploads, approvals, library management, and system settings. Built with React + Vite + PocketBase JS SDK.
 
-## Setup
-```
+## Installation
+
+**For Pi deployment:** Use `../scripts/install_pi.sh` - it automatically builds and configures everything, including the PocketBase URL.
+
+**For development only:**
+```bash
 cd admin
 npm install
+
+# Create .env with your PocketBase instance
+echo "VITE_PB_URL=http://localhost:8090" > .env
+
 npm run dev
 ```
-Create `.env` with:
-```
-VITE_PB_URL=https://your-pocketbase.example.com
-```
 
-## Pages (scaffolded)
-- Login: email/password auth.
-- Upload: drag/drop; shows derived status.
-- Approvals: admin-only queue to approve/reject.
-- Library: filters for pending/published/type/tag.
-- Settings: interval/order/transitions, device scopes.
+## Pages
+- **Login**: Email/password authentication
+- **Upload**: Drag-and-drop upload with processing status
+- **Approvals**: Admin-only queue to approve/reject pending uploads
+- **Library**: Browse and filter media by status, type, and tags
+- **Settings**: Configure display intervals, transitions, and device scopes
+- **Users**: Manage user accounts and permissions (admin only)
 
-## Notes
-- Role field: `role` on user (`admin|user`) determines gate.
-- Hooks call PocketBase collection names from `backend/pb_schema.json`.
+## Authorization
+User `role` field (`admin` or `user`) controls access. Admins can approve media and manage users; regular users can only upload.
 

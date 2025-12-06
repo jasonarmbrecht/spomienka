@@ -1,36 +1,36 @@
-# Rust Viewer (Pi)
+# Viewer (Rust)
 
-Goals: fullscreen slideshow with blurred backdrops, fades, and video support; autostart via systemd.
+Fullscreen digital frame slideshow client for Raspberry Pi. Fetches published media from PocketBase and displays with blurred backdrops and fade transitions.
 
-## Stack
-- Rust async for syncing with PocketBase.
-- Rendering/video: plan to use SDL2 + gstreamer (or wgpu + gstreamer) on the Pi. Kept behind feature flags in `Cargo.toml` for now.
+## Installation
 
-## Run (dev)
+**For Pi deployment:** Use `../scripts/install_pi.sh` - it automatically:
+- Installs Rust and all dependencies (SDL2, gstreamer, ffmpeg)
+- Builds the viewer in release mode
+- Generates `/etc/frame-viewer/config.toml` with PocketBase URL and credentials
+- Creates and enables systemd service
+- Configures display settings interactively
+
+**For development only:**
+```bash
+# Run with environment config
+POCKETBASE_URL=http://localhost:8090 \
+AUTH_EMAIL=admin@example.com \
+AUTH_PASSWORD=password \
+cargo run
+
+# Or create local config.toml
 ```
-POCKETBASE_URL=http://localhost:8090 cargo run
-```
 
-## Next Implementation Steps
-- Add asset cache (e.g., `dirs` + file hashing) and download published assets.
-- Integrate gstreamer for video playback; SDL2/wgpu for textured rendering and fades.
-- Implement playlist refresh via PocketBase realtime; fallback to cached list when offline.
-- Config via `config` crate (interval, shuffle, transition, device scopes).
+## Current Status
+✅ **Implemented:**
+- PocketBase authentication and media fetching
+- Configuration via TOML file or environment variables
+- Automatic token refresh on auth failures
 
-## systemd unit (example)
-```
-[Unit]
-Description=Frame Viewer
-After=network-online.target
-
-[Service]
-Environment=POCKETBASE_URL=https://pocketbase.example.com
-ExecStart=/usr/bin/frame-viewer
-Restart=always
-User=pi
-WorkingDirectory=/home/pi/frame-viewer
-
-[Install]
-WantedBy=graphical.target
-```
+🚧 **In Progress:**
+- Asset caching and download management
+- Rendering layer (SDL2/wgpu + gstreamer)
+- Fade transitions and blurred backdrop compositing
+- Realtime sync and offline fallback
 
