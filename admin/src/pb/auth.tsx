@@ -2,7 +2,7 @@ import { createContext, ReactNode, useContext, useEffect, useState } from "react
 import { Navigate } from "react-router-dom";
 import { pb } from "./client";
 
-type User = { id: string; email: string; role?: string };
+type User = { id: string; email: string; name?: string; role?: string };
 type AuthContextType = {
   user: User | null;
   login: (email: string, password: string) => Promise<void>;
@@ -13,6 +13,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
     if (pb.authStore.isValid) {
@@ -21,15 +22,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsubscribe = pb.authStore.onChange((token, model) => {
       if (token && model) {
         setUser(model as User);
+        setAuthError(null);
       } else {
         setUser(null);
       }
     });
+    
     return () => unsubscribe();
   }, []);
 
   const login = async (email: string, password: string) => {
-    await pb.collection("users").authWithPassword(email, password);
+    try {
+      await pb.collection("users").authWithPassword(email, password);
+      setAuthError(null);
+    } catch (err: any) {
+      // Handle 401 or other auth errors
+      if (err?.status === 401 || err?.response?.code === 400) {
+        setAuthError("Invalid email or password");
+      } else {
+        setAuthError(err?.message || "Login failed");
+      }
+      throw err;
+    }
   };
 
   const logout = () => {

@@ -1,5 +1,50 @@
 [
   {
+    "id": "_pb_users_auth_",
+    "name": "users",
+    "type": "auth",
+    "system": false,
+    "schema": [
+      {
+        "id": "u_name",
+        "name": "name",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": true,
+        "unique": false,
+        "options": { "min": null, "max": 100, "pattern": "" }
+      },
+      {
+        "id": "u_role",
+        "name": "role",
+        "type": "select",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "unique": false,
+        "options": { "maxSelect": 1, "values": ["user", "admin"] }
+      }
+    ],
+    "indexes": [],
+    "listRule": "@request.auth.role = 'admin'",
+    "viewRule": "@request.auth.id = id || @request.auth.role = 'admin'",
+    "createRule": "@request.auth.role = 'admin'",
+    "updateRule": "@request.auth.id = id || @request.auth.role = 'admin'",
+    "deleteRule": "@request.auth.role = 'admin'",
+    "options": {
+      "allowEmailAuth": true,
+      "allowOAuth2Auth": false,
+      "allowUsernameAuth": false,
+      "exceptEmailDomains": [],
+      "manageRule": "@request.auth.role = 'admin'",
+      "minPasswordLength": 8,
+      "onlyEmailDomains": [],
+      "onlyVerified": false,
+      "requireEmail": true
+    }
+  },
+  {
     "id": "k5wmc7p6b8ydbdj",
     "name": "media",
     "type": "base",
@@ -73,6 +118,8 @@
       { "id": "f_tags", "name": "tags", "type": "json", "system": false, "required": false, "presentable": false, "unique": false, "options": { "maxSize": 1048576 } },
       { "id": "f_scope", "name": "deviceScopes", "type": "json", "system": false, "required": false, "presentable": false, "unique": false, "options": { "maxSize": 1048576 } },
       { "id": "f_checksum", "name": "checksum", "type": "text", "system": false, "required": false, "presentable": false, "unique": false, "options": { "min": null, "max": null, "pattern": "" } },
+      { "id": "f_proc_status", "name": "processingStatus", "type": "select", "system": false, "required": false, "presentable": false, "unique": false, "options": { "maxSelect": 1, "values": ["pending", "processing", "completed", "failed"] } },
+      { "id": "f_proc_error", "name": "processingError", "type": "text", "system": false, "required": false, "presentable": false, "unique": false, "options": { "min": null, "max": null, "pattern": "" } },
       { "id": "f_disp", "name": "displayUrl", "type": "url", "system": false, "required": false, "presentable": false, "unique": false, "options": { "onlyDomains": [], "exceptDomains": [] } },
       { "id": "f_blur", "name": "blurUrl", "type": "url", "system": false, "required": false, "presentable": false, "unique": false, "options": { "onlyDomains": [], "exceptDomains": [] } },
       { "id": "f_thumb", "name": "thumbUrl", "type": "url", "system": false, "required": false, "presentable": false, "unique": false, "options": { "onlyDomains": [], "exceptDomains": [] } },

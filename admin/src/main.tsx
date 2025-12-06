@@ -8,6 +8,7 @@ import { UploadPage } from "./pages/UploadPage";
 import { ApprovalsPage } from "./pages/ApprovalsPage";
 import { LibraryPage } from "./pages/LibraryPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { UsersPage } from "./pages/UsersPage";
 import { AuthProvider, RequireAuth, RequireAdmin } from "./pb/auth";
 
 const router = createBrowserRouter([
@@ -19,7 +20,8 @@ const router = createBrowserRouter([
       { path: "/upload", element: <RequireAuth redirect="/login"><UploadPage /></RequireAuth> },
       { path: "/approvals", element: <RequireAdmin redirect="/login"><ApprovalsPage /></RequireAdmin> },
       { path: "/library", element: <RequireAuth redirect="/login"><LibraryPage /></RequireAuth> },
-      { path: "/settings", element: <RequireAdmin redirect="/login"><SettingsPage /></RequireAdmin> }
+      { path: "/settings", element: <RequireAdmin redirect="/login"><SettingsPage /></RequireAdmin> },
+      { path: "/users", element: <RequireAdmin redirect="/login"><UsersPage /></RequireAdmin> }
     ]
   },
   { path: "/login", element: <LoginPage /> }

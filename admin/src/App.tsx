@@ -10,9 +10,14 @@ export default function App() {
         <div className="brand">Frame Admin</div>
         <nav>
           <Link to="/upload">Upload</Link>
-          <Link to="/approvals">Approvals</Link>
+          {user?.role === "admin" && (
+            <>
+              <Link to="/approvals">Approvals</Link>
+              <Link to="/settings">Settings</Link>
+              <Link to="/users">Users</Link>
+            </>
+          )}
           <Link to="/library">Library</Link>
-          <Link to="/settings">Settings</Link>
         </nav>
         <div className="user">
           {user ? (

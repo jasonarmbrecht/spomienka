@@ -40,6 +40,111 @@ ask_value() {
   echo "${val:-$default}"
 }
 
+generate_password() {
+  # Generate a secure random password (16 chars, alphanumeric + symbols)
+  openssl rand -base64 16 | tr -d '/+=' | head -c 16
+}
+
+wait_for_pocketbase() {
+  local url="$1"
+  local max_attempts=30
+  local attempt=0
+  echo "Waiting for PocketBase to be ready..."
+  while [ $attempt -lt $max_attempts ]; do
+    if curl -s "${url}/api/health" >/dev/null 2>&1; then
+      echo "PocketBase is ready."
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  echo "Warning: PocketBase did not respond in time. Admin user creation may fail."
+  return 1
+}
+
+create_superuser() {
+  local email="$1"
+  local password="$2"
+  
+  echo "Creating PocketBase superuser..."
+  # Use upsert to create or update (idempotent)
+  if "$PB_BIN_PATH" superuser upsert "$email" "$password" \
+      --dir "$PB_DATA_DIR" 2>/dev/null; then
+    echo "PocketBase superuser created/updated."
+    return 0
+  else
+    echo "Warning: Failed to create PocketBase superuser."
+    return 1
+  fi
+}
+
+get_superuser_token() {
+  local api_url="$1"
+  local email="$2"
+  local password="$3"
+  
+  local response
+  response=$(curl -s -X POST "${api_url}/api/admins/auth-with-password" \
+    -H "Content-Type: application/json" \
+    -d "{\"identity\":\"${email}\",\"password\":\"${password}\"}" 2>/dev/null)
+  
+  # Extract token from response
+  echo "$response" | grep -o '"token":"[^"]*"' | cut -d'"' -f4
+}
+
+create_admin_user() {
+  local api_url="$1"
+  local email="$2"
+  local password="$3"
+  local superuser_email="$4"
+  local superuser_password="$5"
+  
+  # Get superuser token to bypass collection rules
+  echo "Authenticating as superuser..."
+  local token
+  token=$(get_superuser_token "$api_url" "$superuser_email" "$superuser_password")
+  
+  if [ -z "$token" ]; then
+    echo "Warning: Could not authenticate as superuser. Trying without auth..."
+    token=""
+  fi
+  
+  # Check if any admin user already exists
+  local existing
+  if [ -n "$token" ]; then
+    existing=$(curl -s "${api_url}/api/collections/users/records?filter=role='admin'&perPage=1" \
+      -H "Authorization: $token" 2>/dev/null)
+  else
+    existing=$(curl -s "${api_url}/api/collections/users/records?filter=role='admin'&perPage=1" 2>/dev/null)
+  fi
+  
+  if echo "$existing" | grep -q '"totalItems":0'; then
+    echo "Creating admin user in users collection..."
+    local response
+    if [ -n "$token" ]; then
+      response=$(curl -s -X POST "${api_url}/api/collections/users/records" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: $token" \
+        -d "{\"email\":\"${email}\",\"password\":\"${password}\",\"passwordConfirm\":\"${password}\",\"role\":\"admin\"}" 2>/dev/null)
+    else
+      response=$(curl -s -X POST "${api_url}/api/collections/users/records" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\":\"${email}\",\"password\":\"${password}\",\"passwordConfirm\":\"${password}\",\"role\":\"admin\"}" 2>/dev/null)
+    fi
+    
+    if echo "$response" | grep -q '"id"'; then
+      echo "Admin user created successfully."
+      return 0
+    else
+      echo "Warning: Failed to create admin user. Response: $response"
+      return 1
+    fi
+  else
+    echo "Admin user already exists. Skipping creation."
+    return 2
+  fi
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || { echo "Missing $1. Aborting."; exit 1; }
 }
@@ -96,6 +201,11 @@ fi
 PB_ON_PI=false
 ADMIN_LOCAL=false
 ENABLE_TLS=false
+FRAME_ADMIN_EMAIL=""
+FRAME_ADMIN_PASSWORD=""
+PB_SUPERUSER_EMAIL=""
+PB_SUPERUSER_PASSWORD=""
+ADMIN_CREATED=false
 
 ask_yes_no "Run PocketBase on this Pi?" "y" && PB_ON_PI=true
 ask_yes_no "Serve Admin UI on this Pi?" "y" && ADMIN_LOCAL=true
@@ -108,7 +218,7 @@ sudo apt install -y git build-essential pkg-config cmake libssl-dev libudev-dev 
   libasound2-dev libxcb-shape0-dev libxcb-xfixes0-dev libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev \
   ffmpeg gstreamer1.0-libav gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   gstreamer1.0-plugins-ugly gstreamer1.0-alsa gstreamer1.0-tools \
-  exiftool curl unzip
+  exiftool curl unzip at
 
 echo "Enabling GL Full KMS (may require reboot)..."
 if sudo raspi-config nonint do_gldriver G2; then
@@ -155,6 +265,22 @@ if $PB_ON_PI; then
     echo "Warning: backend/pb_schema.json not found; skipping schema import."
   fi
 
+  # Install PocketBase hooks for media processing
+  if [[ -d "$REPO_ROOT/backend/pb_hooks" ]]; then
+    echo "Installing PocketBase hooks..."
+    sudo mkdir -p "$PB_DATA_DIR/pb_hooks"
+    sudo cp -r "$REPO_ROOT/backend/pb_hooks/"* "$PB_DATA_DIR/pb_hooks/"
+    sudo chown -R "$USER":"$USER" "$PB_DATA_DIR/pb_hooks"
+    echo "Hooks installed to $PB_DATA_DIR/pb_hooks"
+  else
+    echo "Warning: backend/pb_hooks not found; skipping hooks installation."
+  fi
+
+  # Create PocketBase superuser BEFORE starting the service (CLI works on DB directly)
+  PB_SUPERUSER_EMAIL="superuser@frame.local"
+  PB_SUPERUSER_PASSWORD=$(generate_password)
+  create_superuser "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD"
+
   sudo tee /etc/systemd/system/pocketbase.service >/dev/null <<EOF
 [Unit]
 Description=PocketBase
@@ -162,7 +288,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=$PB_BIN_PATH serve --http=0.0.0.0:${PB_PORT_DEFAULT} --dir $PB_DATA_DIR --migrationsDir $PB_MIGRATIONS_DIR
+ExecStart=$PB_BIN_PATH serve --http=0.0.0.0:${PB_PORT_DEFAULT} --dir $PB_DATA_DIR --migrationsDir $PB_MIGRATIONS_DIR --hooksDir $PB_DATA_DIR/pb_hooks
 WorkingDirectory=/opt/pocketbase
 Restart=always
 User=$USER
@@ -174,8 +300,21 @@ EOF
   sudo systemctl enable --now pocketbase
   PB_HOST="http://$(hostname -I | awk '{print $1}'):${PB_PORT_DEFAULT}"
   echo "PocketBase running on $PB_HOST (HTTP). TLS skipped per selection."
-  echo "Import schema via Admin UI or CLI:"
-  echo "  $PB_BIN_PATH admin import /path/to/backend/pb_schema.json --dir $PB_DATA_DIR"
+  
+  # Wait for PocketBase to be ready and create admin user (using superuser auth)
+  if wait_for_pocketbase "http://localhost:${PB_PORT_DEFAULT}"; then
+    FRAME_ADMIN_EMAIL="admin@frame.local"
+    FRAME_ADMIN_PASSWORD=$(generate_password)
+    
+    if create_admin_user "http://localhost:${PB_PORT_DEFAULT}" "$FRAME_ADMIN_EMAIL" "$FRAME_ADMIN_PASSWORD" "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD"; then
+      ADMIN_CREATED=true
+      echo "Admin credentials generated. They will be shown in the install summary."
+    elif [ $? -eq 2 ]; then
+      # Admin already exists - credentials unknown
+      FRAME_ADMIN_EMAIL="(existing admin - check PocketBase)"
+      FRAME_ADMIN_PASSWORD="(not changed)"
+    fi
+  fi
 else
   PB_HOST=$(ask_value "Enter PocketBase URL (http://host:8090)" "$PB_HOST")
 fi
@@ -247,6 +386,9 @@ transition = "${TRANSITION}"
 cache_dir = "${VIEWER_CACHE}"
 device_id = "${DEVICE_ID}"
 device_api_key = "${DEVICE_KEY}"
+# Authentication credentials (auto-generated during install)
+auth_email = "${FRAME_ADMIN_EMAIL}"
+auth_password = "${FRAME_ADMIN_PASSWORD}"
 EOF
 sudo mv /tmp/frame-viewer-config.toml "$VIEWER_CONFIG"
 
@@ -300,13 +442,43 @@ Device credentials (as provided):
   Device ID: ${DEVICE_ID:-"(none)"}
   Device API key: ${DEVICE_KEY:-"(none)"}
 
+PocketBase Superuser (for PocketBase admin panel at /_/):
+  Email: ${PB_SUPERUSER_EMAIL:-"(not created)"}
+  Password: ${PB_SUPERUSER_PASSWORD:-"(not created)"}
+
+Admin User (for Admin UI login):
+  Email: ${FRAME_ADMIN_EMAIL:-"(not created)"}
+  Password: ${FRAME_ADMIN_PASSWORD:-"(not created)"}
+  Status: $([ "$ADMIN_CREATED" = true ] && echo "CREATED - save these credentials!" || echo "existing or not created")
+
 Notes:
-- PocketBase admin credentials are not generated by this installer; create an admin user in PocketBase if needed.
+- IMPORTANT: Save the credentials above! Admin user creds are also stored in $VIEWER_CONFIG
 - Logs: journalctl -u pocketbase -f (if installed), journalctl -u frame-admin -f (if installed), journalctl -u frame-viewer -f
 - If the GL driver was changed, a reboot is recommended.
 - To update, run: cd ${INSTALL_DIR} && git pull && ./scripts/install_pi.sh
+
+*** SECURITY NOTICE ***
+This summary file contains sensitive credentials and will be AUTOMATICALLY DELETED
+in 24 hours for security. Save the credentials above to a secure location NOW!
+Deletion scheduled for: $(date -d '+24 hours' '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -v+24H '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "24 hours from now")
 EOF
 
 echo "=== Install complete ==="
 cat "$SUMMARY_FILE"
+echo ""
 echo "Summary saved to $SUMMARY_FILE"
+
+# Schedule automatic deletion of summary file after 24 hours (contains sensitive credentials)
+if command -v at >/dev/null 2>&1; then
+  # Ensure atd service is running
+  sudo systemctl enable --now atd 2>/dev/null || true
+  
+  echo "rm -f '$SUMMARY_FILE'" | at now + 24 hours 2>/dev/null && \
+    echo "WARNING: $SUMMARY_FILE will be automatically deleted in 24 hours for security." || \
+    echo "Note: Could not schedule auto-deletion. Please manually delete $SUMMARY_FILE after saving credentials."
+else
+  echo "Note: 'at' command not available. Please manually delete $SUMMARY_FILE after saving credentials."
+fi
+
+echo ""
+echo "*** SAVE YOUR CREDENTIALS NOW - This file will be deleted in 24 hours! ***"
