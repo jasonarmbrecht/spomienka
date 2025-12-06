@@ -3,7 +3,7 @@
 ## Components
 - PocketBase backend (auth, media, approvals, realtime playlist).
 - React admin SPA (upload, approvals, library, settings).
-- Rust native viewer on Raspberry Pi (currently polling-based; SDL2/gstreamer/wgpu rendering planned).
+- Rust native viewer on Raspberry Pi (SDL2/GStreamer-based fullscreen slideshow with caching and realtime sync).
 
 ## Data Model (PocketBase)
 - `users`: built-in; roles via `role` field (`admin`, `user`).
@@ -30,16 +30,15 @@
 - **Implemented:**
   - Autostart on boot (systemd), kiosk fullscreen.
   - Configuration via TOML file (`/etc/frame-viewer/config.toml`) with environment variable overrides.
-  - Polling-based playlist sync from PocketBase API.
   - Auth support (token or email/password).
-
-- **Planned (not yet implemented):**
-  - Preload next item, crossfade/fade-to-black transitions.
+  - SDL2-based hardware-accelerated rendering.
+  - Fade, crossfade, and cut transitions between slides.
   - Aspect-fit main image/video with blurred/stretch background.
-  - Video playback via gstreamer; seekless looping for short clips.
-  - Offline cache: periodic sync to PocketBase; serve from disk when offline.
-  - Hot-reload playlist via PocketBase realtime; fallback to last cached list.
-  - Device-specific filters (tags/deviceScopes).
+  - Video playback via GStreamer; seekless looping for short clips (< configurable threshold).
+  - LRU cache with configurable size limit; serve from disk when offline.
+  - Hot-reload playlist via PocketBase realtime WebSocket; fallback to cached playlist.
+  - Device-specific filters via `deviceScopes` field.
+  - Background asset preloading for smooth transitions.
 
 ## Admin SPA (React)
 - Pages: login, upload (drag/drop), approvals queue (bulk approve/reject), library with filters, settings (device management with interval/transition config).

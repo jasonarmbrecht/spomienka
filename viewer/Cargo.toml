@@ -7,12 +7,39 @@ edition = "2021"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "time", "signal"] }
 config = { version = "0.14", features = ["toml"] }
 
+# Rendering
+sdl2 = { version = "0.37", features = ["ttf", "image"] }
+
+# Video playback
+gstreamer = { version = "0.23", features = ["v1_20"] }
+gstreamer-app = "0.23"
+gstreamer-video = "0.23"
+
+# Realtime WebSocket
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+url = "2.5"
+
+# Image processing
+image = "0.25"
+
+# Cache management
+walkdir = "2"
+sha2 = "0.10"
+lru = "0.12"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+rand = "0.8"
+urlencoding = "2.1"
+
 [features]
-# Later: add rendering/video crates (wgpu, sdl2, gstreamer) behind feature flags.
-render = []
-video = []
+default = []
 
