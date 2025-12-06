@@ -36,4 +36,4 @@ The interactive installer will set up everything: dependencies, PocketBase backe
 
 ## License
 
-See individual component directories for licensing details.
+MIT License - see [LICENSE](LICENSE) for details.
