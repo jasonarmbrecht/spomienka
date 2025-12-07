@@ -4,7 +4,7 @@
 
 use crate::cache::Cache;
 use crate::renderer::{MediaTextures, Renderer};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use sdl2::render::TextureCreator;
 use sdl2::video::WindowContext;
 use std::path::PathBuf;

@@ -13,7 +13,7 @@ use assets::{AssetManager, AssetType, Media, Preloader};
 use cache::Cache;
 use config::{Config, Environment, File};
 use realtime::{spawn_realtime, RealtimeEvent};
-use renderer::{EventResult, MediaTextures, Renderer, Transition};
+use renderer::{EventResult, MediaTextures, OverlayInfo, Renderer, Transition, UserAction};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use std::env;
@@ -87,6 +87,10 @@ struct AppConfig {
     /// Shuffle playlist order
     #[serde(default)]
     shuffle: bool,
+
+    /// Full sync mode - preload all media on startup
+    #[serde(default)]
+    full_sync: bool,
 }
 
 fn default_pb_url() -> String {
@@ -171,6 +175,7 @@ impl AppConfig {
             token: self.auth_token.clone().filter(|s| !s.is_empty()),
             email: self.auth_email.clone().filter(|s| !s.is_empty()),
             password: self.auth_password.clone().filter(|s| !s.is_empty()),
+            device_api_key: self.device_api_key.clone().filter(|s| !s.is_empty()),
         }
     }
 }
@@ -180,11 +185,17 @@ struct AuthCreds {
     email: Option<String>,
     password: Option<String>,
     token: Option<String>,
+    device_api_key: Option<String>,
 }
 
 impl AuthCreds {
     fn can_login(&self) -> bool {
         self.email.is_some() && self.password.is_some()
+    }
+
+    /// Check if device API key is available for authentication.
+    fn has_device_key(&self) -> bool {
+        self.device_api_key.is_some()
     }
 }
 
@@ -339,10 +350,19 @@ impl AppState {
     }
 
     async fn refresh_token(&self, creds: &AuthCreds) -> Result<Option<String>> {
+        // Priority 1: Device API key (used as bearer token directly)
+        if let Some(ref device_key) = creds.device_api_key {
+            tracing::debug!("Using device API key for authentication");
+            return Ok(Some(device_key.clone()));
+        }
+
+        // Priority 2: Direct auth token
+        if let Some(ref token) = creds.token {
+            return Ok(Some(token.clone()));
+        }
+
+        // Priority 3: User email/password login
         if !creds.can_login() {
-            if let Some(token) = &creds.token {
-                return Ok(Some(token.clone()));
-            }
             return Ok(None);
         }
 
@@ -481,10 +501,22 @@ async fn main() -> Result<()> {
     let token = state.token().await;
     let playlist_clone = playlist.clone();
 
-    // Preload first few items
-    tokio::spawn(async move {
-        preloader.preload_next(&playlist_clone, 0, 3, token.as_deref()).await;
-    });
+    // Full sync mode: preload all media on startup
+    if state.config.full_sync && !playlist.is_empty() {
+        tracing::info!("Full sync mode enabled - preloading all {} media items...", playlist.len());
+        let sync_preloader = Preloader::new(state.asset_manager.clone(), state.client.clone());
+        let sync_token = state.token().await;
+        let sync_playlist = playlist.clone();
+        
+        // Run full sync in foreground so user knows when it's done
+        sync_preloader.preload_all(&sync_playlist, sync_token.as_deref()).await;
+        tracing::info!("Full sync complete");
+    } else {
+        // Preload first few items in background
+        tokio::spawn(async move {
+            preloader.preload_next(&playlist_clone, 0, 3, token.as_deref()).await;
+        });
+    }
 
     // Start realtime subscription if enabled
     let mut realtime_rx = if state.config.enable_realtime {
@@ -529,6 +561,11 @@ async fn run_render_loop(
 
     // Track if we're showing video
     let mut is_video_playing = false;
+    
+    // Overlay state
+    let mut overlay_visible = false;
+    let mut is_paused = false;
+    let mut is_realtime_connected = false;
 
     // Load first item
     load_current_item(
@@ -542,24 +579,92 @@ async fn run_render_loop(
     .await?;
 
     loop {
-        // Process SDL events
-        match renderer.process_events() {
-            EventResult::Quit => {
+        // Process SDL events with extended actions
+        match renderer.process_events_extended() {
+            UserAction::Quit => {
                 tracing::info!("Quit requested");
                 break;
             }
-            EventResult::Continue => {}
+            UserAction::ToggleOverlay => {
+                overlay_visible = !overlay_visible;
+                tracing::debug!("Overlay visibility: {}", overlay_visible);
+            }
+            UserAction::TogglePause => {
+                if is_video_playing {
+                    is_paused = !is_paused;
+                    if is_paused {
+                        video_manager.pause();
+                        tracing::debug!("Video paused");
+                    } else {
+                        video_manager.resume();
+                        tracing::debug!("Video resumed");
+                    }
+                }
+            }
+            UserAction::Next => {
+                tracing::debug!("Skip to next requested");
+                advance_to_next(
+                    &state,
+                    &mut renderer,
+                    &texture_creator,
+                    &mut current_textures,
+                    &mut next_textures,
+                    &mut video_manager,
+                    &mut is_video_playing,
+                )
+                .await?;
+                last_advance = Instant::now();
+                is_paused = false;
+            }
+            UserAction::Previous => {
+                tracing::debug!("Go to previous requested");
+                go_to_previous(
+                    &state,
+                    &mut renderer,
+                    &texture_creator,
+                    &mut current_textures,
+                    &mut next_textures,
+                    &mut video_manager,
+                    &mut is_video_playing,
+                )
+                .await?;
+                last_advance = Instant::now();
+                is_paused = false;
+            }
+            UserAction::Refresh => {
+                tracing::info!("Manual playlist refresh requested");
+                match state.fetch_playlist().await {
+                    Ok(playlist) => {
+                        let cache = state.cache.read().await;
+                        if let Err(e) = cache.save_playlist(&playlist) {
+                            tracing::warn!("Failed to save playlist: {}", e);
+                        }
+                        drop(cache);
+                        *state.playlist.write().await = playlist;
+                        tracing::info!("Playlist refreshed");
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to refresh playlist: {}", e);
+                    }
+                }
+            }
+            UserAction::None => {}
         }
 
         // Process realtime events
         if let Some(ref mut rx) = realtime_rx {
             while let Ok(event) = rx.try_recv() {
+                match &event {
+                    RealtimeEvent::Connected => is_realtime_connected = true,
+                    RealtimeEvent::Disconnected => is_realtime_connected = false,
+                    _ => {}
+                }
                 handle_realtime_event(&state, event).await;
             }
         }
 
-        // Update video frame if playing
-        if is_video_playing {
+        // Update video frame if playing and not paused
+        if is_video_playing && !is_paused {
             if let Some(frame) = video_manager.current_frame() {
                 // Update display texture with video frame
                 if let Ok(tex) = renderer.create_texture_from_pixels(
@@ -601,7 +706,9 @@ async fn run_render_loop(
         }
 
         // Check if it's time to advance (for images or looping videos)
-        let should_advance = !renderer.is_transitioning()
+        // Don't auto-advance if paused
+        let should_advance = !is_paused
+            && !renderer.is_transitioning()
             && last_advance.elapsed() >= slide_duration
             && (!is_video_playing || video_manager.is_looping());
 
@@ -622,6 +729,21 @@ async fn run_render_loop(
         // Render
         renderer.render(&mut current_textures, next_textures.as_mut())?;
 
+        // Render overlay if visible
+        if overlay_visible {
+            let overlay_info = build_overlay_info(
+                &state,
+                &video_manager,
+                is_video_playing,
+                is_paused,
+                is_realtime_connected,
+            )
+            .await;
+            if let Err(e) = renderer.render_overlay(&overlay_info) {
+                tracing::warn!("Failed to render overlay: {}", e);
+            }
+        }
+
         // Frame delay
         renderer.frame_delay();
     }
@@ -630,6 +752,47 @@ async fn run_render_loop(
     video_manager.stop();
 
     Ok(())
+}
+
+/// Build overlay info from current state.
+async fn build_overlay_info(
+    state: &AppState,
+    video_manager: &VideoManager,
+    is_video_playing: bool,
+    is_paused: bool,
+    is_realtime_connected: bool,
+) -> OverlayInfo {
+    let playlist = state.playlist.read().await;
+    let current_index = *state.current_index.read().await;
+    let is_offline = *state.is_offline.read().await;
+    
+    let media_title = playlist
+        .get(current_index)
+        .map(|m| m.id.clone())
+        .unwrap_or_default();
+    
+    let is_video = playlist
+        .get(current_index)
+        .map(|m| m.is_video())
+        .unwrap_or(false);
+
+    let cache = state.cache.read().await;
+    let cache_stats = cache.stats();
+    
+    OverlayInfo {
+        is_connected: is_realtime_connected,
+        is_offline,
+        current_index: current_index + 1, // 1-based for display
+        total_count: playlist.len(),
+        media_title,
+        cache_used: cache_stats.current_size,
+        cache_max: cache_stats.max_size,
+        cache_items: cache_stats.item_count,
+        is_video,
+        is_paused,
+        video_duration: if is_video_playing { video_manager.duration() } else { None },
+        video_position: if is_video_playing { video_manager.position() } else { None },
+    }
 }
 
 /// Load the current item into textures.
@@ -781,6 +944,80 @@ async fn advance_to_next<'a>(
     Ok(())
 }
 
+/// Go to the previous item in the playlist.
+async fn go_to_previous<'a>(
+    state: &AppState,
+    renderer: &mut Renderer,
+    texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+    current_textures: &mut MediaTextures<'a>,
+    next_textures: &mut Option<MediaTextures<'a>>,
+    video_manager: &mut VideoManager,
+    is_video_playing: &mut bool,
+) -> Result<()> {
+    // Stop current video
+    video_manager.stop();
+    *is_video_playing = false;
+
+    let playlist = state.playlist.read().await;
+    if playlist.is_empty() {
+        return Ok(());
+    }
+
+    // Go to previous index (wrap around)
+    let mut index = state.current_index.write().await;
+    *index = if *index == 0 {
+        playlist.len() - 1
+    } else {
+        *index - 1
+    };
+    let prev_index = *index;
+    drop(index);
+
+    let media = &playlist[prev_index];
+    tracing::debug!("Going to previous: {} ({})", media.id, media.media_type);
+
+    // Ensure current item is cached
+    let token = state.token().await;
+    state
+        .asset_manager
+        .preload_media(media, &state.client, token.as_deref())
+        .await?;
+
+    // Load textures
+    let cache = state.cache.read().await;
+    let new_textures = state
+        .asset_manager
+        .load_textures(renderer, texture_creator, media, &cache)?;
+    drop(cache);
+
+    // Use cut transition for manual navigation
+    *next_textures = None;
+    *current_textures = new_textures;
+
+    // Touch cache
+    let mut cache = state.cache.write().await;
+    cache.touch(&media.id, AssetType::Display);
+    cache.touch(&media.id, AssetType::Blur);
+
+    // Start video if applicable
+    if media.is_video() {
+        if let Some(video_path) = cache.get_cached_path(&media.id, AssetType::Video) {
+            if video_path.exists() {
+                match video_manager.play_video(&video_path, media.duration) {
+                    Ok(()) => {
+                        *is_video_playing = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to start video: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Handle a realtime event.
 async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
     match event {
@@ -794,11 +1031,25 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
             tracing::info!("Refreshing playlist...");
             match state.fetch_playlist().await {
                 Ok(playlist) => {
-                    let cache = state.cache.read().await;
-                    if let Err(e) = cache.save_playlist(&playlist) {
-                        tracing::warn!("Failed to save playlist: {}", e);
+                    // Save playlist to cache
+                    {
+                        let cache = state.cache.read().await;
+                        if let Err(e) = cache.save_playlist(&playlist) {
+                            tracing::warn!("Failed to save playlist: {}", e);
+                        }
                     }
-                    drop(cache);
+
+                    // Clean up orphaned cache entries
+                    {
+                        let mut cache = state.cache.write().await;
+                        cache.cleanup_orphans(&playlist);
+                        let stats = cache.stats();
+                        tracing::debug!(
+                            "Cache cleanup done: {:.1}MB used, {} items",
+                            stats.current_size as f64 / 1024.0 / 1024.0,
+                            stats.item_count
+                        );
+                    }
 
                     *state.playlist.write().await = playlist;
                 }

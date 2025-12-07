@@ -169,11 +169,24 @@ require_cmd() {
 echo "=== Digital Frame Installer (Pi 4, 64-bit) ==="
 require_cmd sudo
 
-# Detect if running via pipe (curl | bash) - stdin won't be a terminal
-if [[ ! -t 0 ]]; then
-  echo "Detected non-interactive mode (curl | bash). Using defaults."
-  echo "For custom options, download and run the script directly."
+# Non-interactive mode must be explicitly enabled via NONINTERACTIVE=y
+# This prevents accidental auto-acceptance of defaults
+if [[ "${NONINTERACTIVE:-}" =~ ^[Yy] ]]; then
+  echo "Non-interactive mode enabled. Using defaults or environment overrides."
+  echo "Options: INSTALL_POCKETBASE=y|n  INSTALL_ADMIN=y|n  ENABLE_TLS=y|n"
+  echo ""
   NONINTERACTIVE=true
+elif [[ ! -t 0 ]]; then
+  echo "ERROR: Running via pipe without NONINTERACTIVE=y"
+  echo ""
+  echo "This script requires user input. Either:"
+  echo "  1. Download and run interactively:"
+  echo "     curl -O https://raw.githubusercontent.com/.../install_pi.sh && bash install_pi.sh"
+  echo ""
+  echo "  2. Use non-interactive mode with environment variables:"
+  echo "     NONINTERACTIVE=y INSTALL_POCKETBASE=y INSTALL_ADMIN=y curl -sSL ... | bash"
+  echo ""
+  exit 1
 else
   NONINTERACTIVE=false
 fi
@@ -231,6 +244,10 @@ if [[ "$ARCH" != "aarch64" ]]; then
   ask_yes_no "Continue" "n" || exit 1
 fi
 
+# Configuration options - can be overridden via environment variables
+# Examples:
+#   INSTALL_POCKETBASE=n curl -sSL .../install_pi.sh | bash
+#   INSTALL_ADMIN=n ENABLE_TLS=y ./install_pi.sh
 PB_ON_PI=false
 ADMIN_LOCAL=false
 ENABLE_TLS=false
@@ -240,9 +257,36 @@ PB_SUPERUSER_EMAIL=""
 PB_SUPERUSER_PASSWORD=""
 ADMIN_CREATED=false
 
-ask_yes_no "Run PocketBase on this Pi?" "y" && PB_ON_PI=true
-ask_yes_no "Serve Admin UI on this Pi?" "y" && ADMIN_LOCAL=true
-ask_yes_no "Enable TLS/HTTPS termination here?" "n" && ENABLE_TLS=true
+# Check for environment variable overrides first
+if [[ "${INSTALL_POCKETBASE:-}" =~ ^[Yy] ]]; then
+  PB_ON_PI=true
+  echo "Run PocketBase on this Pi? [y]: y (env override)"
+elif [[ "${INSTALL_POCKETBASE:-}" =~ ^[Nn] ]]; then
+  PB_ON_PI=false
+  echo "Run PocketBase on this Pi? [y]: n (env override)"
+else
+  ask_yes_no "Run PocketBase on this Pi?" "y" && PB_ON_PI=true
+fi
+
+if [[ "${INSTALL_ADMIN:-}" =~ ^[Yy] ]]; then
+  ADMIN_LOCAL=true
+  echo "Serve Admin UI on this Pi? [y]: y (env override)"
+elif [[ "${INSTALL_ADMIN:-}" =~ ^[Nn] ]]; then
+  ADMIN_LOCAL=false
+  echo "Serve Admin UI on this Pi? [y]: n (env override)"
+else
+  ask_yes_no "Serve Admin UI on this Pi?" "y" && ADMIN_LOCAL=true
+fi
+
+if [[ "${ENABLE_TLS:-}" =~ ^[Yy] ]]; then
+  ENABLE_TLS=true
+  echo "Enable TLS/HTTPS termination here? [n]: y (env override)"
+elif [[ "${ENABLE_TLS:-}" =~ ^[Nn] ]]; then
+  ENABLE_TLS=false
+  echo "Enable TLS/HTTPS termination here? [n]: n (env override)"
+else
+  ask_yes_no "Enable TLS/HTTPS termination here?" "n" && ENABLE_TLS=true
+fi
 
 echo "Updating apt and installing base dependencies..."
 sudo apt update

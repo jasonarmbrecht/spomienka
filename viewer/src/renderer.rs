@@ -5,9 +5,10 @@
 use anyhow::{Context, Result};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
-use sdl2::pixels::PixelFormatEnum;
+use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
 use sdl2::render::{Canvas, Texture, TextureCreator};
+use sdl2::ttf::Sdl2TtfContext;
 use sdl2::video::{Window, WindowContext};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -72,6 +73,54 @@ pub enum EventResult {
     Quit,
 }
 
+/// Specific user actions from keyboard/remote input.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UserAction {
+    /// No action, continue normally.
+    None,
+    /// Quit the application.
+    Quit,
+    /// Toggle pause (for videos).
+    TogglePause,
+    /// Skip to next media.
+    Next,
+    /// Go to previous media.
+    Previous,
+    /// Force playlist refresh.
+    Refresh,
+    /// Toggle overlay visibility.
+    ToggleOverlay,
+}
+
+/// Information to display in the overlay.
+#[derive(Debug, Clone, Default)]
+pub struct OverlayInfo {
+    /// Whether connected to PocketBase.
+    pub is_connected: bool,
+    /// Whether currently offline (using cache).
+    pub is_offline: bool,
+    /// Current media index (1-based for display).
+    pub current_index: usize,
+    /// Total media count.
+    pub total_count: usize,
+    /// Current media title/ID.
+    pub media_title: String,
+    /// Cache usage in bytes.
+    pub cache_used: u64,
+    /// Cache max size in bytes.
+    pub cache_max: u64,
+    /// Cache item count.
+    pub cache_items: usize,
+    /// Whether current media is a video.
+    pub is_video: bool,
+    /// Whether video is paused.
+    pub is_paused: bool,
+    /// Video duration in seconds.
+    pub video_duration: Option<f32>,
+    /// Video position in seconds.
+    pub video_position: Option<f32>,
+}
+
 /// The main renderer struct.
 pub struct Renderer {
     canvas: Canvas<Window>,
@@ -82,7 +131,23 @@ pub struct Renderer {
     transition_duration_ms: u32,
     transition_state: TransitionState,
     transition_start: Option<Instant>,
+    /// TTF context for text rendering (kept alive).
+    _ttf_context: Sdl2TtfContext,
+    /// Loaded font for overlay text.
+    font_data: Vec<u8>,
 }
+
+/// Embedded font data (DejaVu Sans Mono - a free, open-source font).
+/// We'll try system fonts first, fall back to a basic approach.
+const FONT_PATHS: &[&str] = &[
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "C:\\Windows\\Fonts\\arial.ttf",
+];
 
 impl Renderer {
     /// Initialize SDL2 and create a fullscreen window.
@@ -92,6 +157,10 @@ impl Renderer {
         let video_subsystem = sdl_context
             .video()
             .map_err(|e| anyhow::anyhow!("SDL video init failed: {}", e))?;
+
+        // Initialize TTF
+        let ttf_context = sdl2::ttf::init()
+            .map_err(|e| anyhow::anyhow!("SDL TTF init failed: {}", e))?;
 
         // Get display mode for fullscreen resolution
         let display_mode = video_subsystem
@@ -120,6 +189,9 @@ impl Renderer {
             .build()
             .context("Failed to create canvas")?;
 
+        // Enable blending for overlay
+        canvas.set_blend_mode(sdl2::render::BlendMode::Blend);
+
         // Hide cursor for kiosk mode
         sdl_context.mouse().show_cursor(false);
 
@@ -132,6 +204,9 @@ impl Renderer {
             .event_pump()
             .map_err(|e| anyhow::anyhow!("Failed to get event pump: {}", e))?;
 
+        // Load font data from system
+        let font_data = Self::load_font_data()?;
+
         Ok(Self {
             canvas,
             event_pump,
@@ -141,7 +216,22 @@ impl Renderer {
             transition_duration_ms,
             transition_state: TransitionState::Idle,
             transition_start: None,
+            _ttf_context: ttf_context,
+            font_data,
         })
+    }
+
+    /// Try to load font data from system fonts.
+    fn load_font_data() -> Result<Vec<u8>> {
+        for path in FONT_PATHS {
+            if let Ok(data) = std::fs::read(path) {
+                tracing::debug!("Loaded font from: {}", path);
+                return Ok(data);
+            }
+        }
+        // Return empty vec if no font found - we'll skip text rendering
+        tracing::warn!("No system font found, overlay text will be disabled");
+        Ok(Vec::new())
     }
 
     /// Get the texture creator for loading textures.
@@ -357,21 +447,46 @@ impl Renderer {
 
     /// Process SDL events. Returns Quit if user wants to exit.
     pub fn process_events(&mut self) -> EventResult {
+        let action = self.process_events_extended();
+        match action {
+            UserAction::Quit => EventResult::Quit,
+            _ => EventResult::Continue,
+        }
+    }
+
+    /// Process SDL events with extended action support.
+    pub fn process_events_extended(&mut self) -> UserAction {
         for event in self.event_pump.poll_iter() {
             match event {
-                Event::Quit { .. } => return EventResult::Quit,
-                Event::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                } => return EventResult::Quit,
-                Event::KeyDown {
-                    keycode: Some(Keycode::Q),
-                    ..
-                } => return EventResult::Quit,
+                Event::Quit { .. } => return UserAction::Quit,
+                Event::KeyDown { keycode: Some(key), .. } => {
+                    match key {
+                        // Quit
+                        Keycode::Escape | Keycode::Q => return UserAction::Quit,
+                        // Pause/Resume
+                        Keycode::Space | Keycode::Return | Keycode::P => {
+                            return UserAction::TogglePause
+                        }
+                        // Navigation
+                        Keycode::Right | Keycode::Down | Keycode::N | Keycode::PageDown => {
+                            return UserAction::Next
+                        }
+                        Keycode::Left | Keycode::Up | Keycode::B | Keycode::PageUp => {
+                            return UserAction::Previous
+                        }
+                        // Refresh
+                        Keycode::R | Keycode::F5 => return UserAction::Refresh,
+                        // Toggle overlay
+                        Keycode::I | Keycode::Tab | Keycode::O => {
+                            return UserAction::ToggleOverlay
+                        }
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
         }
-        EventResult::Continue
+        UserAction::None
     }
 
     /// Get screen dimensions.
@@ -382,6 +497,157 @@ impl Renderer {
     /// Sleep for a short duration to limit frame rate.
     pub fn frame_delay(&self) {
         std::thread::sleep(Duration::from_millis(16)); // ~60 FPS
+    }
+
+    /// Render the overlay with status information.
+    pub fn render_overlay(&mut self, info: &OverlayInfo) -> Result<()> {
+        // Semi-transparent background bar at top
+        let bar_height = 60u32;
+        self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 180));
+        self.canvas
+            .fill_rect(Rect::new(0, 0, self.screen_width, bar_height))
+            .map_err(|e| anyhow::anyhow!("Failed to draw overlay bg: {}", e))?;
+
+        // Connection status indicator (circle)
+        let indicator_x = 20i32;
+        let indicator_y = (bar_height / 2) as i32;
+        let indicator_color = if info.is_offline {
+            Color::RGB(255, 100, 100) // Red for offline
+        } else if info.is_connected {
+            Color::RGB(100, 255, 100) // Green for connected
+        } else {
+            Color::RGB(255, 200, 100) // Orange for connecting
+        };
+        self.draw_filled_circle(indicator_x, indicator_y, 8, indicator_color)?;
+
+        // Render text info using TTF if font is available
+        if !self.font_data.is_empty() {
+            let ttf_context = sdl2::ttf::init()
+                .map_err(|e| anyhow::anyhow!("TTF init failed: {}", e))?;
+            
+            // Load font from memory
+            let font = ttf_context
+                .load_font_from_rwops(
+                    sdl2::rwops::RWops::from_bytes(&self.font_data)?,
+                    24,
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to load font: {}", e))?;
+
+            let texture_creator = self.canvas.texture_creator();
+
+            // Media info text
+            let status_text = if info.is_paused { " [PAUSED]" } else { "" };
+            let media_text = format!(
+                "{}/{} - {}{}",
+                info.current_index,
+                info.total_count,
+                if info.media_title.len() > 30 {
+                    format!("{}...", &info.media_title[..27])
+                } else {
+                    info.media_title.clone()
+                },
+                status_text
+            );
+            self.render_text(&font, &texture_creator, &media_text, 50, 10, Color::WHITE)?;
+
+            // Cache info
+            let cache_used_mb = info.cache_used as f64 / 1024.0 / 1024.0;
+            let cache_max_mb = info.cache_max as f64 / 1024.0 / 1024.0;
+            let cache_text = format!(
+                "Cache: {:.1}MB / {:.1}MB ({} items)",
+                cache_used_mb, cache_max_mb, info.cache_items
+            );
+            self.render_text(&font, &texture_creator, &cache_text, 50, 35, Color::RGB(200, 200, 200))?;
+
+            // Connection status text (right side)
+            let conn_text = if info.is_offline {
+                "OFFLINE"
+            } else if info.is_connected {
+                "CONNECTED"
+            } else {
+                "CONNECTING..."
+            };
+            let text_width = (conn_text.len() * 12) as i32; // Approximate
+            self.render_text(
+                &font,
+                &texture_creator,
+                conn_text,
+                self.screen_width as i32 - text_width - 20,
+                20,
+                indicator_color,
+            )?;
+        }
+
+        // Video progress bar (if playing video)
+        if info.is_video {
+            if let (Some(pos), Some(dur)) = (info.video_position, info.video_duration) {
+                let bar_y = self.screen_height as i32 - 10;
+                let bar_width = self.screen_width - 40;
+                let progress = (pos / dur).min(1.0);
+
+                // Background
+                self.canvas.set_draw_color(Color::RGBA(100, 100, 100, 150));
+                self.canvas
+                    .fill_rect(Rect::new(20, bar_y, bar_width, 6))
+                    .map_err(|e| anyhow::anyhow!("Failed to draw progress bg: {}", e))?;
+
+                // Progress
+                let progress_width = (bar_width as f32 * progress) as u32;
+                if progress_width > 0 {
+                    self.canvas.set_draw_color(Color::RGB(100, 200, 255));
+                    self.canvas
+                        .fill_rect(Rect::new(20, bar_y, progress_width, 6))
+                        .map_err(|e| anyhow::anyhow!("Failed to draw progress: {}", e))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Draw a filled circle (approximated with rectangles for simplicity).
+    fn draw_filled_circle(&mut self, cx: i32, cy: i32, radius: i32, color: Color) -> Result<()> {
+        self.canvas.set_draw_color(color);
+        for dy in -radius..=radius {
+            let dx = ((radius * radius - dy * dy) as f32).sqrt() as i32;
+            self.canvas
+                .fill_rect(Rect::new(cx - dx, cy + dy, (dx * 2) as u32, 1))
+                .map_err(|e| anyhow::anyhow!("Failed to draw circle: {}", e))?;
+        }
+        Ok(())
+    }
+
+    /// Render text at the specified position.
+    fn render_text<'a>(
+        &mut self,
+        font: &sdl2::ttf::Font,
+        texture_creator: &'a TextureCreator<WindowContext>,
+        text: &str,
+        x: i32,
+        y: i32,
+        color: Color,
+    ) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        let surface = font
+            .render(text)
+            .blended(color)
+            .map_err(|e| anyhow::anyhow!("Failed to render text: {}", e))?;
+
+        let texture = texture_creator
+            .create_texture_from_surface(&surface)
+            .map_err(|e| anyhow::anyhow!("Failed to create text texture: {}", e))?;
+
+        let query = texture.query();
+        let dest = Rect::new(x, y, query.width, query.height);
+
+        self.canvas
+            .copy(&texture, None, dest)
+            .map_err(|e| anyhow::anyhow!("Failed to copy text: {}", e))?;
+
+        Ok(())
     }
 }
 

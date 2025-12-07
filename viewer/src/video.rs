@@ -335,6 +335,20 @@ impl VideoManager {
         }
     }
 
+    /// Pause the current video.
+    pub fn pause(&mut self) {
+        if let Some(ref player) = self.current_player {
+            let _ = player.pause();
+        }
+    }
+
+    /// Resume the current video.
+    pub fn resume(&mut self) {
+        if let Some(ref player) = self.current_player {
+            let _ = player.play();
+        }
+    }
+
     /// Get the current video frame.
     pub fn current_frame(&self) -> Option<VideoFrame> {
         self.current_player.as_ref()?.current_frame()
@@ -362,6 +376,16 @@ impl VideoManager {
             .as_ref()
             .map(|p| p.is_looping())
             .unwrap_or(false)
+    }
+
+    /// Get video duration in seconds.
+    pub fn duration(&self) -> Option<f32> {
+        self.current_player.as_ref()?.duration()
+    }
+
+    /// Get current playback position in seconds.
+    pub fn position(&self) -> Option<f32> {
+        self.current_player.as_ref()?.position()
     }
 }
 
