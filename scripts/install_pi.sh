@@ -23,6 +23,14 @@ ADMIN_PORT_SELECTED="not installed"
 
 ask_yes_no() {
   local prompt="$1" default="$2" answer
+  # In non-interactive mode, use the default
+  if [[ "${NONINTERACTIVE:-false}" == "true" ]]; then
+    echo "$prompt [$default]: $default (auto)"
+    case "$default" in
+      [Yy]*) return 0 ;;
+      [Nn]*) return 1 ;;
+    esac
+  fi
   while true; do
     read -r -p "$prompt [$default]: " answer
     answer="${answer:-$default}"
@@ -36,6 +44,12 @@ ask_yes_no() {
 
 ask_value() {
   local prompt="$1" default="${2:-}"
+  # In non-interactive mode, use the default
+  if [[ "${NONINTERACTIVE:-false}" == "true" ]]; then
+    echo "$prompt${default:+ [$default]}: $default (auto)" >&2
+    echo "$default"
+    return
+  fi
   read -r -p "$prompt${default:+ [$default]}: " val
   echo "${val:-$default}"
 }
@@ -155,12 +169,28 @@ require_cmd() {
 echo "=== Digital Frame Installer (Pi 4, 64-bit) ==="
 require_cmd sudo
 
+# Detect if running via pipe (curl | bash) - stdin won't be a terminal
+if [[ ! -t 0 ]]; then
+  echo "Detected non-interactive mode (curl | bash). Using defaults."
+  echo "For custom options, download and run the script directly."
+  NONINTERACTIVE=true
+else
+  NONINTERACTIVE=false
+fi
+
 # Locate or fetch repo so we have viewer/admin/backend assets
-ORIG_SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-REPO_ROOT="$(cd "$ORIG_SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+# Handle case where BASH_SOURCE is not set (when piped from curl)
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  ORIG_SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+  REPO_ROOT="$(cd "$ORIG_SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+else
+  # Running via pipe - no script location available
+  ORIG_SCRIPT_DIR=""
+  REPO_ROOT=""
+fi
 
 # Check if we're already running from the install directory or need to clone
-if [[ ! -f "$REPO_ROOT/admin/package.json" || ! -d "$REPO_ROOT/viewer" ]]; then
+if [[ -z "$REPO_ROOT" || ! -f "$REPO_ROOT/admin/package.json" || ! -d "$REPO_ROOT/viewer" ]]; then
   echo "Project files not found next to script. Cloning repo to ${INSTALL_DIR}..."
   
   # Remove existing install directory if it exists (clean install)
@@ -222,7 +252,7 @@ sudo apt install -y git build-essential pkg-config cmake libssl-dev libudev-dev 
   ffmpeg libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-libav gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   gstreamer1.0-plugins-ugly gstreamer1.0-alsa gstreamer1.0-tools \
-  exiftool curl unzip at
+  exiftool curl unzip at expect
 
 echo "Enabling GL Full KMS (may require reboot)..."
 if sudo raspi-config nonint do_gldriver G2; then
@@ -258,14 +288,28 @@ if $PB_ON_PI; then
   # Import PocketBase schema so the viewer has required collections.
   if [[ -f "$REPO_ROOT/backend/pb_schema.json" ]]; then
     echo "Importing PocketBase schema..."
-    # Auto-confirm the migration prompt
-    printf 'y\n' | /opt/pocketbase/pocketbase migrate collections import \
-      "$REPO_ROOT/backend/pb_schema.json" \
-      --dir "$PB_DATA_DIR" \
-      --migrationsDir "$PB_MIGRATIONS_DIR" || true
+    # Use expect to auto-confirm, or script for pseudo-tty, or manual fallback
+    SCHEMA_IMPORTED=false
+    if command -v expect >/dev/null 2>&1; then
+      expect -c "
+        spawn /opt/pocketbase/pocketbase migrate collections import \"$REPO_ROOT/backend/pb_schema.json\" --dir \"$PB_DATA_DIR\" --migrationsDir \"$PB_MIGRATIONS_DIR\"
+        expect {
+          \"(y/N)\" { send \"y\r\"; exp_continue }
+          eof
+        }
+      " && SCHEMA_IMPORTED=true
+    else
+      # Try with script command to create pseudo-tty
+      script -q -e -c "/opt/pocketbase/pocketbase migrate collections import '$REPO_ROOT/backend/pb_schema.json' --dir '$PB_DATA_DIR' --migrationsDir '$PB_MIGRATIONS_DIR'" /dev/null <<< "y" && SCHEMA_IMPORTED=true || true
+    fi
+    
+    if [[ "$SCHEMA_IMPORTED" == "false" ]]; then
+      echo "Note: Auto-import failed. Schema will be imported via API after PocketBase starts."
+    fi
+    
     /opt/pocketbase/pocketbase migrate up \
       --dir "$PB_DATA_DIR" \
-      --migrationsDir "$PB_MIGRATIONS_DIR"
+      --migrationsDir "$PB_MIGRATIONS_DIR" || true
   else
     echo "Warning: backend/pb_schema.json not found; skipping schema import."
   fi
