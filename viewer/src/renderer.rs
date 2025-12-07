@@ -522,13 +522,16 @@ impl Renderer {
 
         // Render text info using TTF if font is available
         if !self.font_data.is_empty() {
+            // Clone font data to avoid borrow conflict with self.render_text()
+            let font_data = self.font_data.clone();
+            
             let ttf_context = sdl2::ttf::init()
                 .map_err(|e| anyhow::anyhow!("TTF init failed: {}", e))?;
             
             // Load font from memory
             let font = ttf_context
                 .load_font_from_rwops(
-                    sdl2::rwops::RWops::from_bytes(&self.font_data)
+                    sdl2::rwops::RWops::from_bytes(&font_data)
                         .map_err(|e| anyhow::anyhow!("Failed to create RWops: {}", e))?,
                     24,
                 )
