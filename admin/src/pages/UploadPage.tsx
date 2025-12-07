@@ -104,7 +104,8 @@ export function UploadPage() {
 
   const uploadFile = async (file: File): Promise<void> => {
     const fileName = file.name;
-    
+    let progressInterval: ReturnType<typeof setInterval> | null = null;
+
     // Update status to uploading
     setUploadProgress((prev) => ({
       ...prev,
@@ -119,7 +120,7 @@ export function UploadPage() {
 
     try {
       // PocketBase doesn't provide progress events in the SDK, so we simulate progress
-      const progressInterval = setInterval(() => {
+      progressInterval = setInterval(() => {
         setUploadProgress((prev) => {
           const current = prev[fileName];
           if (current && current.progress < 90) {
@@ -161,6 +162,10 @@ export function UploadPage() {
         },
       }));
       throw err;
+    } finally {
+      if (progressInterval) {
+        clearInterval(progressInterval);
+      }
     }
   };
 

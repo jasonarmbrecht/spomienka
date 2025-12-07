@@ -14,6 +14,9 @@ type Media = {
 
 const ITEMS_PER_PAGE = 50;
 
+const escapeFilterValue = (value: string) =>
+  value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+
 export function LibraryPage() {
   const [items, setItems] = useState<Media[]>([]);
   const [filter, setFilter] = useState<"all" | "published" | "pending" | "rejected">("all");
@@ -45,7 +48,8 @@ export function LibraryPage() {
         }
         
         if (searchQuery.trim()) {
-          filters.push(`title~'${searchQuery.trim()}' || file~'${searchQuery.trim()}'`);
+          const term = escapeFilterValue(searchQuery.trim());
+          filters.push(`title~'${term}' || file~'${term}'`);
         }
         
         if (dateFrom) {
@@ -58,7 +62,8 @@ export function LibraryPage() {
         
         if (tagFilter.trim()) {
           // Tags are stored as JSON array, so we need to check if it contains the tag
-          filters.push(`tags~'${tagFilter.trim()}'`);
+          const tag = escapeFilterValue(tagFilter.trim());
+          filters.push(`tags~'${tag}'`);
         }
 
         const filterString = filters.length > 0 ? filters.join(" && ") : "";

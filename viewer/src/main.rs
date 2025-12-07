@@ -16,6 +16,7 @@ use realtime::{spawn_realtime, RealtimeEvent};
 use renderer::{EventResult, MediaTextures, Renderer, Transition};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
+use std::env;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -117,7 +118,7 @@ fn default_video_loop_threshold_sec() -> f32 {
 impl AppConfig {
     /// Load configuration from file and environment variables.
     fn load() -> Result<Self> {
-        let config = Config::builder()
+        let mut builder = Config::builder()
             .set_default("pb_url", default_pb_url())?
             .set_default("interval_ms", default_interval_ms() as i64)?
             .set_default("transition", default_transition())?
@@ -127,7 +128,14 @@ impl AppConfig {
             .set_default("enable_realtime", default_enable_realtime())?
             .set_default("video_loop_threshold_sec", default_video_loop_threshold_sec() as f64)?
             .add_source(File::with_name("/etc/frame-viewer/config").required(false))
-            .add_source(File::with_name("config").required(false))
+            .add_source(File::with_name("config").required(false));
+
+        // Allow overriding pb_url with the commonly documented env var.
+        if let Ok(pb_url) = env::var("POCKETBASE_URL") {
+            builder = builder.set_override("pb_url", pb_url)?;
+        }
+
+        let config = builder
             .add_source(
                 Environment::default()
                     .prefix("POCKETBASE")
@@ -254,9 +262,13 @@ impl AppState {
         let mut filter = "status='published'".to_string();
 
         if let Some(ref device_id) = self.config.device_id {
+            let device_filter = format!(
+                "(deviceScopes~'\"{}\"' || deviceScopes = [] || deviceScopes = null)",
+                device_id
+            );
             filter = format!(
-                "({}) && (deviceScopes~'{}' || deviceScopes='[]' || deviceScopes='' || deviceScopes=null)",
-                filter, device_id
+                "({}) && {}",
+                filter, device_filter
             );
         }
 
@@ -685,28 +697,17 @@ async fn advance_to_next<'a>(
         .load_textures(renderer, texture_creator, media, &cache)?;
     drop(cache);
 
-    // Start transition
+    // Prepare next frame and kick off transition if needed
     *next_textures = Some(new_textures);
 
-    // For crossfade, we render both. For fade, we swap immediately after fade-out.
-    // The renderer.start_transition() will handle the timing.
-    // After TransitioningOut completes, we swap the textures.
-
-    // Actually, let's simplify: load into current directly for fade
-    // and use next_textures for crossfade
     match Transition::from_str(&state.config.transition) {
         Transition::Cut => {
-            // Immediate swap
             if let Some(next) = next_textures.take() {
                 *current_textures = next;
             }
         }
         _ => {
-            // Start transition animation
-            // For now, just swap - transitions need more work with the renderer
-            if let Some(next) = next_textures.take() {
-                *current_textures = next;
-            }
+            renderer.start_transition();
         }
     }
 
