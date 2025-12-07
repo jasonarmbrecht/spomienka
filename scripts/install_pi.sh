@@ -7,7 +7,7 @@ set -euo pipefail
 # - Clones repository to $HOME/spomienka for persistent installation
 # TLS is optional; default is HTTP for LAN use.
 
-PB_VERSION="${PB_VERSION:-0.22.14}"
+PB_VERSION="${PB_VERSION:-0.25.0}"
 ADMIN_PORT_DEFAULT=4173
 PB_PORT_DEFAULT=8090
 VIEWER_BIN_NAME="frame-viewer"
@@ -68,12 +68,14 @@ create_superuser() {
   
   echo "Creating PocketBase superuser..."
   # Use upsert to create or update (idempotent)
-  if "$PB_BIN_PATH" superuser upsert "$email" "$password" \
-      --dir "$PB_DATA_DIR" 2>/dev/null; then
+  local output
+  if output=$("$PB_BIN_PATH" superuser upsert "$email" "$password" \
+      --dir "$PB_DATA_DIR" 2>&1); then
     echo "PocketBase superuser created/updated."
     return 0
   else
     echo "Warning: Failed to create PocketBase superuser."
+    echo "  Error: $output"
     return 1
   fi
 }
@@ -216,7 +218,8 @@ sudo apt update
 sudo apt upgrade -y
 sudo apt install -y git build-essential pkg-config cmake libssl-dev libudev-dev \
   libasound2-dev libxcb-shape0-dev libxcb-xfixes0-dev libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev \
-  ffmpeg gstreamer1.0-libav gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+  ffmpeg libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-libav gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
   gstreamer1.0-plugins-ugly gstreamer1.0-alsa gstreamer1.0-tools \
   exiftool curl unzip at
 
