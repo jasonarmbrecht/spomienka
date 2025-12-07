@@ -6,6 +6,10 @@ set -euo pipefail
 # - Builds viewer and sets up systemd units
 # - Clones repository to $HOME/spomienka for persistent installation
 # TLS is optional; default is HTTP for LAN use.
+#
+# All user input is collected at the start, then installation proceeds non-interactively.
+# Can also run fully non-interactive with environment variables:
+#   NONINTERACTIVE=y INSTALL_POCKETBASE=y INSTALL_ADMIN=y curl -sSL ... | bash
 
 PB_VERSION="${PB_VERSION:-0.25.0}"
 ADMIN_PORT_DEFAULT=4173
@@ -169,27 +173,114 @@ require_cmd() {
 echo "=== Digital Frame Installer (Pi 4, 64-bit) ==="
 require_cmd sudo
 
-# Non-interactive mode must be explicitly enabled via NONINTERACTIVE=y
-# This prevents accidental auto-acceptance of defaults
+# Check for non-interactive mode via environment variable
 if [[ "${NONINTERACTIVE:-}" =~ ^[Yy] ]]; then
   echo "Non-interactive mode enabled. Using defaults or environment overrides."
   echo "Options: INSTALL_POCKETBASE=y|n  INSTALL_ADMIN=y|n  ENABLE_TLS=y|n"
   echo ""
   NONINTERACTIVE=true
-elif [[ ! -t 0 ]]; then
-  echo "ERROR: Running via pipe without NONINTERACTIVE=y"
-  echo ""
-  echo "This script requires user input. Either:"
-  echo "  1. Download and run interactively:"
-  echo "     curl -O https://raw.githubusercontent.com/.../install_pi.sh && bash install_pi.sh"
-  echo ""
-  echo "  2. Use non-interactive mode with environment variables:"
-  echo "     NONINTERACTIVE=y INSTALL_POCKETBASE=y INSTALL_ADMIN=y curl -sSL ... | bash"
-  echo ""
-  exit 1
 else
   NONINTERACTIVE=false
 fi
+
+# ============================================================================
+# PHASE 1: COLLECT ALL USER INPUT UPFRONT
+# ============================================================================
+echo ""
+echo "=== Configuration Questions ==="
+echo "Please answer the following questions. Installation will proceed automatically after."
+echo ""
+
+# Check architecture first
+ARCH=$(uname -m)
+ARCH_CONTINUE=true
+if [[ "$ARCH" != "aarch64" ]]; then
+  echo "Warning: Expected aarch64 on Pi 4; got $ARCH."
+  if ! ask_yes_no "Continue anyway?" "n"; then
+    ARCH_CONTINUE=false
+  fi
+fi
+
+if [[ "$ARCH_CONTINUE" == "false" ]]; then
+  echo "Installation cancelled."
+  exit 1
+fi
+
+# Configuration options - can be overridden via environment variables
+PB_ON_PI=false
+ADMIN_LOCAL=false
+ENABLE_TLS=false
+FRAME_ADMIN_EMAIL=""
+FRAME_ADMIN_PASSWORD=""
+PB_SUPERUSER_EMAIL=""
+PB_SUPERUSER_PASSWORD=""
+ADMIN_CREATED=false
+
+# Question 1: PocketBase on this Pi?
+if [[ "${INSTALL_POCKETBASE:-}" =~ ^[Yy] ]]; then
+  PB_ON_PI=true
+  echo "Run PocketBase on this Pi? [y]: y (env override)"
+elif [[ "${INSTALL_POCKETBASE:-}" =~ ^[Nn] ]]; then
+  PB_ON_PI=false
+  echo "Run PocketBase on this Pi? [y]: n (env override)"
+else
+  ask_yes_no "Run PocketBase on this Pi?" "y" && PB_ON_PI=true
+fi
+
+# Question 2: Admin UI on this Pi?
+if [[ "${INSTALL_ADMIN:-}" =~ ^[Yy] ]]; then
+  ADMIN_LOCAL=true
+  echo "Serve Admin UI on this Pi? [y]: y (env override)"
+elif [[ "${INSTALL_ADMIN:-}" =~ ^[Nn] ]]; then
+  ADMIN_LOCAL=false
+  echo "Serve Admin UI on this Pi? [y]: n (env override)"
+else
+  ask_yes_no "Serve Admin UI on this Pi?" "y" && ADMIN_LOCAL=true
+fi
+
+# Question 3: Enable TLS?
+if [[ "${ENABLE_TLS:-}" =~ ^[Yy] ]]; then
+  ENABLE_TLS=true
+  echo "Enable TLS/HTTPS termination here? [n]: y (env override)"
+elif [[ "${ENABLE_TLS:-}" =~ ^[Nn] ]]; then
+  ENABLE_TLS=false
+  echo "Enable TLS/HTTPS termination here? [n]: n (env override)"
+else
+  ask_yes_no "Enable TLS/HTTPS termination here?" "n" && ENABLE_TLS=true
+fi
+
+# Question 4: Add cross target?
+ADD_CROSS_TARGET=false
+if ask_yes_no "Add cross target aarch64-unknown-linux-gnu (for cross-build reuse)?" "y"; then
+  ADD_CROSS_TARGET=true
+fi
+
+# Question 5: PocketBase URL (only if not installing locally)
+PB_HOST="http://localhost:${PB_PORT_DEFAULT}"
+if ! $PB_ON_PI; then
+  PB_HOST=$(ask_value "Enter PocketBase URL (http://host:8090)" "$PB_HOST")
+fi
+
+# Question 6: Admin UI port (only if installing admin locally)
+ADMIN_PORT="$ADMIN_PORT_DEFAULT"
+if $ADMIN_LOCAL; then
+  ADMIN_PORT=$(ask_value "Admin UI port" "$ADMIN_PORT_DEFAULT")
+fi
+
+# Question 7-10: Viewer configuration
+DEVICE_ID=$(ask_value "Device ID (optional, leave blank to skip)" "")
+DEVICE_KEY=$(ask_value "Device API key (optional)" "")
+INTERVAL_MS=$(ask_value "Slide interval ms" "8000")
+TRANSITION=$(ask_value "Transition (fade/crossfade/cut)" "fade")
+
+echo ""
+echo "=== Configuration Complete ==="
+echo "Proceeding with installation (no further input required)..."
+echo ""
+
+# ============================================================================
+# PHASE 2: INSTALLATION (NO USER INPUT FROM HERE)
+# ============================================================================
 
 # Locate or fetch repo so we have viewer/admin/backend assets
 # Handle case where BASH_SOURCE is not set (when piped from curl)
@@ -238,56 +329,6 @@ else
   echo "Running from install directory: $INSTALL_DIR"
 fi
 
-ARCH=$(uname -m)
-if [[ "$ARCH" != "aarch64" ]]; then
-  echo "Warning: Expected aarch64 on Pi 4; got $ARCH. Continue anyway? (y/n)"
-  ask_yes_no "Continue" "n" || exit 1
-fi
-
-# Configuration options - can be overridden via environment variables
-# Examples:
-#   INSTALL_POCKETBASE=n curl -sSL .../install_pi.sh | bash
-#   INSTALL_ADMIN=n ENABLE_TLS=y ./install_pi.sh
-PB_ON_PI=false
-ADMIN_LOCAL=false
-ENABLE_TLS=false
-FRAME_ADMIN_EMAIL=""
-FRAME_ADMIN_PASSWORD=""
-PB_SUPERUSER_EMAIL=""
-PB_SUPERUSER_PASSWORD=""
-ADMIN_CREATED=false
-
-# Check for environment variable overrides first
-if [[ "${INSTALL_POCKETBASE:-}" =~ ^[Yy] ]]; then
-  PB_ON_PI=true
-  echo "Run PocketBase on this Pi? [y]: y (env override)"
-elif [[ "${INSTALL_POCKETBASE:-}" =~ ^[Nn] ]]; then
-  PB_ON_PI=false
-  echo "Run PocketBase on this Pi? [y]: n (env override)"
-else
-  ask_yes_no "Run PocketBase on this Pi?" "y" && PB_ON_PI=true
-fi
-
-if [[ "${INSTALL_ADMIN:-}" =~ ^[Yy] ]]; then
-  ADMIN_LOCAL=true
-  echo "Serve Admin UI on this Pi? [y]: y (env override)"
-elif [[ "${INSTALL_ADMIN:-}" =~ ^[Nn] ]]; then
-  ADMIN_LOCAL=false
-  echo "Serve Admin UI on this Pi? [y]: n (env override)"
-else
-  ask_yes_no "Serve Admin UI on this Pi?" "y" && ADMIN_LOCAL=true
-fi
-
-if [[ "${ENABLE_TLS:-}" =~ ^[Yy] ]]; then
-  ENABLE_TLS=true
-  echo "Enable TLS/HTTPS termination here? [n]: y (env override)"
-elif [[ "${ENABLE_TLS:-}" =~ ^[Nn] ]]; then
-  ENABLE_TLS=false
-  echo "Enable TLS/HTTPS termination here? [n]: n (env override)"
-else
-  ask_yes_no "Enable TLS/HTTPS termination here?" "n" && ENABLE_TLS=true
-fi
-
 echo "Updating apt and installing base dependencies..."
 sudo apt update
 sudo apt upgrade -y
@@ -313,12 +354,12 @@ else
   rustup update stable
 fi
 
-if ask_yes_no "Add cross target aarch64-unknown-linux-gnu (for cross-build reuse)?" "y"; then
+if $ADD_CROSS_TARGET; then
   rustup target add aarch64-unknown-linux-gnu || true
 fi
 
-PB_HOST="http://localhost:${PB_PORT_DEFAULT}"
 if $PB_ON_PI; then
+  PB_HOST="http://localhost:${PB_PORT_DEFAULT}"
   echo "Setting up PocketBase..."
   sudo mkdir -p /opt/pocketbase "$PB_DATA_DIR"
   sudo chown "$USER":"$USER" /opt/pocketbase "$PB_DATA_DIR"
@@ -408,8 +449,6 @@ EOF
       FRAME_ADMIN_PASSWORD="(not changed)"
     fi
   fi
-else
-  PB_HOST=$(ask_value "Enter PocketBase URL (http://host:8090)" "$PB_HOST")
 fi
 
 if $ADMIN_LOCAL; then
@@ -423,7 +462,6 @@ if $ADMIN_LOCAL; then
   echo "Installing 'serve' package globally..."
   sudo npm install -g serve
   
-  ADMIN_PORT=$(ask_value "Admin UI port" "$ADMIN_PORT_DEFAULT")
   echo "Building admin SPA against PocketBase at ${PB_HOST}..."
   (
     cd "$REPO_ROOT/admin"
@@ -466,11 +504,6 @@ sudo install -m 0755 "$REPO_ROOT/viewer/target/release/${VIEWER_BIN_NAME}" "/usr
 
 sudo mkdir -p "$(dirname "$VIEWER_CONFIG")" "$VIEWER_CACHE"
 sudo chown "$USER":"$USER" "$(dirname "$VIEWER_CONFIG")" "$VIEWER_CACHE"
-
-DEVICE_ID=$(ask_value "Device ID (optional, leave blank to skip)" "")
-DEVICE_KEY=$(ask_value "Device API key (optional)" "")
-INTERVAL_MS=$(ask_value "Slide interval ms" "8000")
-TRANSITION=$(ask_value "Transition (fade/crossfade/cut)" "fade")
 
 cat > /tmp/frame-viewer-config.toml <<EOF
 pb_url = "${PB_HOST}"
