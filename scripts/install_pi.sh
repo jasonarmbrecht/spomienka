@@ -86,7 +86,8 @@ get_superuser_token() {
   local password="$3"
   
   local response
-  response=$(curl -s -X POST "${api_url}/api/admins/auth-with-password" \
+  # PocketBase 0.23+ uses _superusers collection for auth
+  response=$(curl -s -X POST "${api_url}/api/collections/_superusers/auth-with-password" \
     -H "Content-Type: application/json" \
     -d "{\"identity\":\"${email}\",\"password\":\"${password}\"}" 2>/dev/null)
   
@@ -257,10 +258,11 @@ if $PB_ON_PI; then
   # Import PocketBase schema so the viewer has required collections.
   if [[ -f "$REPO_ROOT/backend/pb_schema.json" ]]; then
     echo "Importing PocketBase schema..."
-    /opt/pocketbase/pocketbase migrate collections import \
+    # Auto-confirm the migration prompt
+    printf 'y\n' | /opt/pocketbase/pocketbase migrate collections import \
       "$REPO_ROOT/backend/pb_schema.json" \
       --dir "$PB_DATA_DIR" \
-      --migrationsDir "$PB_MIGRATIONS_DIR"
+      --migrationsDir "$PB_MIGRATIONS_DIR" || true
     /opt/pocketbase/pocketbase migrate up \
       --dir "$PB_DATA_DIR" \
       --migrationsDir "$PB_MIGRATIONS_DIR"
@@ -416,6 +418,20 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now frame-viewer
 
 SUMMARY_FILE="$HOME/spomienka-install-summary.txt"
+
+# Pre-compute display values to avoid heredoc parsing issues
+DISPLAY_DEVICE_ID="${DEVICE_ID:-(none)}"
+DISPLAY_DEVICE_KEY="${DEVICE_KEY:-(none)}"
+DISPLAY_PB_SUPERUSER_EMAIL="${PB_SUPERUSER_EMAIL:-(not created)}"
+DISPLAY_PB_SUPERUSER_PASSWORD="${PB_SUPERUSER_PASSWORD:-(not created)}"
+DISPLAY_FRAME_ADMIN_EMAIL="${FRAME_ADMIN_EMAIL:-(not created)}"
+DISPLAY_FRAME_ADMIN_PASSWORD="${FRAME_ADMIN_PASSWORD:-(not created)}"
+DISPLAY_PB_LOCATION=$( [ "$PB_ON_PI" = true ] && echo "local on this Pi" || echo "remote" )
+DISPLAY_PB_SERVICE=$( [ "$PB_ON_PI" = true ] && echo "ENABLED" || echo "not installed" )
+DISPLAY_ADMIN_MODE=$( [ "$ADMIN_LOCAL" = true ] && echo "local on this Pi" || echo "not installed (deploy elsewhere)" )
+DISPLAY_ADMIN_URL=$( [ "$ADMIN_LOCAL" = true ] && echo "http://$(hostname -I | awk '{print $1}'):${ADMIN_PORT_SELECTED}" || echo "N/A" )
+DISPLAY_ADMIN_STATUS=$( [ "$ADMIN_CREATED" = true ] && echo "CREATED - save these credentials!" || echo "existing or not created" )
+
 cat > "$SUMMARY_FILE" <<EOF
 === Spomienka Install Summary ===
 Status: completed (script uses 'set -e' so earlier errors would have aborted)
@@ -423,14 +439,14 @@ Status: completed (script uses 'set -e' so earlier errors would have aborted)
 Installation Directory: ${INSTALL_DIR}
 
 PocketBase:
-  Location: $([ "$PB_ON_PI" = true ] && echo "local on this Pi" || echo "remote")
+  Location: ${DISPLAY_PB_LOCATION}
   URL: ${PB_HOST}
   Data dir: $PB_DATA_DIR
-  Service: pocketbase (systemd) $([ "$PB_ON_PI" = true ] && echo "ENABLED" || echo "not installed")
+  Service: pocketbase (systemd) ${DISPLAY_PB_SERVICE}
 
 Admin UI:
-  Mode: $([ "$ADMIN_LOCAL" = true ] && echo "local on this Pi" || echo "not installed (deploy elsewhere)")
-  URL: $([ "$ADMIN_LOCAL" = true ] && echo "http://$(hostname -I | awk '{print $1}'):${ADMIN_PORT_SELECTED}" || echo "N/A")
+  Mode: ${DISPLAY_ADMIN_MODE}
+  URL: ${DISPLAY_ADMIN_URL}
   Build target PocketBase: ${PB_HOST}
   Source: ${INSTALL_DIR}/admin
 
@@ -442,17 +458,17 @@ Viewer:
   Source: ${INSTALL_DIR}/viewer
 
 Device credentials (as provided):
-  Device ID: ${DEVICE_ID:-"(none)"}
-  Device API key: ${DEVICE_KEY:-"(none)"}
+  Device ID: ${DISPLAY_DEVICE_ID}
+  Device API key: ${DISPLAY_DEVICE_KEY}
 
 PocketBase Superuser (for PocketBase admin panel at /_/):
-  Email: ${PB_SUPERUSER_EMAIL:-"(not created)"}
-  Password: ${PB_SUPERUSER_PASSWORD:-"(not created)"}
+  Email: ${DISPLAY_PB_SUPERUSER_EMAIL}
+  Password: ${DISPLAY_PB_SUPERUSER_PASSWORD}
 
 Admin User (for Admin UI login):
-  Email: ${FRAME_ADMIN_EMAIL:-"(not created)"}
-  Password: ${FRAME_ADMIN_PASSWORD:-"(not created)"}
-  Status: $([ "$ADMIN_CREATED" = true ] && echo "CREATED - save these credentials!" || echo "existing or not created")
+  Email: ${DISPLAY_FRAME_ADMIN_EMAIL}
+  Password: ${DISPLAY_FRAME_ADMIN_PASSWORD}
+  Status: ${DISPLAY_ADMIN_STATUS}
 
 Notes:
 - IMPORTANT: Save the credentials above! Admin user creds are also stored in $VIEWER_CONFIG
