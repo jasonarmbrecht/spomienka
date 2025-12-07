@@ -65,13 +65,6 @@ impl<'a> MediaTextures<'a> {
     }
 }
 
-/// Result of processing events.
-pub enum EventResult {
-    /// Continue running.
-    Continue,
-    /// User requested quit.
-    Quit,
-}
 
 /// Specific user actions from keyboard/remote input.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -445,15 +438,6 @@ impl Renderer {
         Ok(())
     }
 
-    /// Process SDL events. Returns Quit if user wants to exit.
-    pub fn process_events(&mut self) -> EventResult {
-        let action = self.process_events_extended();
-        match action {
-            UserAction::Quit => EventResult::Quit,
-            _ => EventResult::Continue,
-        }
-    }
-
     /// Process SDL events with extended action support.
     pub fn process_events_extended(&mut self) -> UserAction {
         for event in self.event_pump.poll_iter() {
@@ -487,11 +471,6 @@ impl Renderer {
             }
         }
         UserAction::None
-    }
-
-    /// Get screen dimensions.
-    pub fn screen_size(&self) -> (u32, u32) {
-        (self.screen_width, self.screen_height)
     }
 
     /// Sleep for a short duration to limit frame rate.
@@ -622,10 +601,10 @@ impl Renderer {
     }
 
     /// Render text at the specified position.
-    fn render_text<'a>(
+    fn render_text(
         &mut self,
         font: &sdl2::ttf::Font,
-        texture_creator: &'a TextureCreator<WindowContext>,
+        texture_creator: &TextureCreator<WindowContext>,
         text: &str,
         x: i32,
         y: i32,

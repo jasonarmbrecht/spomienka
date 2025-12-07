@@ -5,7 +5,7 @@
 use crate::assets::Media;
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{sleep, Duration};
@@ -36,19 +36,9 @@ pub enum RealtimeEvent {
 #[derive(Debug, Deserialize)]
 struct RealtimeMessage {
     #[serde(default)]
-    event: Option<String>,
-    #[serde(default)]
     action: Option<String>,
     #[serde(default)]
     record: Option<serde_json::Value>,
-}
-
-/// Subscribe request for PocketBase.
-#[derive(Debug, Serialize)]
-struct SubscribeRequest {
-    #[serde(rename = "clientId")]
-    client_id: String,
-    subscriptions: Vec<String>,
 }
 
 /// Realtime connection manager.
@@ -267,15 +257,12 @@ impl RealtimeManager {
                 }
             }
             "delete" => {
-                if let Some(record) = msg.record {
-                    if let Some(id) = record.get("id").and_then(|v| v.as_str()) {
-                        Some(RealtimeEvent::MediaDeleted(id.to_string()))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+                msg.record.and_then(|record| {
+                    record
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(|id| RealtimeEvent::MediaDeleted(id.to_string()))
+                })
             }
             _ => None,
         };
@@ -308,10 +295,6 @@ impl RealtimeManager {
         true
     }
 
-    /// Check if currently connected.
-    pub async fn is_connected(&self) -> bool {
-        *self.is_connected.read().await
-    }
 }
 
 /// Spawn the realtime manager as a background task.

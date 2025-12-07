@@ -25,7 +25,6 @@ pub enum PlayerState {
     Stopped,
     Playing,
     Paused,
-    EndOfStream,
 }
 
 /// Video player using GStreamer.
@@ -271,11 +270,6 @@ impl VideoPlayer {
         self.eos_reached.load(Ordering::SeqCst)
     }
 
-    /// Get the player state.
-    pub fn state(&self) -> PlayerState {
-        self.state.lock().ok().map(|s| *s).unwrap_or(PlayerState::Stopped)
-    }
-
     /// Check if this video is set to loop.
     pub fn is_looping(&self) -> bool {
         self.should_loop
@@ -360,14 +354,6 @@ impl VideoManager {
             .as_ref()
             .map(|p| p.is_eos())
             .unwrap_or(true)
-    }
-
-    /// Check if a video is currently playing.
-    pub fn is_playing(&self) -> bool {
-        self.current_player
-            .as_ref()
-            .map(|p| p.state() == PlayerState::Playing)
-            .unwrap_or(false)
     }
 
     /// Check if current video is looping.

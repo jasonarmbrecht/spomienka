@@ -192,11 +192,6 @@ impl AuthCreds {
     fn can_login(&self) -> bool {
         self.email.is_some() && self.password.is_some()
     }
-
-    /// Check if device API key is available for authentication.
-    fn has_device_key(&self) -> bool {
-        self.device_api_key.is_some()
-    }
 }
 
 #[derive(Debug, Deserialize)]

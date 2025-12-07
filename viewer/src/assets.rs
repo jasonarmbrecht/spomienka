@@ -32,15 +32,6 @@ impl Media {
     pub fn is_video(&self) -> bool {
         self.media_type == "video"
     }
-
-    /// Get the primary display URL (display for images, video for videos).
-    pub fn primary_url(&self) -> Option<&str> {
-        if self.is_video() {
-            self.video_url.as_deref()
-        } else {
-            self.display_url.as_deref()
-        }
-    }
 }
 
 /// Asset types that can be cached.
@@ -221,10 +212,6 @@ impl AssetManager {
         Ok(textures)
     }
 
-    /// Get the cache reference.
-    pub fn cache(&self) -> &Arc<RwLock<Cache>> {
-        &self.cache
-    }
 }
 
 /// Background preloader that downloads assets ahead of time.

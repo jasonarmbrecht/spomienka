@@ -290,13 +290,4 @@ pub struct CacheStats {
     pub item_count: usize,
 }
 
-impl CacheStats {
-    pub fn usage_percent(&self) -> f64 {
-        if self.max_size == 0 {
-            0.0
-        } else {
-            (self.current_size as f64 / self.max_size as f64) * 100.0
-        }
-    }
-}
 
