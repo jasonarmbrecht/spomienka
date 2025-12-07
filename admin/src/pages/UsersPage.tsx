@@ -10,6 +10,34 @@ type UserRecord = {
   created: string;
 };
 
+// Email validation regex
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PASSWORD_LENGTH = 8;
+
+/**
+ * Validate email format
+ */
+function isValidEmail(email: string): boolean {
+  return EMAIL_REGEX.test(email.trim());
+}
+
+/**
+ * Validate password strength
+ */
+function validatePassword(password: string): string | null {
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return `Password must be at least ${MIN_PASSWORD_LENGTH} characters`;
+  }
+  // Check for at least one letter and one number
+  if (!/[a-zA-Z]/.test(password)) {
+    return "Password must contain at least one letter";
+  }
+  if (!/[0-9]/.test(password)) {
+    return "Password must contain at least one number";
+  }
+  return null;
+}
+
 export function UsersPage() {
   const { user } = useAuth();
   const [users, setUsers] = useState<UserRecord[]>([]);
@@ -54,8 +82,23 @@ export function UsersPage() {
 
   const createUser = async (e: FormEvent) => {
     e.preventDefault();
+    
+    // Validate required fields
     if (!email.trim() || !password.trim()) {
       setError("Email and password are required");
+      return;
+    }
+    
+    // Validate email format
+    if (!isValidEmail(email)) {
+      setError("Please enter a valid email address");
+      return;
+    }
+    
+    // Validate password strength
+    const passwordError = validatePassword(password);
+    if (passwordError) {
+      setError(passwordError);
       return;
     }
 

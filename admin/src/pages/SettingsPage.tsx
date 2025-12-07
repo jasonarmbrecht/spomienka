@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { pb } from "../pb/client";
 import { useAuth } from "../pb/auth";
 import { SecureApiKeyDisplay } from "../components/SecureApiKeyDisplay";
+import { PAGINATION } from "../constants";
 
 type Device = {
   id: string;
@@ -13,6 +14,8 @@ type Device = {
     transition?: string;
   };
 };
+
+const DEVICES_PER_PAGE = PAGINATION.DEVICES_PAGE_SIZE;
 
 function generateApiKey(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16)); // 128 bits
@@ -31,35 +34,42 @@ export function SettingsPage() {
   const [editDeviceName, setEditDeviceName] = useState("");
   const [deviceToDelete, setDeviceToDelete] = useState<string | null>(null);
 
+  // Pagination state
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalItems, setTotalItems] = useState(0);
+
   // Form state
   const [newDeviceName, setNewDeviceName] = useState("");
-  const [interval, setInterval] = useState(8000);
+  const [slideInterval, setSlideInterval] = useState(8000);
   const [transition, setTransition] = useState("fade");
 
-  // Load devices on mount
+  // Load devices on mount and when page changes
   useEffect(() => {
-    loadDevices();
-  }, []);
+    loadDevices(page);
+  }, [page]);
 
   // Load config when device is selected
   useEffect(() => {
     if (selectedDeviceId) {
       const device = devices.find((d) => d.id === selectedDeviceId);
       if (device?.config) {
-        setInterval(device.config.interval ?? 8000);
+        setSlideInterval(device.config.interval ?? 8000);
         setTransition(device.config.transition ?? "fade");
       }
     }
   }, [selectedDeviceId, devices]);
 
-  const loadDevices = async () => {
+  const loadDevices = async (pageNum: number = 1) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await pb.collection("devices").getList<Device>(1, 100, {
+      const res = await pb.collection("devices").getList<Device>(pageNum, DEVICES_PER_PAGE, {
         sort: "name",
       });
       setDevices(res.items);
+      setTotalPages(res.totalPages);
+      setTotalItems(res.totalItems);
       // Auto-select first device if available
       if (res.items.length > 0 && !selectedDeviceId) {
         setSelectedDeviceId(res.items[0].id);
@@ -83,7 +93,7 @@ export function SettingsPage() {
       const device = await pb.collection("devices").create<Device>({
         name: newDeviceName.trim(),
         apiKey,
-        config: { interval, transition },
+        config: { interval: slideInterval, transition },
       });
       setDevices([...devices, device]);
       setSelectedDeviceId(device.id);
@@ -104,12 +114,12 @@ export function SettingsPage() {
     setMessage(null);
     try {
       await pb.collection("devices").update(selectedDeviceId, {
-        config: { interval, transition },
+        config: { interval: slideInterval, transition },
       });
       // Update local state
       setDevices(
         devices.map((d) =>
-          d.id === selectedDeviceId ? { ...d, config: { interval, transition } } : d
+          d.id === selectedDeviceId ? { ...d, config: { interval: slideInterval, transition } } : d
         )
       );
       setMessage("Settings saved successfully");
@@ -138,7 +148,7 @@ export function SettingsPage() {
       await pb.collection("devices").update(deviceId, {
         name: editDeviceName.trim(),
       });
-      await loadDevices();
+      await loadDevices(page);
       setEditingDeviceId(null);
       setEditDeviceName("");
       setMessage("Device name updated successfully");
@@ -157,7 +167,7 @@ export function SettingsPage() {
       await pb.collection("devices").update(deviceId, {
         apiKey: newKey,
       });
-      await loadDevices();
+      await loadDevices(page);
       // Find the device and show the new key
       const device = devices.find((d) => d.id === deviceId);
       if (device) {
@@ -176,7 +186,7 @@ export function SettingsPage() {
     setError(null);
     try {
       await pb.collection("devices").delete(deviceId);
-      await loadDevices();
+      await loadDevices(page);
       if (selectedDeviceId === deviceId) {
         setSelectedDeviceId(null);
       }
@@ -299,6 +309,29 @@ export function SettingsPage() {
                 </li>
               ))}
             </ul>
+            
+            {/* Pagination controls */}
+            {totalPages > 1 && (
+              <div className="pagination">
+                <button
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page === 1 || loading}
+                  style={{ padding: "0.375rem 0.75rem", fontSize: "0.8125rem" }}
+                >
+                  Previous
+                </button>
+                <span className="pagination-info">
+                  Page {page} of {totalPages} ({totalItems} devices)
+                </span>
+                <button
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages || loading}
+                  style={{ padding: "0.375rem 0.75rem", fontSize: "0.8125rem" }}
+                >
+                  Next
+                </button>
+              </div>
+            )}
           </div>
 
           {deviceToDelete && (
@@ -344,8 +377,8 @@ export function SettingsPage() {
               Interval (ms)
               <input
                 type="number"
-                value={interval}
-                onChange={(e) => setInterval(Number(e.target.value))}
+                value={slideInterval}
+                onChange={(e) => setSlideInterval(Number(e.target.value))}
                 min={1000}
                 step={1000}
               />

@@ -31,13 +31,19 @@ pub enum PlayerState {
 /// Video player using GStreamer.
 pub struct VideoPlayer {
     pipeline: gst::Pipeline,
+    #[allow(dead_code)]
     appsink: gst_app::AppSink,
     current_frame: Arc<Mutex<Option<VideoFrame>>>,
     state: Arc<Mutex<PlayerState>>,
     should_loop: bool,
+    #[allow(dead_code)]
     loop_threshold_sec: f32,
     duration: Option<f32>,
     eos_reached: Arc<AtomicBool>,
+    /// Bus watch guard - must be kept alive for the watch to remain active.
+    /// Dropping this will remove the watch.
+    #[allow(dead_code)]
+    bus_watch_guard: Option<gst::bus::BusWatchGuard>,
 }
 
 impl VideoPlayer {
@@ -174,7 +180,7 @@ impl VideoPlayer {
         let should_loop_copy = should_loop;
 
         let bus = pipeline.bus().expect("Pipeline has no bus");
-        bus.add_watch(move |_bus, msg| {
+        let bus_watch_guard = bus.add_watch(move |_bus, msg| {
             match msg.view() {
                 gst::MessageView::Eos(_) => {
                     if should_loop_copy {
@@ -212,6 +218,7 @@ impl VideoPlayer {
             loop_threshold_sec,
             duration: media_duration,
             eos_reached,
+            bus_watch_guard: Some(bus_watch_guard),
         })
     }
 

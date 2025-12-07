@@ -1,12 +1,14 @@
-import { createContext, ReactNode, useContext, useEffect, useState } from "react";
+import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { pb } from "./client";
 
 type User = { id: string; email: string; name?: string; role?: string };
 type AuthContextType = {
   user: User | null;
+  authError: string | null;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
+  clearAuthError: () => void;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -51,8 +53,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   };
 
+  const clearAuthError = useCallback(() => {
+    setAuthError(null);
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, login, logout }}>
+    <AuthContext.Provider value={{ user, authError, login, logout, clearAuthError }}>
       {children}
     </AuthContext.Provider>
   );

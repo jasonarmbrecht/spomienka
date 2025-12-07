@@ -24,6 +24,9 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use video::VideoManager;
 
 /// Application configuration loaded from TOML file with environment variable overrides.
+/// 
+/// SECURITY: Auth credentials (auth_email, auth_password) are ONLY loaded from
+/// environment variables, never from config files, to prevent credential leakage.
 #[derive(Debug, Deserialize)]
 struct AppConfig {
     /// PocketBase API URL (env: POCKETBASE_URL or config: pb_url)
@@ -58,17 +61,20 @@ struct AppConfig {
     #[serde(default)]
     device_api_key: Option<String>,
 
-    /// Auth email for PocketBase (alternative to token)
-    #[serde(default)]
+    /// Direct auth token for PocketBase (env: AUTH_TOKEN)
+    /// Loaded from environment variable only for security
+    #[serde(skip)]
+    auth_token: Option<String>,
+
+    /// Auth email for PocketBase (env: AUTH_EMAIL)
+    /// Loaded from environment variable only for security
+    #[serde(skip)]
     auth_email: Option<String>,
 
-    /// Auth password for PocketBase (alternative to token)
-    #[serde(default)]
+    /// Auth password for PocketBase (env: AUTH_PASSWORD)
+    /// Loaded from environment variable only for security
+    #[serde(skip)]
     auth_password: Option<String>,
-
-    /// Direct auth token for PocketBase
-    #[serde(default)]
-    auth_token: Option<String>,
 
     /// Enable realtime subscription (default: true)
     #[serde(default = "default_enable_realtime")]
@@ -117,6 +123,10 @@ fn default_video_loop_threshold_sec() -> f32 {
 
 impl AppConfig {
     /// Load configuration from file and environment variables.
+    /// 
+    /// SECURITY: Auth credentials are loaded from environment variables only,
+    /// never from config files, to prevent credential leakage through backups
+    /// or version control.
     fn load() -> Result<Self> {
         let mut builder = Config::builder()
             .set_default("pb_url", default_pb_url())?
@@ -146,7 +156,14 @@ impl AppConfig {
             .add_source(Environment::default().try_parsing(true))
             .build()?;
 
-        Ok(config.try_deserialize()?)
+        let mut app_config: AppConfig = config.try_deserialize()?;
+        
+        // Load auth credentials from environment variables ONLY (security)
+        app_config.auth_token = env::var("AUTH_TOKEN").ok().filter(|s| !s.is_empty());
+        app_config.auth_email = env::var("AUTH_EMAIL").ok().filter(|s| !s.is_empty());
+        app_config.auth_password = env::var("AUTH_PASSWORD").ok().filter(|s| !s.is_empty());
+        
+        Ok(app_config)
     }
 
     fn to_auth_creds(&self) -> AuthCreds {
@@ -369,6 +386,35 @@ impl AppState {
         *self.auth_token.write().await = token;
         Ok(())
     }
+
+    /// Fetch playlist with exponential backoff retry.
+    async fn fetch_playlist_with_retry(&self, max_retries: u32) -> Result<Vec<Media>> {
+        let mut last_error = None;
+        let mut delay = Duration::from_secs(1);
+        
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                tracing::info!(
+                    "Retrying playlist fetch (attempt {}/{}) after {:?}...",
+                    attempt + 1,
+                    max_retries + 1,
+                    delay
+                );
+                tokio::time::sleep(delay).await;
+                delay = std::cmp::min(delay * 2, Duration::from_secs(60)); // Cap at 60s
+            }
+            
+            match self.fetch_playlist().await {
+                Ok(playlist) => return Ok(playlist),
+                Err(e) => {
+                    tracing::warn!("Playlist fetch attempt {} failed: {}", attempt + 1, e);
+                    last_error = Some(e);
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Failed to fetch playlist after {} retries", max_retries)))
+    }
 }
 
 #[tokio::main]
@@ -400,11 +446,11 @@ async fn main() -> Result<()> {
     // Initialize auth
     state.init_auth().await?;
 
-    // Fetch initial playlist
-    let playlist = match state.fetch_playlist().await {
+    // Fetch initial playlist with retry logic
+    let playlist = match state.fetch_playlist_with_retry(5).await {
         Ok(p) => p,
         Err(e) => {
-            tracing::error!("Failed to fetch initial playlist: {}", e);
+            tracing::error!("Failed to fetch initial playlist after retries: {}", e);
             Vec::new()
         }
     };
@@ -487,7 +533,7 @@ async fn run_render_loop(
     // Load first item
     load_current_item(
         &state,
-        &renderer,
+        &mut renderer,
         &texture_creator,
         &mut current_textures,
         &mut video_manager,
@@ -533,7 +579,7 @@ async fn run_render_loop(
                 is_video_playing = false;
                 advance_to_next(
                     &state,
-                    &renderer,
+                    &mut renderer,
                     &texture_creator,
                     &mut current_textures,
                     &mut next_textures,
@@ -562,7 +608,7 @@ async fn run_render_loop(
         if should_advance {
             advance_to_next(
                 &state,
-                &renderer,
+                &mut renderer,
                 &texture_creator,
                 &mut current_textures,
                 &mut next_textures,
@@ -574,7 +620,7 @@ async fn run_render_loop(
         }
 
         // Render
-        renderer.render(&current_textures, next_textures.as_ref())?;
+        renderer.render(&mut current_textures, next_textures.as_mut())?;
 
         // Frame delay
         renderer.frame_delay();
@@ -589,7 +635,7 @@ async fn run_render_loop(
 /// Load the current item into textures.
 async fn load_current_item<'a>(
     state: &AppState,
-    renderer: &Renderer,
+    renderer: &mut Renderer,
     texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
     textures: &mut MediaTextures<'a>,
     video_manager: &mut VideoManager,
@@ -648,7 +694,7 @@ async fn load_current_item<'a>(
 /// Advance to the next item in the playlist.
 async fn advance_to_next<'a>(
     state: &AppState,
-    renderer: &Renderer,
+    renderer: &mut Renderer,
     texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
     current_textures: &mut MediaTextures<'a>,
     next_textures: &mut Option<MediaTextures<'a>>,

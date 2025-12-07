@@ -283,10 +283,13 @@ impl Renderer {
     }
 
     /// Render the current frame with optional transition effects.
+    /// 
+    /// Takes mutable references to properly set alpha modulation on textures
+    /// without using unsafe code.
     pub fn render(
         &mut self,
-        current: &MediaTextures,
-        next: Option<&MediaTextures>,
+        current: &mut MediaTextures,
+        next: Option<&mut MediaTextures>,
     ) -> Result<()> {
         // Clear to black
         self.canvas.set_draw_color(sdl2::pixels::Color::RGB(0, 0, 0));
@@ -310,17 +313,7 @@ impl Renderer {
             }
         };
 
-        // Determine which textures to render based on transition state
-        let (textures_to_render, render_alpha) = match self.transition_state {
-            TransitionState::Idle | TransitionState::TransitioningOut { .. } => (current, alpha),
-            TransitionState::TransitioningIn { .. } => {
-                // During transition in, we want to show the next image
-                // But if we're here, we should have already swapped
-                (current, alpha)
-            }
-        };
-
-        // For crossfade, we need to render both images
+        // For crossfade, we need to render next image underneath first
         if self.transition_type == Transition::Crossfade {
             if let TransitionState::TransitioningOut { progress } = self.transition_state {
                 // Render next image underneath with increasing alpha
@@ -331,37 +324,30 @@ impl Renderer {
         }
 
         // Render current/main textures
-        self.render_media_textures(textures_to_render, render_alpha)?;
+        self.render_media_textures(current, alpha)?;
 
         self.canvas.present();
         Ok(())
     }
 
     /// Render media textures (blur background + aspect-fit display).
-    fn render_media_textures(&mut self, textures: &MediaTextures, alpha: u8) -> Result<()> {
+    /// Takes mutable reference to allow setting alpha modulation.
+    fn render_media_textures(&mut self, textures: &mut MediaTextures, alpha: u8) -> Result<()> {
         // Render blurred background (stretched to fill)
-        if let Some(ref blur) = textures.blur {
-            let mut blur_tex = unsafe {
-                // SAFETY: We need mutable access to set alpha, but we're borrowing immutably
-                // This is a workaround for SDL2-rs API limitations
-                std::mem::transmute::<&Texture, &mut Texture>(blur)
-            };
-            blur_tex.set_alpha_mod(alpha);
+        if let Some(ref mut blur) = textures.blur {
+            blur.set_alpha_mod(alpha);
             self.canvas
-                .copy(&blur_tex, None, None)
+                .copy(blur, None, None)
                 .map_err(|e| anyhow::anyhow!("Failed to render blur: {}", e))?;
         }
 
         // Render main display image with aspect-fit
-        if let Some(ref display) = textures.display {
+        if let Some(ref mut display) = textures.display {
             if let Some((width, height)) = textures.display_size {
                 let dest_rect = self.calculate_aspect_fit(width, height);
-                let mut display_tex = unsafe {
-                    std::mem::transmute::<&Texture, &mut Texture>(display)
-                };
-                display_tex.set_alpha_mod(alpha);
+                display.set_alpha_mod(alpha);
                 self.canvas
-                    .copy(&display_tex, None, dest_rect)
+                    .copy(display, None, dest_rect)
                     .map_err(|e| anyhow::anyhow!("Failed to render display: {}", e))?;
             }
         }

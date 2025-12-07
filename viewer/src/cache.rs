@@ -5,11 +5,10 @@
 use crate::assets::{AssetType, Media};
 use anyhow::{Context, Result};
 use lru::LruCache;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 use walkdir::WalkDir;
 

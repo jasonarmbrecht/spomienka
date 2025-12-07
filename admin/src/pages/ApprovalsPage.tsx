@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { pb } from "../pb/client";
 import { useAuth } from "../pb/auth";
 
@@ -25,7 +25,7 @@ export function ApprovalsPage() {
   const [selectedMedia, setSelectedMedia] = useState<Media | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -39,7 +39,7 @@ export function ApprovalsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   const act = async (mediaId: string, newStatus: "published" | "rejected") => {
     if (!user) return;
@@ -127,7 +127,7 @@ export function ApprovalsPage() {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   return (
     <section>

@@ -10,6 +10,7 @@ import { LibraryPage } from "./pages/LibraryPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsersPage } from "./pages/UsersPage";
 import { AuthProvider, RequireAuth, RequireAdmin } from "./pb/auth";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const router = createBrowserRouter([
   {
@@ -29,9 +30,11 @@ const router = createBrowserRouter([
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <AuthProvider>
-      <RouterProvider router={router} />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <RouterProvider router={router} />
+      </AuthProvider>
+    </ErrorBoundary>
   </React.StrictMode>
 );
 

@@ -1,9 +1,117 @@
-/// <reference path="../pb_data/types.d.ts" />
-
 // Media processing hooks for PocketBase
 // Handles: status management, EXIF extraction, image/video processing
 
 const PROCESS_DIR = $os.getenv("PB_PROCESS_DIR") || "/tmp/pb_processing";
+
+// ============================================================================
+// Security: Rate Limiting
+// ============================================================================
+
+const rateLimitStore = {
+    login: {},      // IP -> { count, resetAt }
+    upload: {},     // userId -> { count, resetAt }
+    api: {}         // userId -> { count, resetAt }
+};
+
+const RATE_LIMITS = {
+    login: { max: 5, windowMs: 60000 },      // 5 per minute per IP
+    upload: { max: 10, windowMs: 60000 },    // 10 per minute per user
+    api: { max: 100, windowMs: 60000 }       // 100 per minute per user
+};
+
+/**
+ * Check rate limit for a given key and type
+ * @returns {boolean} true if within limit, false if exceeded
+ */
+function checkRateLimit(type, key) {
+    const now = Date.now();
+    const limit = RATE_LIMITS[type];
+    const store = rateLimitStore[type];
+    
+    // Clean up expired entries periodically
+    if (Math.random() < 0.1) {
+        for (const k in store) {
+            if (store[k].resetAt < now) {
+                delete store[k];
+            }
+        }
+    }
+    
+    if (!store[key] || store[key].resetAt < now) {
+        store[key] = { count: 1, resetAt: now + limit.windowMs };
+        return true;
+    }
+    
+    store[key].count++;
+    return store[key].count <= limit.max;
+}
+
+/**
+ * Escape a value for safe use in PocketBase filter queries
+ */
+function escapeFilterValue(value) {
+    if (typeof value !== 'string') {
+        return String(value);
+    }
+    return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+// ============================================================================
+// Security: MIME Type Validation
+// ============================================================================
+
+const ALLOWED_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".webp"];
+const ALLOWED_VIDEO_EXTENSIONS = [".mp4", ".mov", ".avi", ".mpeg", ".m4v", ".mkv"];
+const ALLOWED_EXTENSIONS = [...ALLOWED_IMAGE_EXTENSIONS, ...ALLOWED_VIDEO_EXTENSIONS];
+
+/**
+ * Validate file extension matches declared type
+ */
+function validateFileType(fileName, declaredType) {
+    if (!fileName || typeof fileName !== 'string') {
+        return { valid: false, error: "Invalid filename" };
+    }
+    
+    const ext = fileName.toLowerCase().substring(fileName.lastIndexOf('.')).toLowerCase();
+    
+    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+        return { valid: false, error: `File extension ${ext} is not allowed` };
+    }
+    
+    const isImageExt = ALLOWED_IMAGE_EXTENSIONS.includes(ext);
+    const isVideoExt = ALLOWED_VIDEO_EXTENSIONS.includes(ext);
+    
+    if (declaredType === "image" && !isImageExt) {
+        return { valid: false, error: `File extension ${ext} does not match declared type 'image'` };
+    }
+    
+    if (declaredType === "video" && !isVideoExt) {
+        return { valid: false, error: `File extension ${ext} does not match declared type 'video'` };
+    }
+    
+    return { valid: true };
+}
+
+/**
+ * Validate JSON field is an array of strings (for tags, deviceScopes)
+ */
+function validateStringArray(value, fieldName) {
+    if (value === null || value === undefined || value === "") {
+        return { valid: true }; // Optional field
+    }
+    
+    if (!Array.isArray(value)) {
+        return { valid: false, error: `${fieldName} must be an array` };
+    }
+    
+    for (let i = 0; i < value.length; i++) {
+        if (typeof value[i] !== 'string') {
+            return { valid: false, error: `${fieldName}[${i}] must be a string` };
+        }
+    }
+    
+    return { valid: true };
+}
 
 // Ensure processing directory exists
 try {
@@ -54,6 +162,37 @@ onRecordBeforeCreateRequest((e) => {
     
     if (!user) {
         throw new BadRequestError("Authentication required");
+    }
+    
+    // Rate limiting for uploads
+    if (!checkRateLimit("upload", user.id)) {
+        throw new BadRequestError("Upload rate limit exceeded. Please try again later.");
+    }
+    
+    // Validate file type matches extension
+    const fileName = record.get("file");
+    const declaredType = record.get("type");
+    const fileValidation = validateFileType(fileName, declaredType);
+    if (!fileValidation.valid) {
+        throw new BadRequestError(fileValidation.error);
+    }
+    
+    // Validate tags field (if provided)
+    const tags = record.get("tags");
+    if (tags) {
+        const tagsValidation = validateStringArray(tags, "tags");
+        if (!tagsValidation.valid) {
+            throw new BadRequestError(tagsValidation.error);
+        }
+    }
+    
+    // Validate deviceScopes field (if provided)
+    const deviceScopes = record.get("deviceScopes");
+    if (deviceScopes) {
+        const scopesValidation = validateStringArray(deviceScopes, "deviceScopes");
+        if (!scopesValidation.valid) {
+            throw new BadRequestError(scopesValidation.error);
+        }
     }
     
     // Set owner to current user
@@ -176,11 +315,13 @@ function processMediaRecord(record) {
         if (checksum) {
             record.set("checksum", checksum);
             
-            // Check for existing media with same checksum
+            // Check for existing media with same checksum (using escaped values to prevent injection)
             try {
+                const safeChecksum = escapeFilterValue(checksum);
+                const safeRecordId = escapeFilterValue(recordId);
                 const existingMedia = $app.dao().findFirstRecordByFilter(
                     "media",
-                    "checksum='" + checksum + "' && id!='" + recordId + "'"
+                    "checksum='" + safeChecksum + "' && id!='" + safeRecordId + "'"
                 );
                 
                 if (existingMedia) {
@@ -483,13 +624,14 @@ function processVideo(record, originalPath, procDir, storagePath) {
                 "-q:v", "5",
                 blurPath
             ]);
-        
-        const blurFileName = "blur_" + recordId + ".jpg";
-        const blurStoragePath = storagePath + "/" + blurFileName;
-        $os.rename(blurPath, blurStoragePath);
-        record.set("blurUrl", buildFileUrl(collectionId, recordId, blurFileName));
-    } catch (err) {
-        console.error("Video blur generation failed:", err);
+            
+            const blurFileName = "blur_" + recordId + ".jpg";
+            const blurStoragePath = storagePath + "/" + blurFileName;
+            $os.rename(blurPath, blurStoragePath);
+            record.set("blurUrl", buildFileUrl(collectionId, recordId, blurFileName));
+        } catch (err) {
+            console.error("Video blur generation failed:", err);
+        }
     }
     
     // Generate thumbnail from poster
@@ -537,4 +679,78 @@ function execCommand(cmd, args) {
         throw new Error(errorMsg);
     }
 }
+
+// ============================================================================
+// Device API Key Hashing
+// ============================================================================
+
+/**
+ * Simple hash function for API keys using SHA-256 via command line
+ * In production, consider using a proper crypto library if available
+ */
+function hashApiKey(apiKey) {
+    try {
+        // Use echo and sha256sum to hash the API key
+        // Note: This is a simplified approach for PocketBase JSVM
+        const result = $os.exec("sh", "-c", `echo -n "${apiKey}" | sha256sum | cut -d' ' -f1`);
+        if (result) {
+            return result.trim();
+        }
+    } catch (err) {
+        console.error("Failed to hash API key:", err);
+    }
+    // Fallback: simple hash (not cryptographically secure, but better than plain text)
+    let hash = 0;
+    for (let i = 0; i < apiKey.length; i++) {
+        const char = apiKey.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+    }
+    return "fallback_" + Math.abs(hash).toString(16);
+}
+
+/**
+ * Before creating device: hash the API key
+ */
+onRecordBeforeCreateRequest((e) => {
+    const record = e.record;
+    const apiKey = record.get("apiKey");
+    
+    if (apiKey) {
+        // Store the hashed version
+        const hashedKey = hashApiKey(apiKey);
+        record.set("apiKey", hashedKey);
+    }
+}, "devices");
+
+/**
+ * Before updating device: hash the API key if it changed
+ */
+onRecordBeforeUpdateRequest((e) => {
+    const record = e.record;
+    const apiKey = record.get("apiKey");
+    
+    // Only hash if it looks like a new key (not already hashed)
+    // Hashed keys are 64 chars (SHA-256 hex) or start with "fallback_"
+    if (apiKey && apiKey.length !== 64 && !apiKey.startsWith("fallback_")) {
+        const hashedKey = hashApiKey(apiKey);
+        record.set("apiKey", hashedKey);
+    }
+}, "devices");
+
+// ============================================================================
+// Login Rate Limiting
+// ============================================================================
+
+/**
+ * Rate limit login attempts by IP address
+ */
+onRecordBeforeAuthWithPasswordRequest((e) => {
+    // Get client IP from request context
+    const ip = e.httpContext.realIp() || e.httpContext.remoteIp() || "unknown";
+    
+    if (!checkRateLimit("login", ip)) {
+        throw new BadRequestError("Too many login attempts. Please try again later.");
+    }
+}, "users");
 
