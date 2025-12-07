@@ -13,7 +13,7 @@ use assets::{AssetManager, AssetType, Media, Preloader};
 use cache::Cache;
 use config::{Config, Environment, File};
 use realtime::{spawn_realtime, RealtimeEvent};
-use renderer::{EventResult, MediaTextures, OverlayInfo, Renderer, Transition, UserAction};
+use renderer::{MediaTextures, OverlayInfo, Renderer, Transition, UserAction};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use std::env;

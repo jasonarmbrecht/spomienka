@@ -528,7 +528,8 @@ impl Renderer {
             // Load font from memory
             let font = ttf_context
                 .load_font_from_rwops(
-                    sdl2::rwops::RWops::from_bytes(&self.font_data)?,
+                    sdl2::rwops::RWops::from_bytes(&self.font_data)
+                        .map_err(|e| anyhow::anyhow!("Failed to create RWops: {}", e))?,
                     24,
                 )
                 .map_err(|e| anyhow::anyhow!("Failed to load font: {}", e))?;
