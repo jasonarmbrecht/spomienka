@@ -317,8 +317,8 @@
       "CREATE INDEX idx_media_owner ON media (owner)",
       "CREATE INDEX idx_media_tags ON media (tags)"
     ],
-    "listRule": "@request.auth.id != '' && (status = 'published' || owner = @request.auth.id)",
-    "viewRule": "@request.auth.id != '' && (status = 'published' || owner = @request.auth.id)",
+    "listRule": "@request.auth.id != '' && (@request.auth.role = 'admin' || status = 'published' || owner = @request.auth.id)",
+    "viewRule": "@request.auth.id != '' && (@request.auth.role = 'admin' || status = 'published' || owner = @request.auth.id)",
     "createRule": "@request.auth.id != ''",
     "updateRule": "@request.auth.role = 'admin' || owner = @request.auth.id && status = 'pending'",
     "deleteRule": "@request.auth.role = 'admin'"
