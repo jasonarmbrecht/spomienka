@@ -246,18 +246,7 @@ create_admin_user() {
   local superuser_email="$4"
   local superuser_password="$5"
   
-  # Verify the users collection exists
-  echo "Checking if users collection exists..."
-  local collections_check
-  collections_check=$(curl -s "${api_url}/api/collections/users" 2>/dev/null)
-  if ! echo "$collections_check" | grep -q '"id"'; then
-    echo "ERROR: Users collection not found. Schema import may have failed."
-    echo "Please import the schema manually first, then create the admin user."
-    return 1
-  fi
-  echo "Users collection exists."
-  
-  # Get superuser token to bypass collection rules
+  # Get superuser token FIRST (needed for all API calls)
   echo "Authenticating as superuser..."
   local token
   token=$(get_superuser_token "$api_url" "$superuser_email" "$superuser_password")
@@ -269,6 +258,17 @@ create_admin_user() {
   fi
   
   echo "Superuser authentication successful."
+  
+  # Verify the users collection exists (using auth token)
+  echo "Checking if users collection exists..."
+  local collections_check
+  collections_check=$(curl -s "${api_url}/api/collections/users" -H "Authorization: $token" 2>/dev/null)
+  if ! echo "$collections_check" | grep -q '"id"'; then
+    echo "ERROR: Users collection not found."
+    echo "Response: $collections_check"
+    return 1
+  fi
+  echo "Users collection verified."
   
   # Check if any admin user already exists
   echo "Checking for existing admin users..."
