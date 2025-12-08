@@ -14,6 +14,8 @@ set -euo pipefail
 PB_VERSION="${PB_VERSION:-0.25.0}"
 ADMIN_PORT_DEFAULT=4173
 PB_PORT_DEFAULT=8090
+PB_HOST_INTERNAL="http://localhost:${PB_PORT_DEFAULT}"
+PB_HOST_EXTERNAL="$PB_HOST_INTERNAL"
 VIEWER_BIN_NAME="frame-viewer"
 PB_BIN_PATH="/opt/pocketbase/pocketbase"
 PB_DATA_DIR="/var/lib/pocketbase"
@@ -472,9 +474,9 @@ if ask_yes_no "Add cross target aarch64-unknown-linux-gnu (for cross-build reuse
 fi
 
 # Question 5: PocketBase URL (only if not installing locally)
-PB_HOST="http://localhost:${PB_PORT_DEFAULT}"
 if ! $PB_ON_PI; then
-  PB_HOST=$(ask_value "Enter PocketBase URL (http://host:8090)" "$PB_HOST")
+  PB_HOST_EXTERNAL=$(ask_value "Enter PocketBase URL (http://host:8090)" "$PB_HOST_EXTERNAL")
+  PB_HOST_INTERNAL="$PB_HOST_EXTERNAL"
 fi
 
 # Question 6: Admin UI port (only if installing admin locally)
@@ -575,7 +577,7 @@ if $ADD_CROSS_TARGET; then
 fi
 
 if $PB_ON_PI; then
-  PB_HOST="http://localhost:${PB_PORT_DEFAULT}"
+  PB_HOST_EXTERNAL="$PB_HOST_INTERNAL"
   echo "Setting up PocketBase..."
   sudo mkdir -p /opt/pocketbase "$PB_DATA_DIR"
   sudo chown "$USER":"$USER" /opt/pocketbase "$PB_DATA_DIR"
@@ -627,8 +629,11 @@ WantedBy=multi-user.target
 EOF
   sudo systemctl daemon-reload
   sudo systemctl enable --now pocketbase
-  PB_HOST="http://$(hostname -I | awk '{print $1}'):${PB_PORT_DEFAULT}"
-  echo "PocketBase running on $PB_HOST (HTTP). TLS skipped per selection."
+  PB_HOST_EXTERNAL="http://$(hostname -I | awk '{print $1}'):${PB_PORT_DEFAULT}"
+  echo "PocketBase running locally (HTTP)."
+  echo "  - Viewer/internal URL: $PB_HOST_INTERNAL"
+  echo "  - LAN URL: $PB_HOST_EXTERNAL"
+  echo "TLS skipped per selection."
   
   # Wait for PocketBase to be ready, import schema, and create admin user
   if wait_for_pocketbase "http://localhost:${PB_PORT_DEFAULT}"; then
@@ -646,7 +651,7 @@ EOF
       echo "The database schema could not be imported."
       echo ""
       echo "Please import the schema manually:"
-      echo "  1. Open: ${PB_HOST}/_/"
+      echo "  1. Open: ${PB_HOST_EXTERNAL}/_/"
       echo "  2. Log in with superuser: $PB_SUPERUSER_EMAIL / (see password in summary)"
       echo "  3. Settings (gear icon) -> Import collections"
       echo "  4. Paste contents of: $REPO_ROOT/backend/pb_schema.json"
@@ -682,7 +687,7 @@ EOF
         echo ""
         echo "*** WARNING: Failed to create Frame Admin user ***"
         echo "You will need to create it manually via PocketBase admin at:"
-        echo "  ${PB_HOST}/_/"
+        echo "  ${PB_HOST_EXTERNAL}/_/"
         echo ""
         # Reset to indicate manual creation needed
         FRAME_ADMIN_EMAIL="(MANUAL CREATION REQUIRED)"
@@ -711,7 +716,7 @@ EOF
     echo "Admin user was not created. After installation:"
     echo "  1. Check PocketBase status: sudo systemctl status pocketbase"
     echo "  2. View logs: journalctl -u pocketbase -f"
-    echo "  3. Create admin user manually in PocketBase UI at ${PB_HOST}/_/"
+    echo "  3. Create admin user manually in PocketBase UI at ${PB_HOST_EXTERNAL}/_/"
     FRAME_ADMIN_EMAIL="(MANUAL CREATION REQUIRED)"
     FRAME_ADMIN_PASSWORD="(create via PocketBase admin UI)"
   fi
@@ -728,11 +733,11 @@ if $ADMIN_LOCAL; then
   echo "Installing 'serve' package globally..."
   sudo npm install -g serve
   
-  echo "Building admin SPA against PocketBase at ${PB_HOST}..."
+  echo "Building admin SPA against PocketBase at ${PB_HOST_EXTERNAL}..."
   (
     cd "$REPO_ROOT/admin"
     npm install
-    VITE_PB_URL="${PB_HOST}" npm run build
+    VITE_PB_URL="${PB_HOST_EXTERNAL}" npm run build
   )
   ADMIN_PORT_SELECTED="$ADMIN_PORT"
   
@@ -761,7 +766,7 @@ EOF
 else
   echo "Skipping local Admin UI. To deploy elsewhere:"
   echo "  cd admin && npm install && npm run build"
-  echo "  Host ./dist via Netlify/Vercel/S3+CloudFront/etc with env VITE_PB_URL=${PB_HOST}"
+  echo "  Host ./dist via Netlify/Vercel/S3+CloudFront/etc with env VITE_PB_URL=${PB_HOST_EXTERNAL}"
 fi
 
 echo "Building viewer..."
@@ -772,7 +777,7 @@ sudo mkdir -p "$(dirname "$VIEWER_CONFIG")" "$VIEWER_CACHE"
 sudo chown "$USER":"$USER" "$(dirname "$VIEWER_CONFIG")" "$VIEWER_CACHE"
 
 cat > /tmp/frame-viewer-config.toml <<EOF
-pb_url = "${PB_HOST}"
+pb_url = "${PB_HOST_INTERNAL}"
 interval_ms = ${INTERVAL_MS}
 transition = "${TRANSITION}"
 cache_dir = "${VIEWER_CACHE}"
@@ -836,14 +841,15 @@ Installation Directory: ${INSTALL_DIR}
 
 PocketBase:
   Location: ${DISPLAY_PB_LOCATION}
-  URL: ${PB_HOST}
+  URL (LAN): ${PB_HOST_EXTERNAL}
+  URL (internal): ${PB_HOST_INTERNAL}
   Data dir: $PB_DATA_DIR
   Service: pocketbase (systemd) ${DISPLAY_PB_SERVICE}
 
 Admin UI:
   Mode: ${DISPLAY_ADMIN_MODE}
   URL: ${DISPLAY_ADMIN_URL}
-  Build target PocketBase: ${PB_HOST}
+  Build target PocketBase: ${PB_HOST_EXTERNAL}
   Source: ${INSTALL_DIR}/admin
 
 Viewer:
@@ -873,7 +879,7 @@ Notes:
 - To update, run: cd ${INSTALL_DIR} && git pull && ./scripts/install_pi.sh
 
 If admin user was NOT created automatically:
-  1. Open PocketBase Admin: ${PB_HOST}/_/
+  1. Open PocketBase Admin: ${PB_HOST_EXTERNAL}/_/
   2. Log in with the PocketBase Superuser credentials above
   3. Go to Collections -> users -> New record
   4. Fill in: email, password, passwordConfirm, and set role to "admin"

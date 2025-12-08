@@ -237,6 +237,12 @@ impl Preloader {
         count: usize,
         token: Option<&str>,
     ) {
+        // Nothing to do if the playlist is empty; avoids modulo by zero.
+        if playlist.is_empty() {
+            tracing::debug!("Preload skipped: empty playlist");
+            return;
+        }
+
         for i in 1..=count {
             let next_index = (current_index + i) % playlist.len();
             if next_index == current_index {

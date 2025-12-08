@@ -89,7 +89,7 @@ impl RealtimeManager {
         if let Some(ref device_id) = self.device_id {
             // Filter by device scope (allow null/empty scopes as global)
             format!(
-                "media?filter=({}) && (deviceScopes~'\"{}\"' || deviceScopes = [] || deviceScopes = null)",
+                "media?filter=({}) && (deviceScopes~'\"{}\"' || deviceScopes:len=0 || deviceScopes = null)",
                 base_filter, device_id
             )
         } else {

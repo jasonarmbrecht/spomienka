@@ -285,8 +285,10 @@ impl AppState {
         let mut filter = "status='published'".to_string();
 
         if let Some(ref device_id) = self.config.device_id {
+            // Allow media when deviceScopes contains this device, is empty, or is null.
+            // Note: PocketBase filter does not accept literal [] comparison; use :len=0 instead.
             let device_filter = format!(
-                "(deviceScopes~'\"{}\"' || deviceScopes = [] || deviceScopes = null)",
+                "(deviceScopes~'\"{}\"' || deviceScopes:len=0 || deviceScopes = null)",
                 device_id
             );
             filter = format!(
