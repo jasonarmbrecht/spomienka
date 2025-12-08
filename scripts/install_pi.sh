@@ -109,8 +109,88 @@ get_superuser_token() {
     -H "Content-Type: application/json" \
     -d "{\"identity\":\"${email}\",\"password\":\"${password}\"}" 2>/dev/null)
   
+  # Debug: show response if auth fails
+  if ! echo "$response" | grep -q '"token"'; then
+    echo "DEBUG: Superuser auth failed. Response: $response" >&2
+    echo ""
+    return 1
+  fi
+  
   # Extract token from response
   echo "$response" | grep -o '"token":"[^"]*"' | cut -d'"' -f4
+}
+
+import_schema_via_api() {
+  local api_url="$1"
+  local superuser_email="$2"
+  local superuser_password="$3"
+  
+  # Check if schema file exists
+  if [[ ! -f "$REPO_ROOT/backend/pb_schema.json" ]]; then
+    echo "ERROR: Schema file not found at $REPO_ROOT/backend/pb_schema.json"
+    return 1
+  fi
+  
+  # Check if collections already exist (check for media collection as indicator)
+  echo "Checking if collections are already imported..."
+  local collections_check
+  collections_check=$(curl -s "${api_url}/api/collections/media" 2>/dev/null)
+  if echo "$collections_check" | grep -q '"id"'; then
+    echo "Collections already exist. Skipping import."
+    return 0
+  fi
+  
+  # Get superuser token
+  echo "Authenticating as superuser for schema import..."
+  local token
+  token=$(get_superuser_token "$api_url" "$superuser_email" "$superuser_password")
+  
+  if [ -z "$token" ]; then
+    echo "ERROR: Could not authenticate as superuser for schema import."
+    return 1
+  fi
+  
+  echo "Importing collections from pb_schema.json..."
+  local import_response
+  # PocketBase import API expects {"collections": [...], "deleteMissing": false}
+  import_response=$(curl -s -X PUT "${api_url}/api/collections/import" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: $token" \
+    -d "{\"collections\":$(cat "$REPO_ROOT/backend/pb_schema.json"),\"deleteMissing\":false}" 2>/dev/null)
+  
+  # Successful import returns empty response or empty array
+  if [ -z "$import_response" ] || echo "$import_response" | grep -qE '^\[\]$|^\s*$'; then
+    echo "Schema imported successfully!"
+    # Give PocketBase a moment to process
+    sleep 2
+    
+    # Verify by checking for media collection
+    local verify
+    verify=$(curl -s "${api_url}/api/collections/media" 2>/dev/null)
+    if echo "$verify" | grep -q '"id"'; then
+      echo "Verified: media collection exists."
+      return 0
+    else
+      echo "Warning: Import reported success but media collection not found."
+      return 1
+    fi
+  elif echo "$import_response" | grep -q '"code":'; then
+    echo "ERROR: Failed to import schema via API."
+    echo "  Response: $import_response"
+    echo ""
+    echo "You need to import the schema manually:"
+    echo "  1. Go to ${api_url}/_/ (PocketBase admin)"
+    echo "  2. Log in with superuser credentials"
+    echo "  3. Go to Settings (gear icon) -> Import collections"
+    echo "  4. Paste the contents of: $REPO_ROOT/backend/pb_schema.json"
+    echo "  5. Click Import"
+    return 1
+  else
+    # Might be success with some other response
+    echo "Schema import completed. Response: $import_response"
+    sleep 2
+    return 0
+  fi
 }
 
 create_admin_user() {
@@ -120,49 +200,83 @@ create_admin_user() {
   local superuser_email="$4"
   local superuser_password="$5"
   
+  # Verify the users collection exists
+  echo "Checking if users collection exists..."
+  local collections_check
+  collections_check=$(curl -s "${api_url}/api/collections/users" 2>/dev/null)
+  if ! echo "$collections_check" | grep -q '"id"'; then
+    echo "ERROR: Users collection not found. Schema import may have failed."
+    echo "Please import the schema manually first, then create the admin user."
+    return 1
+  fi
+  echo "Users collection exists."
+  
   # Get superuser token to bypass collection rules
   echo "Authenticating as superuser..."
   local token
   token=$(get_superuser_token "$api_url" "$superuser_email" "$superuser_password")
   
   if [ -z "$token" ]; then
-    echo "Warning: Could not authenticate as superuser. Trying without auth..."
-    token=""
+    echo "ERROR: Could not authenticate as superuser."
+    echo "The admin user cannot be created without superuser authentication."
+    return 1
   fi
+  
+  echo "Superuser authentication successful."
   
   # Check if any admin user already exists
+  echo "Checking for existing admin users..."
   local existing
-  if [ -n "$token" ]; then
-    existing=$(curl -s "${api_url}/api/collections/users/records?filter=role='admin'&perPage=1" \
-      -H "Authorization: $token" 2>/dev/null)
-  else
-    existing=$(curl -s "${api_url}/api/collections/users/records?filter=role='admin'&perPage=1" 2>/dev/null)
+  existing=$(curl -s "${api_url}/api/collections/users/records?filter=role='admin'&perPage=1" \
+    -H "Authorization: $token" 2>/dev/null)
+  
+  # Handle case where we can't parse the response
+  if echo "$existing" | grep -q '"code":'; then
+    echo "Warning: Error checking for existing users: $existing"
   fi
   
-  if echo "$existing" | grep -q '"totalItems":0'; then
-    echo "Creating admin user in users collection..."
+  if echo "$existing" | grep -q '"totalItems":0' || echo "$existing" | grep -q '"totalItems": 0'; then
+    echo "No admin user found. Creating admin user in users collection..."
     local response
-    if [ -n "$token" ]; then
-      response=$(curl -s -X POST "${api_url}/api/collections/users/records" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: $token" \
-        -d "{\"email\":\"${email}\",\"password\":\"${password}\",\"passwordConfirm\":\"${password}\",\"role\":\"admin\"}" 2>/dev/null)
-    else
-      response=$(curl -s -X POST "${api_url}/api/collections/users/records" \
-        -H "Content-Type: application/json" \
-        -d "{\"email\":\"${email}\",\"password\":\"${password}\",\"passwordConfirm\":\"${password}\",\"role\":\"admin\"}" 2>/dev/null)
-    fi
+    response=$(curl -s -X POST "${api_url}/api/collections/users/records" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: $token" \
+      -d "{\"email\":\"${email}\",\"password\":\"${password}\",\"passwordConfirm\":\"${password}\",\"role\":\"admin\"}" 2>/dev/null)
     
     if echo "$response" | grep -q '"id"'; then
-      echo "Admin user created successfully."
+      echo "Admin user created successfully!"
+      echo "  Email: $email"
+      return 0
+    else
+      echo "ERROR: Failed to create admin user."
+      echo "  Response: $response"
+      echo ""
+      echo "You may need to create the admin user manually:"
+      echo "  1. Go to ${api_url}/_/ (PocketBase admin)"
+      echo "  2. Log in with superuser credentials"
+      echo "  3. Navigate to the 'users' collection"
+      echo "  4. Create a new user with role='admin'"
+      return 1
+    fi
+  elif echo "$existing" | grep -q '"totalItems"'; then
+    echo "Admin user already exists. Skipping creation."
+    return 2
+  else
+    echo "Warning: Unexpected response when checking for admin users."
+    echo "Attempting to create admin user anyway..."
+    local response
+    response=$(curl -s -X POST "${api_url}/api/collections/users/records" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: $token" \
+      -d "{\"email\":\"${email}\",\"password\":\"${password}\",\"passwordConfirm\":\"${password}\",\"role\":\"admin\"}" 2>/dev/null)
+    
+    if echo "$response" | grep -q '"id"'; then
+      echo "Admin user created successfully!"
       return 0
     else
       echo "Warning: Failed to create admin user. Response: $response"
       return 1
     fi
-  else
-    echo "Admin user already exists. Skipping creation."
-    return 2
   fi
 }
 
@@ -373,28 +487,41 @@ if $PB_ON_PI; then
   # Import PocketBase schema so the viewer has required collections.
   if [[ -f "$REPO_ROOT/backend/pb_schema.json" ]]; then
     echo "Importing PocketBase schema..."
-    # Use expect to auto-confirm, or script for pseudo-tty, or manual fallback
+    # Use expect to auto-confirm, or yes pipe, or manual fallback
     SCHEMA_IMPORTED=false
-    if command -v expect >/dev/null 2>&1; then
-      expect -c "
-        spawn /opt/pocketbase/pocketbase migrate collections import \"$REPO_ROOT/backend/pb_schema.json\" --dir \"$PB_DATA_DIR\" --migrationsDir \"$PB_MIGRATIONS_DIR\"
+    
+    # Method 1: Try with 'yes' piped in (simplest approach)
+    if yes | "$PB_BIN_PATH" migrate collections import "$REPO_ROOT/backend/pb_schema.json" \
+        --dir "$PB_DATA_DIR" \
+        --migrationsDir "$PB_MIGRATIONS_DIR" 2>&1; then
+      SCHEMA_IMPORTED=true
+      echo "Schema imported successfully via CLI."
+    # Method 2: Try with expect if available
+    elif command -v expect >/dev/null 2>&1; then
+      echo "Trying with expect..."
+      if expect -c "
+        spawn $PB_BIN_PATH migrate collections import \"$REPO_ROOT/backend/pb_schema.json\" --dir \"$PB_DATA_DIR\" --migrationsDir \"$PB_MIGRATIONS_DIR\"
         expect {
-          \"(y/N)\" { send \"y\r\"; exp_continue }
+          -re \"\\(y/N\\)\" { send \"y\r\"; exp_continue }
+          -re \"\\[y/N\\]\" { send \"y\r\"; exp_continue }
+          timeout { exit 1 }
           eof
         }
-      " && SCHEMA_IMPORTED=true
-    else
-      # Try with script command to create pseudo-tty
-      script -q -e -c "/opt/pocketbase/pocketbase migrate collections import '$REPO_ROOT/backend/pb_schema.json' --dir '$PB_DATA_DIR' --migrationsDir '$PB_MIGRATIONS_DIR'" /dev/null <<< "y" && SCHEMA_IMPORTED=true || true
+      " 2>&1; then
+        SCHEMA_IMPORTED=true
+        echo "Schema imported successfully via expect."
+      fi
     fi
     
     if [[ "$SCHEMA_IMPORTED" == "false" ]]; then
-      echo "Note: Auto-import failed. Schema will be imported via API after PocketBase starts."
+      echo "Note: CLI import did not complete. Schema will be imported via API after PocketBase starts."
+    else
+      # Run migrations to apply the imported collections
+      "$PB_BIN_PATH" migrate up \
+        --dir "$PB_DATA_DIR" \
+        --migrationsDir "$PB_MIGRATIONS_DIR" 2>&1 || true
+      echo "Migrations applied."
     fi
-    
-    /opt/pocketbase/pocketbase migrate up \
-      --dir "$PB_DATA_DIR" \
-      --migrationsDir "$PB_MIGRATIONS_DIR" || true
   else
     echo "Warning: backend/pb_schema.json not found; skipping schema import."
   fi
@@ -435,19 +562,54 @@ EOF
   PB_HOST="http://$(hostname -I | awk '{print $1}'):${PB_PORT_DEFAULT}"
   echo "PocketBase running on $PB_HOST (HTTP). TLS skipped per selection."
   
-  # Wait for PocketBase to be ready and create admin user (using superuser auth)
+  # Wait for PocketBase to be ready, import schema, and create admin user
   if wait_for_pocketbase "http://localhost:${PB_PORT_DEFAULT}"; then
+    
+    # Import schema via API (more reliable than CLI import)
+    echo ""
+    echo "=== Importing Schema via API ==="
+    import_schema_via_api "http://localhost:${PB_PORT_DEFAULT}" "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD"
+    
     FRAME_ADMIN_EMAIL="admin@frame.local"
     FRAME_ADMIN_PASSWORD=$(generate_password)
     
-    if create_admin_user "http://localhost:${PB_PORT_DEFAULT}" "$FRAME_ADMIN_EMAIL" "$FRAME_ADMIN_PASSWORD" "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD"; then
+    echo ""
+    echo "=== Creating Frame Admin User ==="
+    create_result=0
+    create_admin_user "http://localhost:${PB_PORT_DEFAULT}" "$FRAME_ADMIN_EMAIL" "$FRAME_ADMIN_PASSWORD" "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD" || create_result=$?
+    
+    if [ $create_result -eq 0 ]; then
       ADMIN_CREATED=true
-      echo "Admin credentials generated. They will be shown in the install summary."
-    elif [ $? -eq 2 ]; then
+      echo ""
+      echo "*** Frame Admin user created successfully! ***"
+      echo "    Email: $FRAME_ADMIN_EMAIL"
+      echo "    Password: $FRAME_ADMIN_PASSWORD"
+      echo ""
+    elif [ $create_result -eq 2 ]; then
       # Admin already exists - credentials unknown
       FRAME_ADMIN_EMAIL="(existing admin - check PocketBase)"
       FRAME_ADMIN_PASSWORD="(not changed)"
+      echo ""
+      echo "An admin user already exists in the database."
+    else
+      echo ""
+      echo "*** WARNING: Failed to create Frame Admin user ***"
+      echo "You will need to create it manually via PocketBase admin at:"
+      echo "  ${PB_HOST}/_/"
+      echo ""
+      # Reset to indicate manual creation needed
+      FRAME_ADMIN_EMAIL="(MANUAL CREATION REQUIRED - see above)"
+      FRAME_ADMIN_PASSWORD="(create via PocketBase admin UI)"
     fi
+  else
+    echo ""
+    echo "*** WARNING: PocketBase did not start in time ***"
+    echo "Admin user was not created. After installation:"
+    echo "  1. Check PocketBase status: sudo systemctl status pocketbase"
+    echo "  2. View logs: journalctl -u pocketbase -f"
+    echo "  3. Create admin user manually in PocketBase UI at ${PB_HOST}/_/"
+    FRAME_ADMIN_EMAIL="(MANUAL CREATION REQUIRED)"
+    FRAME_ADMIN_PASSWORD="(create via PocketBase admin UI)"
   fi
 fi
 
@@ -551,7 +713,15 @@ DISPLAY_PB_LOCATION=$( [ "$PB_ON_PI" = true ] && echo "local on this Pi" || echo
 DISPLAY_PB_SERVICE=$( [ "$PB_ON_PI" = true ] && echo "ENABLED" || echo "not installed" )
 DISPLAY_ADMIN_MODE=$( [ "$ADMIN_LOCAL" = true ] && echo "local on this Pi" || echo "not installed (deploy elsewhere)" )
 DISPLAY_ADMIN_URL=$( [ "$ADMIN_LOCAL" = true ] && echo "http://$(hostname -I | awk '{print $1}'):${ADMIN_PORT_SELECTED}" || echo "N/A" )
-DISPLAY_ADMIN_STATUS=$( [ "$ADMIN_CREATED" = true ] && echo "CREATED - save these credentials!" || echo "existing or not created" )
+DISPLAY_ADMIN_STATUS=$( 
+  if [ "$ADMIN_CREATED" = true ]; then 
+    echo "CREATED - save these credentials!"
+  elif echo "$DISPLAY_FRAME_ADMIN_EMAIL" | grep -q "MANUAL"; then
+    echo "*** MANUAL CREATION REQUIRED - see instructions below ***"
+  else
+    echo "existing or not created"
+  fi
+)
 
 cat > "$SUMMARY_FILE" <<EOF
 === Spomienka Install Summary ===
@@ -596,6 +766,13 @@ Notes:
 - Logs: journalctl -u pocketbase -f (if installed), journalctl -u frame-admin -f (if installed), journalctl -u frame-viewer -f
 - If the GL driver was changed, a reboot is recommended.
 - To update, run: cd ${INSTALL_DIR} && git pull && ./scripts/install_pi.sh
+
+If admin user was NOT created automatically:
+  1. Open PocketBase Admin: ${PB_HOST}/_/
+  2. Log in with the PocketBase Superuser credentials above
+  3. Go to Collections -> users -> New record
+  4. Fill in: email, password, passwordConfirm, and set role to "admin"
+  5. Update $VIEWER_CONFIG with the admin email/password you created
 
 *** SECURITY NOTICE ***
 This summary file contains sensitive credentials and will be AUTOMATICALLY DELETED
