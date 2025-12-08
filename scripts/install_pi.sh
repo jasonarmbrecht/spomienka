@@ -565,10 +565,15 @@ EOF
   # Wait for PocketBase to be ready, import schema, and create admin user
   if wait_for_pocketbase "http://localhost:${PB_PORT_DEFAULT}"; then
     
-    # Import schema via API (more reliable than CLI import)
-    echo ""
-    echo "=== Importing Schema via API ==="
-    import_schema_via_api "http://localhost:${PB_PORT_DEFAULT}" "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD"
+    # Only import schema via API if CLI import failed
+    if [[ "$SCHEMA_IMPORTED" == "false" ]]; then
+      echo ""
+      echo "=== Importing Schema via API ==="
+      import_schema_via_api "http://localhost:${PB_PORT_DEFAULT}" "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD" || true
+    else
+      echo ""
+      echo "Schema was imported via CLI. Skipping API import."
+    fi
     
     FRAME_ADMIN_EMAIL="admin@frame.local"
     FRAME_ADMIN_PASSWORD=$(generate_password)
