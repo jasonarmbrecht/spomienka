@@ -98,6 +98,62 @@ create_superuser() {
   fi
 }
 
+# Create a local device (idempotent only by name) and populate DEVICE_ID/DEVICE_KEY
+create_local_device() {
+  local api_url="$1"
+  local superuser_email="$2"
+  local superuser_password="$3"
+  local device_name="${4:-local-frame-1}"
+  local interval_ms="${5:-8000}"
+  local transition="${6:-fade}"
+
+  echo "Authenticating as superuser to create local device..."
+  local token
+  token=$(get_superuser_token "$api_url" "$superuser_email" "$superuser_password")
+
+  if [ -z "$token" ]; then
+    echo "ERROR: Could not authenticate as superuser; skipping local device creation."
+    return 1
+  fi
+
+  # Check if a device with this name already exists to avoid dupes on re-run
+  local existing
+  existing=$(curl -s "${api_url}/api/collections/devices/records?filter=name='${device_name//'/'\\/}'&perPage=1" \
+    -H "Authorization: $token" 2>/dev/null)
+
+  if echo "$existing" | grep -q '"totalItems":[[:space:]]*1'; then
+    DEVICE_ID=$(echo "$existing" | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4)
+    DEVICE_KEY=$(echo "$existing" | grep -o '"apiKey":"[^"]*"' | head -n1 | cut -d'"' -f4)
+    echo "Local device already exists. Using existing device:"
+    echo "  ID:  ${DEVICE_ID:-unknown}"
+    echo "  Key: ${DEVICE_KEY:-unknown}"
+    return 0
+  fi
+
+  local api_key
+  api_key=$(openssl rand -hex 16)
+
+  echo "Creating local device '${device_name}'..."
+  local response
+  response=$(curl -s -X POST "${api_url}/api/collections/devices/records" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: $token" \
+    -d "{\"name\":\"${device_name}\",\"apiKey\":\"${api_key}\",\"config\":{\"interval\":${interval_ms},\"transition\":\"${transition}\"}}" 2>/dev/null)
+
+  if echo "$response" | grep -q '"id"'; then
+    DEVICE_ID=$(echo "$response" | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4)
+    DEVICE_KEY="$api_key"
+    echo "Local device created:"
+    echo "  ID:  $DEVICE_ID"
+    echo "  Key: $DEVICE_KEY"
+    return 0
+  else
+    echo "ERROR: Failed to create local device."
+    echo "  Response: $response"
+    return 1
+  fi
+}
+
 get_superuser_token() {
   local api_url="$1"
   local email="$2"
@@ -632,6 +688,16 @@ EOF
         FRAME_ADMIN_EMAIL="(MANUAL CREATION REQUIRED)"
         FRAME_ADMIN_PASSWORD="(create via PocketBase admin UI)"
       fi
+
+      # Auto-create a local device if none was supplied (schema is in place)
+      if [ -z "$DEVICE_ID" ] && [ -z "$DEVICE_KEY" ]; then
+        echo "No device credentials provided; creating a local device..."
+        if create_local_device "http://localhost:${PB_PORT_DEFAULT}" "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD" "local-frame-1" "$INTERVAL_MS" "$TRANSITION"; then
+          echo "Local device will be used by the viewer service."
+        else
+          echo "WARNING: Failed to auto-create local device. You can create one via the Admin Settings page."
+        fi
+      fi
     else
       # Schema import failed - admin user cannot be created
       FRAME_ADMIN_EMAIL="(MANUAL CREATION REQUIRED - import schema first)"
@@ -737,6 +803,7 @@ EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now frame-viewer
+sudo systemctl restart frame-viewer
 
 SUMMARY_FILE="$HOME/spomienka-install-summary.txt"
 

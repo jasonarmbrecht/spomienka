@@ -69,6 +69,42 @@
     "system": false,
     "fields": [
       {
+        "id": "id",
+        "name": "id",
+        "type": "text",
+        "system": true,
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "autogeneratePattern": "[a-z0-9]{15}",
+        "min": 15,
+        "max": 15,
+        "pattern": "^[a-z0-9]+$",
+        "primaryKey": true
+      },
+      {
+        "id": "created",
+        "name": "created",
+        "type": "autodate",
+        "system": true,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "onCreate": true,
+        "onUpdate": false
+      },
+      {
+        "id": "updated",
+        "name": "updated",
+        "type": "autodate",
+        "system": true,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "onCreate": true,
+        "onUpdate": true
+      },
+      {
         "id": "f_file",
         "name": "file",
         "type": "file",
