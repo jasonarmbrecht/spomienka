@@ -120,6 +120,39 @@ get_superuser_token() {
   echo "$response" | grep -o '"token":"[^"]*"' | cut -d'"' -f4
 }
 
+verify_collections_exist() {
+  local api_url="$1"
+  local token="$2"
+  
+  echo "Verifying all required collections exist..."
+  local required_collections=("users" "media" "approvals" "devices" "plugins")
+  local missing=()
+  
+  for collection in "${required_collections[@]}"; do
+    local check
+    if [ -n "$token" ]; then
+      check=$(curl -s "${api_url}/api/collections/${collection}" -H "Authorization: $token" 2>/dev/null)
+    else
+      check=$(curl -s "${api_url}/api/collections/${collection}" 2>/dev/null)
+    fi
+    
+    if echo "$check" | grep -q '"id"'; then
+      echo "  ✓ ${collection}"
+    else
+      echo "  ✗ ${collection} - NOT FOUND"
+      missing+=("$collection")
+    fi
+  done
+  
+  if [ ${#missing[@]} -eq 0 ]; then
+    echo "All required collections exist!"
+    return 0
+  else
+    echo "Missing collections: ${missing[*]}"
+    return 1
+  fi
+}
+
 import_schema_via_api() {
   local api_url="$1"
   local superuser_email="$2"
@@ -131,65 +164,78 @@ import_schema_via_api() {
     return 1
   fi
   
-  # Check if collections already exist (check for media collection as indicator)
-  echo "Checking if collections are already imported..."
-  local collections_check
-  collections_check=$(curl -s "${api_url}/api/collections/media" 2>/dev/null)
-  if echo "$collections_check" | grep -q '"id"'; then
-    echo "Collections already exist. Skipping import."
-    return 0
-  fi
-  
-  # Get superuser token
-  echo "Authenticating as superuser for schema import..."
+  # Get superuser token first (needed for both checking and importing)
+  echo "Authenticating as superuser..."
   local token
   token=$(get_superuser_token "$api_url" "$superuser_email" "$superuser_password")
   
   if [ -z "$token" ]; then
     echo "ERROR: Could not authenticate as superuser for schema import."
+    echo "  Check that PocketBase is running and superuser credentials are correct."
     return 1
   fi
+  echo "Superuser authentication successful."
   
+  # Check if collections already exist
+  echo ""
+  echo "Checking existing collections..."
+  if verify_collections_exist "$api_url" "$token"; then
+    echo "Schema already imported. Skipping."
+    return 0
+  fi
+  
+  # Import the schema
+  echo ""
   echo "Importing collections from pb_schema.json..."
+  local schema_content
+  schema_content=$(cat "$REPO_ROOT/backend/pb_schema.json")
+  
   local import_response
-  # PocketBase import API expects {"collections": [...], "deleteMissing": false}
   import_response=$(curl -s -X PUT "${api_url}/api/collections/import" \
     -H "Content-Type: application/json" \
     -H "Authorization: $token" \
-    -d "{\"collections\":$(cat "$REPO_ROOT/backend/pb_schema.json"),\"deleteMissing\":false}" 2>/dev/null)
+    -d "{\"collections\":${schema_content},\"deleteMissing\":false}" 2>/dev/null)
   
-  # Successful import returns empty response or empty array
-  if [ -z "$import_response" ] || echo "$import_response" | grep -qE '^\[\]$|^\s*$'; then
-    echo "Schema imported successfully!"
-    # Give PocketBase a moment to process
-    sleep 2
-    
-    # Verify by checking for media collection
-    local verify
-    verify=$(curl -s "${api_url}/api/collections/media" 2>/dev/null)
-    if echo "$verify" | grep -q '"id"'; then
-      echo "Verified: media collection exists."
-      return 0
-    else
-      echo "Warning: Import reported success but media collection not found."
-      return 1
-    fi
-  elif echo "$import_response" | grep -q '"code":'; then
-    echo "ERROR: Failed to import schema via API."
-    echo "  Response: $import_response"
+  # Check for error response
+  if echo "$import_response" | grep -q '"code":'; then
     echo ""
-    echo "You need to import the schema manually:"
-    echo "  1. Go to ${api_url}/_/ (PocketBase admin)"
+    echo "ERROR: Schema import failed!"
+    echo "Response: $import_response"
+    echo ""
+    
+    # Try to give helpful error info
+    if echo "$import_response" | grep -q "validation"; then
+      echo "This appears to be a schema validation error."
+      echo "The pb_schema.json format may not be compatible with this PocketBase version."
+    fi
+    
+    echo ""
+    echo "Manual import instructions:"
+    echo "  1. Open: ${api_url}/_/"
     echo "  2. Log in with superuser credentials"
     echo "  3. Go to Settings (gear icon) -> Import collections"
     echo "  4. Paste the contents of: $REPO_ROOT/backend/pb_schema.json"
     echo "  5. Click Import"
     return 1
-  else
-    # Might be success with some other response
-    echo "Schema import completed. Response: $import_response"
-    sleep 2
+  fi
+  
+  echo "Import API call completed."
+  
+  # Give PocketBase time to process
+  echo "Waiting for collections to be created..."
+  sleep 3
+  
+  # Verify all collections were created
+  echo ""
+  if verify_collections_exist "$api_url" "$token"; then
+    echo ""
+    echo "*** Schema imported and verified successfully! ***"
     return 0
+  else
+    echo ""
+    echo "ERROR: Import completed but some collections are missing!"
+    echo "The schema may have partially imported or there was an error."
+    return 1
   fi
 }
 
@@ -484,47 +530,13 @@ if $PB_ON_PI; then
   unzip -o /tmp/pb.zip -d /opt/pocketbase
   sudo chmod +x "$PB_BIN_PATH"
 
-  # Import PocketBase schema so the viewer has required collections.
-  if [[ -f "$REPO_ROOT/backend/pb_schema.json" ]]; then
-    echo "Importing PocketBase schema..."
-    # Use expect to auto-confirm, or yes pipe, or manual fallback
-    SCHEMA_IMPORTED=false
-    
-    # Method 1: Try with 'yes' piped in (simplest approach)
-    if yes | "$PB_BIN_PATH" migrate collections import "$REPO_ROOT/backend/pb_schema.json" \
-        --dir "$PB_DATA_DIR" \
-        --migrationsDir "$PB_MIGRATIONS_DIR" 2>&1; then
-      SCHEMA_IMPORTED=true
-      echo "Schema imported successfully via CLI."
-    # Method 2: Try with expect if available
-    elif command -v expect >/dev/null 2>&1; then
-      echo "Trying with expect..."
-      if expect -c "
-        spawn $PB_BIN_PATH migrate collections import \"$REPO_ROOT/backend/pb_schema.json\" --dir \"$PB_DATA_DIR\" --migrationsDir \"$PB_MIGRATIONS_DIR\"
-        expect {
-          -re \"\\(y/N\\)\" { send \"y\r\"; exp_continue }
-          -re \"\\[y/N\\]\" { send \"y\r\"; exp_continue }
-          timeout { exit 1 }
-          eof
-        }
-      " 2>&1; then
-        SCHEMA_IMPORTED=true
-        echo "Schema imported successfully via expect."
-      fi
-    fi
-    
-    if [[ "$SCHEMA_IMPORTED" == "false" ]]; then
-      echo "Note: CLI import did not complete. Schema will be imported via API after PocketBase starts."
-    else
-      # Run migrations to apply the imported collections
-      "$PB_BIN_PATH" migrate up \
-        --dir "$PB_DATA_DIR" \
-        --migrationsDir "$PB_MIGRATIONS_DIR" 2>&1 || true
-      echo "Migrations applied."
-    fi
-  else
-    echo "Warning: backend/pb_schema.json not found; skipping schema import."
+  # Schema will be imported via API after PocketBase starts (more reliable than CLI migration)
+  if [[ ! -f "$REPO_ROOT/backend/pb_schema.json" ]]; then
+    echo "ERROR: backend/pb_schema.json not found!"
+    echo "Cannot proceed without schema file."
+    exit 1
   fi
+  echo "Schema file found. Will import via API after PocketBase starts."
 
   # Install PocketBase hooks for media processing
   if [[ -d "$REPO_ROOT/backend/pb_hooks" ]]; then
@@ -565,46 +577,67 @@ EOF
   # Wait for PocketBase to be ready, import schema, and create admin user
   if wait_for_pocketbase "http://localhost:${PB_PORT_DEFAULT}"; then
     
-    # Only import schema via API if CLI import failed
-    if [[ "$SCHEMA_IMPORTED" == "false" ]]; then
-      echo ""
-      echo "=== Importing Schema via API ==="
-      import_schema_via_api "http://localhost:${PB_PORT_DEFAULT}" "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD" || true
+    echo ""
+    echo "=== Importing Schema via API ==="
+    
+    # Always import via API - this is the reliable method
+    SCHEMA_IMPORT_SUCCESS=false
+    if import_schema_via_api "http://localhost:${PB_PORT_DEFAULT}" "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD"; then
+      SCHEMA_IMPORT_SUCCESS=true
     else
       echo ""
-      echo "Schema was imported via CLI. Skipping API import."
+      echo "*** CRITICAL: Schema import failed! ***"
+      echo "The database schema could not be imported."
+      echo ""
+      echo "Please import the schema manually:"
+      echo "  1. Open: ${PB_HOST}/_/"
+      echo "  2. Log in with superuser: $PB_SUPERUSER_EMAIL / (see password in summary)"
+      echo "  3. Settings (gear icon) -> Import collections"
+      echo "  4. Paste contents of: $REPO_ROOT/backend/pb_schema.json"
+      echo "  5. Click Import"
+      echo ""
+      echo "After importing, create an admin user in the 'users' collection with role='admin'."
     fi
     
-    FRAME_ADMIN_EMAIL="admin@frame.local"
-    FRAME_ADMIN_PASSWORD=$(generate_password)
-    
-    echo ""
-    echo "=== Creating Frame Admin User ==="
-    create_result=0
-    create_admin_user "http://localhost:${PB_PORT_DEFAULT}" "$FRAME_ADMIN_EMAIL" "$FRAME_ADMIN_PASSWORD" "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD" || create_result=$?
-    
-    if [ $create_result -eq 0 ]; then
-      ADMIN_CREATED=true
+    # Only attempt to create admin user if schema was imported successfully
+    if [ "$SCHEMA_IMPORT_SUCCESS" = true ]; then
+      FRAME_ADMIN_EMAIL="admin@frame.local"
+      FRAME_ADMIN_PASSWORD=$(generate_password)
+      
       echo ""
-      echo "*** Frame Admin user created successfully! ***"
-      echo "    Email: $FRAME_ADMIN_EMAIL"
-      echo "    Password: $FRAME_ADMIN_PASSWORD"
-      echo ""
-    elif [ $create_result -eq 2 ]; then
-      # Admin already exists - credentials unknown
-      FRAME_ADMIN_EMAIL="(existing admin - check PocketBase)"
-      FRAME_ADMIN_PASSWORD="(not changed)"
-      echo ""
-      echo "An admin user already exists in the database."
+      echo "=== Creating Frame Admin User ==="
+      create_result=0
+      create_admin_user "http://localhost:${PB_PORT_DEFAULT}" "$FRAME_ADMIN_EMAIL" "$FRAME_ADMIN_PASSWORD" "$PB_SUPERUSER_EMAIL" "$PB_SUPERUSER_PASSWORD" || create_result=$?
+      
+      if [ $create_result -eq 0 ]; then
+        ADMIN_CREATED=true
+        echo ""
+        echo "*** Frame Admin user created successfully! ***"
+        echo "    Email: $FRAME_ADMIN_EMAIL"
+        echo "    Password: $FRAME_ADMIN_PASSWORD"
+        echo ""
+      elif [ $create_result -eq 2 ]; then
+        # Admin already exists - credentials unknown
+        FRAME_ADMIN_EMAIL="(existing admin - check PocketBase)"
+        FRAME_ADMIN_PASSWORD="(not changed)"
+        echo ""
+        echo "An admin user already exists in the database."
+      else
+        echo ""
+        echo "*** WARNING: Failed to create Frame Admin user ***"
+        echo "You will need to create it manually via PocketBase admin at:"
+        echo "  ${PB_HOST}/_/"
+        echo ""
+        # Reset to indicate manual creation needed
+        FRAME_ADMIN_EMAIL="(MANUAL CREATION REQUIRED)"
+        FRAME_ADMIN_PASSWORD="(create via PocketBase admin UI)"
+      fi
     else
+      # Schema import failed - admin user cannot be created
+      FRAME_ADMIN_EMAIL="(MANUAL CREATION REQUIRED - import schema first)"
+      FRAME_ADMIN_PASSWORD="(create via PocketBase admin UI after schema import)"
       echo ""
-      echo "*** WARNING: Failed to create Frame Admin user ***"
-      echo "You will need to create it manually via PocketBase admin at:"
-      echo "  ${PB_HOST}/_/"
-      echo ""
-      # Reset to indicate manual creation needed
-      FRAME_ADMIN_EMAIL="(MANUAL CREATION REQUIRED - see above)"
-      FRAME_ADMIN_PASSWORD="(create via PocketBase admin UI)"
+      echo "Skipping admin user creation since schema import failed."
     fi
   else
     echo ""
