@@ -759,10 +759,7 @@ async fn run_discovery_mode(config: &AppConfig) -> Result<()> {
         }
 
         // Handle quit key
-        match renderer.process_events_extended() {
-            renderer::UserAction::Quit => break,
-            _ => {}
-        }
+        if renderer.process_events_extended() == renderer::UserAction::Quit { break }
 
         renderer.render_discovery_screen(&state.pin, &state.local_ip)?;
         renderer.frame_delay();

@@ -313,7 +313,7 @@ impl<'ttf> Renderer<'ttf> {
     ///   - Thumbnail 256x144:  ~2ms
     ///   - Gaussian blur σ=8:  ~1ms  
     ///   - Upscale to 1080p:   ~36ms
-    /// Total: ~40ms, called once per image transition — imperceptible to the user.
+    ///     Total: ~40ms, called once per image transition — imperceptible to the user.
     pub fn generate_blur_texture<'a>(
         &self,
         texture_creator: &'a TextureCreator<WindowContext>,
@@ -368,6 +368,7 @@ impl<'ttf> Renderer<'ttf> {
     }
 
     /// Get the screen dimensions.
+    #[allow(dead_code)]
     pub fn screen_size(&self) -> (u32, u32) {
         (self.screen_width, self.screen_height)
     }
@@ -571,7 +572,7 @@ impl<'ttf> Renderer<'ttf> {
                 0 => 12,
                 hour => hour,
             };
-            return format!("{:02}:{:02}", hour_12, local.tm_min);
+            format!("{:02}:{:02}", hour_12, local.tm_min)
         }
 
         #[cfg(not(unix))]
