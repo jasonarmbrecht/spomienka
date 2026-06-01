@@ -105,9 +105,11 @@ impl Cache {
 
     /// Get the path where an asset should be cached.
     fn cache_path(&self, media_id: &str, asset_type: AssetType) -> PathBuf {
-        self.cache_dir
-            .join(media_id)
-            .join(format!("{}.{}", asset_type.as_str(), asset_type.extension()))
+        self.cache_dir.join(media_id).join(format!(
+            "{}.{}",
+            asset_type.as_str(),
+            asset_type.extension()
+        ))
     }
 
     /// Check if an asset is cached and return its path.
@@ -222,7 +224,8 @@ impl Cache {
     /// Save the current playlist to cache for offline use.
     pub fn save_playlist(&self, playlist: &[Media]) -> Result<()> {
         let playlist_path = self.cache_dir.join("playlist.json");
-        let json = serde_json::to_string_pretty(playlist).context("Failed to serialize playlist")?;
+        let json =
+            serde_json::to_string_pretty(playlist).context("Failed to serialize playlist")?;
         fs::write(&playlist_path, json).context("Failed to write playlist")?;
         tracing::debug!("Saved playlist with {} items", playlist.len());
         Ok(())
@@ -289,5 +292,3 @@ pub struct CacheStats {
     pub max_size: u64,
     pub item_count: usize,
 }
-
-

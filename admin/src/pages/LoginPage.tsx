@@ -1,13 +1,15 @@
 import { FormEvent, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../pb/auth";
 
 export function LoginPage() {
-  const { login } = useAuth();
+  const { user, login } = useAuth();
   const nav = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  if (user) return <Navigate to="/" replace />;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -50,4 +52,3 @@ export function LoginPage() {
     </div>
   );
 }
-

@@ -19,10 +19,8 @@ gstreamer = { version = "0.23", features = ["v1_20"] }
 gstreamer-app = "0.23"
 gstreamer-video = "0.23"
 
-# Realtime WebSocket
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+# Realtime SSE
 futures-util = "0.3"
-url = "2.5"
 
 # Image processing
 image = "0.25"
@@ -37,9 +35,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Utilities
+libc = "0.2"
 rand = "0.8"
 urlencoding = "2.1"
 
 [features]
 default = []
-

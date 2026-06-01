@@ -34,6 +34,9 @@ This project uses the following open source software:
 
 ## Viewer (Rust) Dependencies
 
+- **Bodoni Moda** (SIL Open Font License 1.1) - Copyright 2020 The Bodoni Moda Project Authors
+  - https://github.com/google/fonts/tree/main/ofl/bodonimoda
+  - Used for the viewer clock display
 - **anyhow** (MIT or Apache-2.0) - Copyright (c) David Tolnay
   - https://github.com/dtolnay/anyhow
 - **serde** (MIT or Apache-2.0) - Copyright (c) Erick Tryzelaar and David Tolnay
@@ -60,4 +63,3 @@ All dependencies used in this project are compatible with the MIT License under 
 ## Acknowledgments
 
 We are grateful to all the open source maintainers and contributors whose work makes this project possible.
-

@@ -1,0 +1,11 @@
+pb_url = "http://localhost:8090"
+interval_ms = 4000
+transition = "fade"
+transition_duration_ms = 600
+cache_dir = "/tmp/frame-viewer-cache"
+cache_size_limit_gb = 2
+enable_realtime = true
+shuffle = false
+fullscreen = false
+device_id = "0oib63v8hx9sg7f"
+device_api_key = "OJ4e7QhKtKQMQw8MzqLDRQw28saFPhp4"

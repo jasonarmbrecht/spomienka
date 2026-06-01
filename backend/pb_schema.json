@@ -26,7 +26,10 @@
         "presentable": false,
         "hidden": false,
         "maxSelect": 1,
-        "values": ["user", "admin"]
+        "values": [
+          "user",
+          "admin"
+        ]
       }
     ],
     "indexes": [],
@@ -44,7 +47,9 @@
     },
     "passwordAuth": {
       "enabled": true,
-      "identityFields": ["email"]
+      "identityFields": [
+        "email"
+      ]
     },
     "oauth2": {
       "enabled": false
@@ -127,7 +132,10 @@
         "presentable": false,
         "hidden": false,
         "maxSelect": 1,
-        "values": ["image", "video"]
+        "values": [
+          "image",
+          "video"
+        ]
       },
       {
         "id": "f_status",
@@ -138,7 +146,11 @@
         "presentable": false,
         "hidden": false,
         "maxSelect": 1,
-        "values": ["pending", "published", "rejected"]
+        "values": [
+          "pending",
+          "published",
+          "rejected"
+        ]
       },
       {
         "id": "f_title",
@@ -278,7 +290,12 @@
         "presentable": false,
         "hidden": false,
         "maxSelect": 1,
-        "values": ["pending", "processing", "completed", "failed"]
+        "values": [
+          "pending",
+          "processing",
+          "completed",
+          "failed"
+        ]
       },
       {
         "id": "f_proc_error",
@@ -353,8 +370,8 @@
       "CREATE INDEX idx_media_owner ON media (owner)",
       "CREATE INDEX idx_media_tags ON media (tags)"
     ],
-    "listRule": "@request.auth.id != '' && (@request.auth.role = 'admin' || status = 'published' || owner = @request.auth.id)",
-    "viewRule": "@request.auth.id != '' && (@request.auth.role = 'admin' || status = 'published' || owner = @request.auth.id)",
+    "listRule": "status = 'published'",
+    "viewRule": "status = 'published'",
     "createRule": "@request.auth.id != ''",
     "updateRule": "@request.auth.role = 'admin' || owner = @request.auth.id && status = 'pending'",
     "deleteRule": "@request.auth.role = 'admin'"
@@ -400,7 +417,10 @@
         "presentable": false,
         "hidden": false,
         "maxSelect": 1,
-        "values": ["approved", "rejected"]
+        "values": [
+          "approved",
+          "rejected"
+        ]
       },
       {
         "id": "a_notes",
@@ -426,7 +446,9 @@
         "max": ""
       }
     ],
-    "indexes": ["CREATE INDEX idx_approvals_media ON approvals (media)"],
+    "indexes": [
+      "CREATE INDEX idx_approvals_media ON approvals (media)"
+    ],
     "listRule": "@request.auth.role = 'admin'",
     "viewRule": "@request.auth.role = 'admin'",
     "createRule": "@request.auth.role = 'admin'",
@@ -485,7 +507,9 @@
         "maxSize": 1048576
       }
     ],
-    "indexes": ["CREATE INDEX idx_devices_apiKey ON devices (apiKey)"],
+    "indexes": [
+      "CREATE INDEX idx_devices_apiKey ON devices (apiKey)"
+    ],
     "listRule": "@request.auth.role = 'admin'",
     "viewRule": "@request.auth.role = 'admin'",
     "createRule": "@request.auth.role = 'admin'",
@@ -536,5 +560,258 @@
     "createRule": "@request.auth.role = 'admin'",
     "updateRule": "@request.auth.role = 'admin'",
     "deleteRule": "@request.auth.role = 'admin'"
+  },
+  {
+    "id": "r9s4v7x2w8b3n5q",
+    "name": "processing_jobs",
+    "type": "base",
+    "system": false,
+    "fields": [
+      {
+        "id": "pj_media",
+        "name": "media",
+        "type": "relation",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "collectionId": "k5wmc7p6b8ydbdj",
+        "cascadeDelete": true,
+        "minSelect": null,
+        "maxSelect": 1
+      },
+      {
+        "id": "pj_status",
+        "name": "status",
+        "type": "select",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "maxSelect": 1,
+        "values": [
+          "queued",
+          "processing",
+          "done",
+          "failed"
+        ]
+      },
+      {
+        "id": "pj_attempts",
+        "name": "attempts",
+        "type": "number",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": 0,
+        "max": null,
+        "onlyInt": true
+      },
+      {
+        "id": "pj_error",
+        "name": "lastError",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "pj_started",
+        "name": "startedAt",
+        "type": "date",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": "",
+        "max": ""
+      },
+      {
+        "id": "pj_completed",
+        "name": "completedAt",
+        "type": "date",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": "",
+        "max": ""
+      }
+    ],
+    "indexes": [
+      "CREATE INDEX idx_pjobs_status ON processing_jobs (status)",
+      "CREATE INDEX idx_pjobs_media ON processing_jobs (media)"
+    ],
+    "listRule": "@request.auth.role = 'admin'",
+    "viewRule": "@request.auth.role = 'admin'",
+    "createRule": null,
+    "updateRule": null,
+    "deleteRule": "@request.auth.role = 'admin'"
+  },
+  {
+    "id": "m4f8r2n6p0q5s1v",
+    "name": "pending_devices",
+    "type": "base",
+    "system": false,
+    "fields": [
+      {
+        "id": "pd_sid",
+        "name": "sessionId",
+        "type": "text",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": 128,
+        "pattern": ""
+      },
+      {
+        "id": "pd_hash",
+        "name": "pinHash",
+        "type": "text",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": 128,
+        "pattern": ""
+      },
+      {
+        "id": "pd_host",
+        "name": "hostname",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": 255,
+        "pattern": ""
+      },
+      {
+        "id": "pd_ip",
+        "name": "ip",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": 64,
+        "pattern": ""
+      },
+      {
+        "id": "pd_claimed",
+        "name": "claimed",
+        "type": "bool",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false
+      },
+      {
+        "id": "pd_devid",
+        "name": "deviceId",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": 64,
+        "pattern": ""
+      },
+      {
+        "id": "pd_apikey",
+        "name": "apiKey",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": 64,
+        "pattern": ""
+      }
+    ],
+    "indexes": [
+      "CREATE UNIQUE INDEX idx_pending_sid ON pending_devices (sessionId)"
+    ],
+    "listRule": null,
+    "viewRule": null,
+    "createRule": null,
+    "updateRule": null,
+    "deleteRule": null
+  },
+  {
+    "id": "rl7x2p4k9m1n3s8",
+    "name": "rate_limits",
+    "type": "base",
+    "system": false,
+    "fields": [
+      {
+        "id": "rl_key",
+        "name": "key",
+        "type": "text",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": 255,
+        "pattern": ""
+      },
+      {
+        "id": "rl_type",
+        "name": "type",
+        "type": "text",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": 50,
+        "pattern": ""
+      },
+      {
+        "id": "rl_count",
+        "name": "count",
+        "type": "number",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "min": 0,
+        "max": null,
+        "onlyInt": true
+      },
+      {
+        "id": "rl_reset",
+        "name": "resetAt",
+        "type": "date",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "min": "",
+        "max": ""
+      }
+    ],
+    "indexes": [
+      "CREATE UNIQUE INDEX idx_ratelimit_key ON rate_limits (key)",
+      "CREATE INDEX idx_ratelimit_reset ON rate_limits (resetAt)"
+    ],
+    "listRule": null,
+    "viewRule": null,
+    "createRule": null,
+    "updateRule": null,
+    "deleteRule": null
   }
 ]
