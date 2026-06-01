@@ -13,14 +13,17 @@ type AuthContextType = {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function getStoredUser() {
+  return pb.authStore.isValid ? (pb.authStore.model as User) : null;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(getStoredUser);
   const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (pb.authStore.isValid) {
-      setUser(pb.authStore.model as User);
-    }
+    setUser(getStoredUser());
+
     const unsubscribe = pb.authStore.onChange((token, model) => {
       if (token && model) {
         setUser(model as User);
@@ -81,4 +84,3 @@ export function RequireAdmin({ children, redirect }: { children: ReactNode; redi
   if (!user || user.role !== "admin") return <Navigate to={redirect} replace />;
   return <>{children}</>;
 }
-

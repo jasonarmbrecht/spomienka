@@ -7,7 +7,7 @@ use crate::renderer::{MediaTextures, Renderer};
 use anyhow::Result;
 use sdl2::render::TextureCreator;
 use sdl2::video::WindowContext;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -16,6 +16,10 @@ use tokio::sync::RwLock;
 #[serde(rename_all = "camelCase")]
 pub struct Media {
     pub id: String,
+    pub collection_id: Option<String>,
+    pub collection_name: Option<String>,
+    /// Original uploaded file — used as fallback when processed URLs are empty.
+    pub file: Option<String>,
     #[serde(rename = "type")]
     pub media_type: String,
     pub display_url: Option<String>,
@@ -28,9 +32,33 @@ pub struct Media {
 }
 
 impl Media {
+    /// Build the PocketBase URL for the raw uploaded file.
+    /// Used as fallback when processed URLs (displayUrl, blurUrl) are empty.
+    pub fn raw_file_url(&self) -> Option<String> {
+        let file = self.file.as_deref().filter(|s| !s.is_empty())?;
+        let col = self
+            .collection_name
+            .as_deref()
+            .or(self.collection_id.as_deref())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("media");
+        Some(format!("/api/files/{}/{}/{}", col, self.id, file))
+    }
+
     /// Check if this is a video media type.
     pub fn is_video(&self) -> bool {
         self.media_type == "video"
+    }
+
+    /// Return the processed URL for the given asset type, or None if absent/empty.
+    pub fn url_for_asset(&self, asset_type: AssetType) -> Option<&str> {
+        match asset_type {
+            AssetType::Display => self.display_url.as_deref(),
+            AssetType::Blur => self.blur_url.as_deref(),
+            AssetType::Video => self.video_url.as_deref(),
+            AssetType::Poster => self.poster_url.as_deref(),
+        }
+        .filter(|s| !s.is_empty())
     }
 }
 
@@ -59,6 +87,23 @@ impl AssetType {
             AssetType::Video => "mp4",
         }
     }
+}
+
+fn is_image_asset(asset_type: AssetType) -> bool {
+    matches!(
+        asset_type,
+        AssetType::Display | AssetType::Blur | AssetType::Poster
+    )
+}
+
+fn is_supported_image_file(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+
+    bytes.starts_with(&[0xff, 0xd8, 0xff])
+        || bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        || bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")
 }
 
 /// Manages asset loading and preloading.
@@ -90,15 +135,34 @@ impl AssetManager {
         client: &reqwest::Client,
         token: Option<&str>,
     ) -> Result<Option<PathBuf>> {
-        let url = match asset_type {
-            AssetType::Display => media.display_url.as_deref(),
-            AssetType::Blur => media.blur_url.as_deref(),
-            AssetType::Video => media.video_url.as_deref(),
-            AssetType::Poster => media.poster_url.as_deref(),
-        };
+        let processed_url = media.url_for_asset(asset_type);
 
-        let Some(url) = url else {
-            return Ok(None);
+        // Fall back to the raw original file for still images and for video playback
+        // when backend processing has not produced derived URLs yet. A missing video
+        // poster should remain missing; caching the MP4 as a JPEG only produces
+        // blank textures and noisy image-load warnings.
+        let fallback;
+        let url = match processed_url {
+            Some(u) => u,
+            None => match asset_type {
+                AssetType::Display if !media.is_video() => {
+                    fallback = media.raw_file_url();
+                    match fallback.as_deref() {
+                        Some(u) => u,
+                        None => return Ok(None),
+                    }
+                }
+                AssetType::Video if media.is_video() => {
+                    fallback = media.raw_file_url();
+                    match fallback.as_deref() {
+                        Some(u) => u,
+                        None => return Ok(None),
+                    }
+                }
+                AssetType::Display | AssetType::Blur | AssetType::Video | AssetType::Poster => {
+                    return Ok(None);
+                }
+            },
         };
 
         let full_url = self.full_url(url);
@@ -108,7 +172,19 @@ impl AssetManager {
             let cache = self.cache.read().await;
             if let Some(path) = cache.get_cached_path(&media.id, asset_type) {
                 if path.exists() {
-                    return Ok(Some(path));
+                    if is_image_asset(asset_type) && !is_supported_image_file(&path) {
+                        tracing::warn!(
+                            "Discarding invalid cached {} image for {}: {:?}",
+                            asset_type.as_str(),
+                            media.id,
+                            path
+                        );
+                        if let Err(e) = std::fs::remove_file(&path) {
+                            tracing::warn!("Failed to remove invalid cached image: {}", e);
+                        }
+                    } else {
+                        return Ok(Some(path));
+                    }
                 }
             }
         }
@@ -174,15 +250,22 @@ impl AssetManager {
     ) -> Result<MediaTextures<'a>> {
         let mut textures = MediaTextures::new();
 
-        // Load blur texture
+        // Load blur texture (pre-generated by the backend)
         if let Some(blur_path) = cache.get_cached_path(&media.id, AssetType::Blur) {
             if blur_path.exists() {
-                match renderer.load_texture_from_file(texture_creator, &blur_path) {
-                    Ok((tex, _, _)) => {
-                        textures.blur = Some(tex);
+                if !is_supported_image_file(&blur_path) {
+                    tracing::warn!("Discarding invalid cached blur image: {:?}", blur_path);
+                    if let Err(e) = std::fs::remove_file(&blur_path) {
+                        tracing::warn!("Failed to remove invalid cached blur image: {}", e);
                     }
-                    Err(e) => {
-                        tracing::warn!("Failed to load blur texture: {}", e);
+                } else {
+                    match renderer.load_texture_from_file(texture_creator, &blur_path) {
+                        Ok((tex, _, _)) => {
+                            textures.blur = Some(tex);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to load blur texture: {}", e);
+                        }
                     }
                 }
             }
@@ -195,15 +278,43 @@ impl AssetManager {
             AssetType::Display
         };
 
-        if let Some(display_path) = cache.get_cached_path(&media.id, display_asset) {
-            if display_path.exists() {
-                match renderer.load_texture_from_file(texture_creator, &display_path) {
-                    Ok((tex, width, height)) => {
-                        textures.display = Some(tex);
-                        textures.display_size = Some((width, height));
+        let display_path = cache.get_cached_path(&media.id, display_asset);
+
+        if let Some(ref path) = display_path {
+            if path.exists() {
+                if !is_supported_image_file(path) {
+                    tracing::warn!("Discarding invalid cached display image: {:?}", path);
+                    if let Err(e) = std::fs::remove_file(path) {
+                        tracing::warn!("Failed to remove invalid cached display image: {}", e);
                     }
-                    Err(e) => {
-                        tracing::warn!("Failed to load display texture: {}", e);
+                } else {
+                    match renderer.load_texture_from_file(texture_creator, path) {
+                        Ok((tex, width, height)) => {
+                            textures.display = Some(tex);
+                            textures.display_size = Some((width, height));
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to load display texture: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // If no server-side blur exists, generate one on the CPU using a real Gaussian blur.
+        // This runs once per image load (~40ms) and is cached for the duration of the slide.
+        if textures.blur.is_none() {
+            if let Some(ref path) = display_path {
+                if path.exists() {
+                    let t = std::time::Instant::now();
+                    match renderer.generate_blur_texture(texture_creator, path) {
+                        Ok(tex) => {
+                            tracing::debug!("Generated Gaussian blur in {:?}", t.elapsed());
+                            textures.blur = Some(tex);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to generate blur texture: {}", e);
+                        }
                     }
                 }
             }
@@ -211,7 +322,6 @@ impl AssetManager {
 
         Ok(textures)
     }
-
 }
 
 /// Background preloader that downloads assets ahead of time.
@@ -278,4 +388,3 @@ impl Preloader {
         tracing::info!("Preloading complete");
     }
 }
-

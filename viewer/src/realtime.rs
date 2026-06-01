@@ -1,38 +1,47 @@
-//! PocketBase realtime subscription module.
+//! PocketBase realtime subscription via SSE.
 //!
-//! Connects to PocketBase WebSocket API for live playlist updates.
+//! PocketBase uses Server-Sent Events, not WebSocket:
+//!   1. GET /api/realtime → SSE stream, first event gives clientId
+//!   2. POST /api/realtime { clientId, subscriptions } → subscribe
+//!   3. Read events from the open SSE stream
 
 use crate::assets::Media;
 use anyhow::{Context, Result};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
+use reqwest::Client;
 use serde::Deserialize;
-use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{client::IntoClientRequest, Message},
-};
-use url::Url;
 
 /// Events from the realtime subscription.
 #[derive(Debug, Clone)]
 pub enum RealtimeEvent {
-    /// Connection established.
     Connected,
-    /// Connection lost.
     Disconnected,
-    /// Media item created.
     MediaCreated(Media),
-    /// Media item updated.
     MediaUpdated(Media),
-    /// Media item deleted.
     MediaDeleted(String),
-    /// Full playlist refresh needed.
     RefreshNeeded,
 }
 
-/// PocketBase realtime message types.
+#[derive(Debug, Default)]
+struct SseEvent {
+    event_type: String,
+    data: String,
+}
+
+fn parse_sse_block(block: &str) -> SseEvent {
+    let mut ev = SseEvent::default();
+    for line in block.lines() {
+        if let Some(v) = line.strip_prefix("event:") {
+            ev.event_type = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("data:") {
+            ev.data = v.trim().to_string();
+        }
+    }
+    ev
+}
+
 #[derive(Debug, Deserialize)]
 struct RealtimeMessage {
     #[serde(default)]
@@ -41,16 +50,13 @@ struct RealtimeMessage {
     record: Option<serde_json::Value>,
 }
 
-/// Realtime connection manager.
 pub struct RealtimeManager {
     pb_url: String,
     event_tx: mpsc::Sender<RealtimeEvent>,
-    is_connected: Arc<RwLock<bool>>,
     device_id: Option<String>,
 }
 
 impl RealtimeManager {
-    /// Create a new realtime manager.
     pub fn new(
         pb_url: String,
         device_id: Option<String>,
@@ -59,211 +65,163 @@ impl RealtimeManager {
         Self {
             pb_url,
             event_tx,
-            is_connected: Arc::new(RwLock::new(false)),
             device_id,
         }
     }
 
-    /// Build the WebSocket URL.
-    fn ws_url(&self) -> Result<Url> {
-        let mut url = Url::parse(&self.pb_url).context("Invalid PocketBase URL")?;
-
-        // Change scheme to ws/wss
-        let scheme = if url.scheme() == "https" {
-            "wss"
-        } else {
-            "ws"
-        };
-        url.set_scheme(scheme)
-            .map_err(|_| anyhow::anyhow!("Failed to set WebSocket scheme"))?;
-
-        url.set_path("/api/realtime");
-
-        Ok(url)
-    }
-
-    /// Build the subscription filter for media collection.
     fn build_subscription(&self) -> String {
-        let base_filter = "status='published'";
-
         if let Some(ref device_id) = self.device_id {
-            // Filter by device scope (allow null/empty scopes as global)
             format!(
-                "media?filter=({}) && (deviceScopes~'\"{}\"' || deviceScopes:len=0 || deviceScopes = null)",
-                base_filter, device_id
+                "media?filter=(status='published') && (deviceScopes~'\"{}\"' || deviceScopes = null || deviceScopes = '[]' || deviceScopes = '')",
+                device_id
             )
         } else {
-            format!("media?filter={}", base_filter)
+            "media?filter=status='published'".to_string()
         }
     }
 
-    /// Start the realtime connection loop.
     pub async fn run(&self, token: Option<String>) {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .unwrap_or_default();
+
         loop {
             tracing::info!("Connecting to PocketBase realtime...");
 
-            match self.connect_and_subscribe(token.as_deref()).await {
-                Ok(()) => {
-                    tracing::warn!("Realtime connection closed, reconnecting in 5s...");
-                }
+            match self.connect_and_subscribe(&client, token.as_deref()).await {
+                Ok(()) => tracing::warn!("Realtime SSE stream closed, reconnecting in 5s..."),
                 Err(e) => {
-                    tracing::error!("Realtime connection error: {}, reconnecting in 5s...", e);
+                    tracing::error!("Realtime connection error: {}, reconnecting in 5s...", e)
                 }
             }
 
-            // Mark as disconnected
-            *self.is_connected.write().await = false;
             let _ = self.event_tx.send(RealtimeEvent::Disconnected).await;
-
-            // Wait before reconnecting
             sleep(Duration::from_secs(5)).await;
         }
     }
 
-    /// Connect and subscribe to the media collection.
-    async fn connect_and_subscribe(&self, token: Option<&str>) -> Result<()> {
-        let url = self.ws_url()?;
-        tracing::debug!("Connecting to: {}", url);
+    async fn connect_and_subscribe(&self, client: &Client, token: Option<&str>) -> Result<()> {
+        let url = format!("{}/api/realtime", self.pb_url);
 
-        // Build request with auth header if token provided
-        let mut request = url.to_string().into_client_request()?;
-        if let Some(token) = token {
-            request.headers_mut().insert(
-                "Authorization",
-                format!("Bearer {}", token).parse().unwrap(),
-            );
+        let mut req = client.get(&url).header("Accept", "text/event-stream");
+        if let Some(t) = token {
+            req = req.bearer_auth(t);
         }
 
-        let (ws_stream, _response) = connect_async(request)
+        let response = req
+            .send()
             .await
-            .context("Failed to connect to WebSocket")?;
+            .context("Failed to connect to SSE endpoint")?;
+        if !response.status().is_success() {
+            anyhow::bail!("SSE connection failed: {}", response.status());
+        }
 
-        let (mut write, mut read) = ws_stream.split();
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut subscribed = false;
 
-        // Wait for the initial client ID message
-        let client_id = loop {
-            if let Some(msg) = read.next().await {
-                let msg = msg.context("Failed to receive message")?;
-                if let Message::Text(text) = msg {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if let Some(id) = json.get("clientId").and_then(|v| v.as_str()) {
-                            break id.to_string();
-                        }
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("SSE stream read error")?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            // SSE events are separated by blank lines (\n\n)
+            while let Some(pos) = buffer.find("\n\n") {
+                let block = buffer[..pos].to_string();
+                buffer = buffer[pos + 2..].to_string();
+
+                if block.trim().is_empty() {
+                    continue;
+                }
+
+                let ev = parse_sse_block(&block);
+
+                if ev.event_type == "PB_CONNECT" {
+                    let json: serde_json::Value = serde_json::from_str(&ev.data)
+                        .context("Failed to parse PB_CONNECT payload")?;
+                    let client_id = json
+                        .get("clientId")
+                        .and_then(|v| v.as_str())
+                        .context("No clientId in PB_CONNECT")?
+                        .to_string();
+
+                    tracing::debug!("SSE clientId: {}", client_id);
+
+                    // POST the subscription
+                    let sub_url = format!("{}/api/realtime", self.pb_url);
+                    let subscription = self.build_subscription();
+                    let mut sub_req = client.post(&sub_url).json(&serde_json::json!({
+                        "clientId": client_id,
+                        "subscriptions": [subscription],
+                    }));
+                    if let Some(t) = token {
+                        sub_req = sub_req.bearer_auth(t);
                     }
-                }
-            }
-        };
-
-        tracing::debug!("Got client ID: {}", client_id);
-
-        // Subscribe to media collection
-        let subscription = self.build_subscription();
-        let subscribe_msg = serde_json::json!({
-            "clientId": client_id,
-            "subscriptions": [subscription]
-        });
-
-        write
-            .send(Message::Text(subscribe_msg.to_string()))
-            .await
-            .context("Failed to send subscription")?;
-
-        // Mark as connected
-        *self.is_connected.write().await = true;
-        let _ = self.event_tx.send(RealtimeEvent::Connected).await;
-        let _ = self.event_tx.send(RealtimeEvent::RefreshNeeded).await;
-
-        tracing::info!("Realtime connected and subscribed");
-
-        // Process messages
-        while let Some(msg) = read.next().await {
-            let msg = msg.context("Failed to receive message")?;
-
-            match msg {
-                Message::Text(text) => {
-                    self.handle_message(&text).await;
-                }
-                Message::Ping(data) => {
-                    write
-                        .send(Message::Pong(data))
+                    let sub_res = sub_req
+                        .send()
                         .await
-                        .context("Failed to send pong")?;
+                        .context("Failed to POST subscription")?;
+                    if !sub_res.status().is_success() {
+                        anyhow::bail!("Subscription POST failed: {}", sub_res.status());
+                    }
+
+                    subscribed = true;
+                    let _ = self.event_tx.send(RealtimeEvent::Connected).await;
+                    let _ = self.event_tx.send(RealtimeEvent::RefreshNeeded).await;
+                    tracing::info!("Realtime connected and subscribed to: {}", subscription);
+                } else if subscribed {
+                    self.handle_sse_event(&ev).await;
                 }
-                Message::Close(_) => {
-                    tracing::info!("WebSocket closed by server");
-                    break;
-                }
-                _ => {}
             }
         }
 
         Ok(())
     }
 
-    /// Handle an incoming realtime message.
-    async fn handle_message(&self, text: &str) {
-        let msg: RealtimeMessage = match serde_json::from_str(text) {
+    async fn handle_sse_event(&self, ev: &SseEvent) {
+        if ev.data.is_empty() {
+            return;
+        }
+
+        let msg: RealtimeMessage = match serde_json::from_str(&ev.data) {
             Ok(m) => m,
             Err(e) => {
-                tracing::debug!("Failed to parse realtime message: {} - {}", e, text);
+                tracing::debug!("Failed to parse SSE data: {} — {}", e, ev.data);
                 return;
             }
         };
 
-        // Skip non-record messages
-        let Some(action) = msg.action else {
-            return;
-        };
+        let Some(action) = msg.action else { return };
 
         let event = match action.as_str() {
-            "create" => {
-                if let Some(record) = msg.record {
-                    match serde_json::from_value::<Media>(record) {
-                        Ok(media) => {
-                            // Only process published media
-                            if self.matches_filter(&media) {
-                                Some(RealtimeEvent::MediaCreated(media))
-                            } else {
-                                None
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to parse media record: {}", e);
-                            None
-                        }
+            "create" => msg
+                .record
+                .and_then(|r| match serde_json::from_value::<Media>(r) {
+                    Ok(m) if self.matches_filter(&m) => Some(RealtimeEvent::MediaCreated(m)),
+                    Ok(_) => None,
+                    Err(e) => {
+                        tracing::warn!("Failed to parse created media: {}", e);
+                        None
                     }
-                } else {
-                    None
-                }
-            }
-            "update" => {
-                if let Some(record) = msg.record {
-                    match serde_json::from_value::<Media>(record) {
-                        Ok(media) => {
-                            if self.matches_filter(&media) {
-                                Some(RealtimeEvent::MediaUpdated(media))
-                            } else {
-                                // Media no longer matches filter (e.g., unpublished)
-                                Some(RealtimeEvent::MediaDeleted(media.id))
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to parse media record: {}", e);
-                            None
-                        }
+                }),
+            "update" => msg
+                .record
+                .and_then(|r| match serde_json::from_value::<Media>(r) {
+                    Ok(m) => Some(if self.matches_filter(&m) {
+                        RealtimeEvent::MediaUpdated(m)
+                    } else {
+                        RealtimeEvent::MediaDeleted(m.id)
+                    }),
+                    Err(e) => {
+                        tracing::warn!("Failed to parse updated media: {}", e);
+                        None
                     }
-                } else {
-                    None
-                }
-            }
-            "delete" => {
-                msg.record.and_then(|record| {
-                    record
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .map(|id| RealtimeEvent::MediaDeleted(id.to_string()))
-                })
-            }
+                }),
+            "delete" => msg.record.and_then(|r| {
+                r.get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|id| RealtimeEvent::MediaDeleted(id.to_string()))
+            }),
             _ => None,
         };
 
@@ -273,44 +231,29 @@ impl RealtimeManager {
         }
     }
 
-    /// Check if a media item matches our filter.
     fn matches_filter(&self, media: &Media) -> bool {
-        // Check device scope if we have a device ID
         if let Some(ref device_id) = self.device_id {
             if let Some(ref scopes) = media.device_scopes {
-                // If scopes is an array, check if our device is in it or if it's empty
                 if let Some(arr) = scopes.as_array() {
                     if !arr.is_empty() {
-                        let has_device = arr.iter().any(|v| {
-                            v.as_str().map(|s| s == device_id).unwrap_or(false)
-                        });
-                        if !has_device {
-                            return false;
-                        }
+                        return arr.iter().any(|v| v.as_str() == Some(device_id));
                     }
                 }
             }
         }
-
         true
     }
-
 }
 
-/// Spawn the realtime manager as a background task.
 pub fn spawn_realtime(
     pb_url: String,
     device_id: Option<String>,
     token: Option<String>,
 ) -> mpsc::Receiver<RealtimeEvent> {
     let (tx, rx) = mpsc::channel(100);
-
     let manager = RealtimeManager::new(pb_url, device_id, tx);
-
     tokio::spawn(async move {
         manager.run(token).await;
     });
-
     rx
 }
-

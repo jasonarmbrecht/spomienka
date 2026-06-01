@@ -2,6 +2,8 @@ import { FormEvent, useState, useRef } from "react";
 import { pb } from "../pb/client";
 import { useAuth } from "../pb/auth";
 import { MAX_FILE_SIZE, ALLOWED_IMAGE_TYPES, ALLOWED_VIDEO_TYPES, MAX_FILE_SIZE_DISPLAY } from "../constants";
+import { Notification } from "../components/Notification";
+import { useNotification } from "../hooks/useNotification";
 
 type FileWithId = {
   id: string;
@@ -27,8 +29,7 @@ export function UploadPage() {
   const [files, setFiles] = useState<FileWithId[]>([]);
   const [uploadProgress, setUploadProgress] = useState<Record<string, UploadProgress>>({});
   const [isDragging, setIsDragging] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { error, message, setError, setMessage, showMessage } = useNotification();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
@@ -189,7 +190,7 @@ export function UploadPage() {
     e.preventDefault();
     if (files.length === 0) return;
 
-    setStatus("Uploading...");
+    showMessage("Uploading...");
     setError(null);
 
     // Upload files sequentially
@@ -202,8 +203,8 @@ export function UploadPage() {
       }
     }
 
-    setStatus("Upload complete");
-    setTimeout(() => setStatus(null), 3000);
+    showMessage("Upload complete");
+    setTimeout(() => setMessage(null), 3000);
   };
 
   const removeFile = (fileId: string) => {
@@ -224,16 +225,8 @@ export function UploadPage() {
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          style={{
-            border: `2px dashed ${isDragging ? "var(--color-primary)" : "var(--color-border)"}`,
-            borderRadius: "var(--radius)",
-            padding: "2rem",
-            textAlign: "center",
-            background: isDragging ? "rgba(29, 155, 240, 0.1)" : "var(--color-bg)",
-            cursor: "pointer",
-            transition: "all 0.2s",
-            marginBottom: "1rem",
-          }}
+          className={`drop-zone${isDragging ? " dragging" : ""}`}
+          style={{ marginBottom: "1rem" }}
           onClick={() => fileInputRef.current?.click()}
         >
           <p style={{ color: "var(--color-text-muted)", marginBottom: "0.5rem" }}>
@@ -274,13 +267,7 @@ export function UploadPage() {
                       <button
                         type="button"
                         onClick={() => removeFile(id)}
-                        style={{
-                          background: "transparent",
-                          border: "none",
-                          color: "var(--color-error)",
-                          cursor: "pointer",
-                          padding: "0.25rem 0.5rem",
-                        }}
+                        className="btn-icon"
                       >
                         Remove
                       </button>
@@ -289,14 +276,10 @@ export function UploadPage() {
                   {progress && (
                     <div>
                       {progress.status === "uploading" && (
-                        <div style={{ width: "100%", background: "var(--color-bg)", borderRadius: "var(--radius-sm)", height: "4px", overflow: "hidden" }}>
+                        <div className="progress-bar">
                           <div
-                            style={{
-                              width: `${progress.progress}%`,
-                              background: "var(--color-primary)",
-                              height: "100%",
-                              transition: "width 0.3s",
-                            }}
+                            className="progress-bar-fill"
+                            style={{ width: `${progress.progress}%` }}
                           />
                         </div>
                       )}
@@ -318,8 +301,7 @@ export function UploadPage() {
           {Object.values(uploadProgress).some(p => p.status === "uploading") ? "Uploading..." : `Upload ${files.length > 0 ? `${files.length} file${files.length > 1 ? "s" : ""}` : ""}`}
         </button>
       </form>
-      {status && <p className="success">{status}</p>}
-      {error && <p className="error">{error}</p>}
+      <Notification error={error} message={message} />
     </section>
   );
 }

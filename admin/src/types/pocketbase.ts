@@ -74,21 +74,7 @@ export interface MediaRecord extends BaseRecord {
   posterUrl?: string;
 }
 
-/**
- * Approval status
- */
 export type ApprovalStatus = "approved" | "rejected";
-
-/**
- * Approval record from the approvals collection
- */
-export interface ApprovalRecord extends BaseRecord {
-  media: string; // relation to media
-  reviewer: string; // relation to users
-  status: ApprovalStatus;
-  notes?: string;
-  reviewedAt?: string;
-}
 
 /**
  * Device configuration
@@ -96,7 +82,10 @@ export interface ApprovalRecord extends BaseRecord {
 export interface DeviceConfig {
   interval?: number;
   transition?: "fade" | "crossfade" | "cut";
+  transitionDuration?: number;
+  blur?: boolean;
   shuffle?: boolean;
+  showClock?: boolean;
 }
 
 /**
@@ -108,46 +97,3 @@ export interface DeviceRecord extends BaseRecord {
   lastSeen?: string;
   config?: DeviceConfig;
 }
-
-/**
- * Plugin manifest structure
- */
-export interface PluginManifest {
-  id: string;
-  name: string;
-  version: string;
-  capabilities: string[];
-  entrypoint: string;
-  configSchema?: Record<string, unknown>;
-}
-
-/**
- * Plugin record from the plugins collection
- */
-export interface PluginRecord extends BaseRecord {
-  manifest: PluginManifest;
-  checksum?: string;
-  enabled: boolean;
-}
-
-/**
- * Type guard to check if a record is a media record
- */
-export function isMediaRecord(record: BaseRecord): record is MediaRecord {
-  return record.collectionName === "media";
-}
-
-/**
- * Type guard to check if a record is a user record
- */
-export function isUserRecord(record: BaseRecord): record is UserRecord {
-  return record.collectionName === "users";
-}
-
-/**
- * Type guard to check if a record is a device record
- */
-export function isDeviceRecord(record: BaseRecord): record is DeviceRecord {
-  return record.collectionName === "devices";
-}
-

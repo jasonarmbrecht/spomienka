@@ -111,16 +111,16 @@ impl VideoPlayer {
                 return;
             };
 
-            let sink_pad = convert
-                .static_pad("sink")
-                .expect("convert has no sink pad");
+            let sink_pad = convert.static_pad("sink").expect("convert has no sink pad");
 
             if sink_pad.is_linked() {
                 return;
             }
 
             // Only link video pads
-            let caps = src_pad.current_caps().unwrap_or_else(|| src_pad.query_caps(None));
+            let caps = src_pad
+                .current_caps()
+                .unwrap_or_else(|| src_pad.query_caps(None));
             let structure = caps.structure(0).expect("caps has no structure");
             let name = structure.name();
 
@@ -179,34 +179,31 @@ impl VideoPlayer {
         let should_loop_copy = should_loop;
 
         let bus = pipeline.bus().expect("Pipeline has no bus");
-        let bus_watch_guard = bus.add_watch(move |_bus, msg| {
-            match msg.view() {
-                gst::MessageView::Eos(_) => {
-                    if should_loop_copy {
-                        // Seek back to start for seamless loop
-                        if let Some(pipeline) = pipeline_weak.upgrade() {
-                            let _ = pipeline.seek_simple(
-                                gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-                                gst::ClockTime::ZERO,
-                            );
+        let bus_watch_guard = bus
+            .add_watch(move |_bus, msg| {
+                match msg.view() {
+                    gst::MessageView::Eos(_) => {
+                        if should_loop_copy {
+                            // Seek back to start for seamless loop
+                            if let Some(pipeline) = pipeline_weak.upgrade() {
+                                let _ = pipeline.seek_simple(
+                                    gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                                    gst::ClockTime::ZERO,
+                                );
+                            }
+                        } else {
+                            eos_flag.store(true, Ordering::SeqCst);
                         }
-                    } else {
+                    }
+                    gst::MessageView::Error(err) => {
+                        tracing::error!("GStreamer error: {} ({:?})", err.error(), err.debug());
                         eos_flag.store(true, Ordering::SeqCst);
                     }
+                    _ => {}
                 }
-                gst::MessageView::Error(err) => {
-                    tracing::error!(
-                        "GStreamer error: {} ({:?})",
-                        err.error(),
-                        err.debug()
-                    );
-                    eos_flag.store(true, Ordering::SeqCst);
-                }
-                _ => {}
-            }
-            gst::glib::ControlFlow::Continue
-        })
-        .expect("Failed to add bus watch");
+                gst::glib::ControlFlow::Continue
+            })
+            .expect("Failed to add bus watch");
 
         Ok(Self {
             pipeline,
@@ -374,4 +371,3 @@ impl VideoManager {
         self.current_player.as_ref()?.position()
     }
 }
-

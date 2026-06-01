@@ -4,6 +4,7 @@
 
 mod assets;
 mod cache;
+mod discovery;
 mod realtime;
 mod renderer;
 mod video;
@@ -24,7 +25,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use video::VideoManager;
 
 /// Application configuration loaded from TOML file with environment variable overrides.
-/// 
+///
 /// SECURITY: Auth credentials (auth_email, auth_password) are ONLY loaded from
 /// environment variables, never from config files, to prevent credential leakage.
 #[derive(Debug, Deserialize)]
@@ -57,7 +58,7 @@ struct AppConfig {
     #[serde(default)]
     device_id: Option<String>,
 
-    /// Optional device API key for authentication
+    /// Optional device API key (stored in config but auth is done via email/password)
     #[serde(default)]
     device_api_key: Option<String>,
 
@@ -91,6 +92,18 @@ struct AppConfig {
     /// Full sync mode - preload all media on startup
     #[serde(default)]
     full_sync: bool,
+
+    /// Run in fullscreen mode (default: true). Set to false for windowed dev mode.
+    #[serde(default = "default_fullscreen")]
+    fullscreen: bool,
+
+    /// Show blurred background behind images (default: true).
+    #[serde(default = "default_blur_background")]
+    pub blur_background: bool,
+
+    /// Show a subtle clock in the bottom-right corner (default: true).
+    #[serde(default = "default_show_clock")]
+    pub show_clock: bool,
 }
 
 fn default_pb_url() -> String {
@@ -125,9 +138,21 @@ fn default_video_loop_threshold_sec() -> f32 {
     30.0
 }
 
+fn default_fullscreen() -> bool {
+    true
+}
+
+fn default_blur_background() -> bool {
+    true
+}
+
+fn default_show_clock() -> bool {
+    true
+}
+
 impl AppConfig {
     /// Load configuration from file and environment variables.
-    /// 
+    ///
     /// SECURITY: Auth credentials are loaded from environment variables only,
     /// never from config files, to prevent credential leakage through backups
     /// or version control.
@@ -136,11 +161,18 @@ impl AppConfig {
             .set_default("pb_url", default_pb_url())?
             .set_default("interval_ms", default_interval_ms() as i64)?
             .set_default("transition", default_transition())?
-            .set_default("transition_duration_ms", default_transition_duration_ms() as i64)?
+            .set_default(
+                "transition_duration_ms",
+                default_transition_duration_ms() as i64,
+            )?
             .set_default("cache_dir", default_cache_dir())?
             .set_default("cache_size_limit_gb", default_cache_size_limit_gb() as i64)?
             .set_default("enable_realtime", default_enable_realtime())?
-            .set_default("video_loop_threshold_sec", default_video_loop_threshold_sec() as f64)?
+            .set_default(
+                "video_loop_threshold_sec",
+                default_video_loop_threshold_sec() as f64,
+            )?
+            .set_default("show_clock", default_show_clock())?
             .add_source(File::with_name("/etc/frame-viewer/config").required(false))
             .add_source(File::with_name("config").required(false));
 
@@ -161,12 +193,12 @@ impl AppConfig {
             .build()?;
 
         let mut app_config: AppConfig = config.try_deserialize()?;
-        
+
         // Load auth credentials from environment variables ONLY (security)
         app_config.auth_token = env::var("AUTH_TOKEN").ok().filter(|s| !s.is_empty());
         app_config.auth_email = env::var("AUTH_EMAIL").ok().filter(|s| !s.is_empty());
         app_config.auth_password = env::var("AUTH_PASSWORD").ok().filter(|s| !s.is_empty());
-        
+
         Ok(app_config)
     }
 
@@ -175,7 +207,6 @@ impl AppConfig {
             token: self.auth_token.clone().filter(|s| !s.is_empty()),
             email: self.auth_email.clone().filter(|s| !s.is_empty()),
             password: self.auth_password.clone().filter(|s| !s.is_empty()),
-            device_api_key: self.device_api_key.clone().filter(|s| !s.is_empty()),
         }
     }
 }
@@ -185,7 +216,6 @@ struct AuthCreds {
     email: Option<String>,
     password: Option<String>,
     token: Option<String>,
-    device_api_key: Option<String>,
 }
 
 impl AuthCreds {
@@ -218,10 +248,7 @@ impl AppState {
             .build()
             .context("Failed to create HTTP client")?;
 
-        let cache = Cache::new(
-            config.cache_dir.clone().into(),
-            config.cache_size_limit_gb,
-        )?;
+        let cache = Cache::new(config.cache_dir.clone().into(), config.cache_size_limit_gb)?;
         let cache = Arc::new(RwLock::new(cache));
 
         let asset_manager = Arc::new(AssetManager::new(cache.clone(), config.pb_url.clone()));
@@ -241,6 +268,13 @@ impl AppState {
     /// Get the current auth token.
     async fn token(&self) -> Option<String> {
         self.auth_token.read().await.clone()
+    }
+
+    async fn preload_media_safe(&self, media: &Media) -> Result<()> {
+        let token = self.token().await;
+        self.asset_manager
+            .preload_media(media, &self.client, token.as_deref())
+            .await
     }
 
     /// Fetch playlist from PocketBase.
@@ -285,16 +319,13 @@ impl AppState {
         let mut filter = "status='published'".to_string();
 
         if let Some(ref device_id) = self.config.device_id {
-            // Allow media when deviceScopes contains this device, is empty, or is null.
-            // Note: PocketBase filter does not accept literal [] comparison; use :len=0 instead.
+            // Allow media when deviceScopes contains this device, is null, or is an empty array.
+            // deviceScopes is a JSON field — `:len=0` is not valid; compare against null/'[]'/''.
             let device_filter = format!(
-                "(deviceScopes~'\"{}\"' || deviceScopes:len=0 || deviceScopes = null)",
+                "(deviceScopes~'\"{}\"' || deviceScopes = null || deviceScopes = '[]' || deviceScopes = '')",
                 device_id
             );
-            filter = format!(
-                "({}) && {}",
-                filter, device_filter
-            );
+            filter = format!("({}) && {}", filter, device_filter);
         }
 
         filter
@@ -320,7 +351,9 @@ impl AppState {
             return self.parse_list(res).await;
         }
 
-        Err(anyhow::anyhow!("Unauthorized and no credentials to refresh"))
+        Err(anyhow::anyhow!(
+            "Unauthorized and no credentials to refresh"
+        ))
     }
 
     async fn send_request(
@@ -347,18 +380,12 @@ impl AppState {
     }
 
     async fn refresh_token(&self, creds: &AuthCreds) -> Result<Option<String>> {
-        // Priority 1: Device API key (used as bearer token directly)
-        if let Some(ref device_key) = creds.device_api_key {
-            tracing::debug!("Using device API key for authentication");
-            return Ok(Some(device_key.clone()));
-        }
-
-        // Priority 2: Direct auth token
+        // Priority 1: Direct auth token
         if let Some(ref token) = creds.token {
             return Ok(Some(token.clone()));
         }
 
-        // Priority 3: User email/password login
+        // Priority 2: User email/password login (preferred — device_api_key is not a PB JWT)
         if !creds.can_login() {
             return Ok(None);
         }
@@ -388,27 +415,11 @@ impl AppState {
         Ok(Some(parsed.token))
     }
 
-    /// Get the initial auth token.
-    async fn init_auth(&self) -> Result<()> {
-        let creds = self.config.to_auth_creds();
-
-        let token = if let Some(token) = creds.token.clone() {
-            Some(token)
-        } else if creds.can_login() {
-            self.refresh_token(&creds).await?
-        } else {
-            None
-        };
-
-        *self.auth_token.write().await = token;
-        Ok(())
-    }
-
     /// Fetch playlist with exponential backoff retry.
     async fn fetch_playlist_with_retry(&self, max_retries: u32) -> Result<Vec<Media>> {
         let mut last_error = None;
         let mut delay = Duration::from_secs(1);
-        
+
         for attempt in 0..=max_retries {
             if attempt > 0 {
                 tracing::info!(
@@ -420,7 +431,7 @@ impl AppState {
                 tokio::time::sleep(delay).await;
                 delay = std::cmp::min(delay * 2, Duration::from_secs(60)); // Cap at 60s
             }
-            
+
             match self.fetch_playlist().await {
                 Ok(playlist) => return Ok(playlist),
                 Err(e) => {
@@ -429,9 +440,35 @@ impl AppState {
                 }
             }
         }
-        
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Failed to fetch playlist after {} retries", max_retries)))
+
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!("Failed to fetch playlist after {} retries", max_retries)
+        }))
     }
+}
+
+/// Response from POST /api/spomienka/device-auth.
+#[derive(Deserialize)]
+struct DeviceAuthResponse {
+    token: String,
+    config: serde_json::Value,
+}
+
+/// Authenticate as a device using device_id + device_api_key.
+/// Updates lastSeen on the backend and returns device config.
+async fn device_auth(
+    client: &reqwest::Client,
+    pb_url: &str,
+    device_id: &str,
+    api_key: &str,
+) -> Result<DeviceAuthResponse> {
+    let res = client
+        .post(format!("{}/api/spomienka/device-auth", pb_url))
+        .json(&serde_json::json!({ "device_id": device_id, "api_key": api_key }))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(res.json::<DeviceAuthResponse>().await?)
 }
 
 #[tokio::main]
@@ -443,25 +480,85 @@ async fn main() -> Result<()> {
         .init();
 
     // Load configuration
-    let config = AppConfig::load()?;
+    let mut config = AppConfig::load()?;
+
+    // Discovery mode: when no device_id is configured, show a PIN screen and wait
+    // for an admin to register this viewer via the Settings page.
+    if config.device_id.is_none() {
+        return run_discovery_mode(&config).await;
+    }
 
     tracing::info!("Starting frame-viewer");
     tracing::info!("  PocketBase URL: {}", config.pb_url);
     tracing::info!("  Interval: {}ms", config.interval_ms);
-    tracing::info!("  Transition: {} ({}ms)", config.transition, config.transition_duration_ms);
-    tracing::info!("  Cache: {} ({} GB limit)", config.cache_dir, config.cache_size_limit_gb);
+    tracing::info!(
+        "  Transition: {} ({}ms)",
+        config.transition,
+        config.transition_duration_ms
+    );
+    tracing::info!("  Blur background: {}", config.blur_background);
+    tracing::info!("  Clock: {}", config.show_clock);
+    tracing::info!(
+        "  Cache: {} ({} GB limit)",
+        config.cache_dir,
+        config.cache_size_limit_gb
+    );
     if let Some(ref device_id) = config.device_id {
         tracing::info!("  Device ID: {}", device_id);
     }
 
+    // Authenticate with the backend using device credentials.
+    // This validates the device is still registered, updates lastSeen, and returns
+    // admin-controlled display config (interval, transition, etc.).
+    let pre_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let device_token: Option<String> = if let (Some(ref id), Some(ref key)) =
+        (config.device_id.clone(), config.device_api_key.clone())
+    {
+        match device_auth(&pre_client, &config.pb_url, id, key).await {
+            Ok(resp) => {
+                let cfg = &resp.config;
+                if let Some(v) = cfg.get("interval").and_then(|v| v.as_u64()) {
+                    config.interval_ms = v;
+                }
+                if let Some(v) = cfg.get("transition").and_then(|v| v.as_str()) {
+                    config.transition = v.to_string();
+                }
+                if let Some(v) = cfg.get("transitionDuration").and_then(|v| v.as_u64()) {
+                    config.transition_duration_ms = v as u32;
+                }
+                if let Some(v) = cfg.get("shuffle").and_then(|v| v.as_bool()) {
+                    config.shuffle = v;
+                }
+                if let Some(v) = cfg.get("blur").and_then(|v| v.as_bool()) {
+                    config.blur_background = v;
+                }
+                if let Some(v) = cfg.get("showClock").and_then(|v| v.as_bool()) {
+                    config.show_clock = v;
+                }
+                tracing::info!("Device authenticated — applied config from PocketBase");
+                Some(resp.token)
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Device auth failed: {} — is this device still registered?",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Initialize GStreamer for video
     video::VideoPlayer::init()?;
 
-    // Create application state
+    // Create application state (media collection is public — no user auth needed)
     let state = Arc::new(AppState::new(config).await?);
-
-    // Initialize auth
-    state.init_auth().await?;
 
     // Fetch initial playlist with retry logic
     let playlist = match state.fetch_playlist_with_retry(5).await {
@@ -500,18 +597,49 @@ async fn main() -> Result<()> {
 
     // Full sync mode: preload all media on startup
     if state.config.full_sync && !playlist.is_empty() {
-        tracing::info!("Full sync mode enabled - preloading all {} media items...", playlist.len());
+        tracing::info!(
+            "Full sync mode enabled - preloading all {} media items...",
+            playlist.len()
+        );
         let sync_preloader = Preloader::new(state.asset_manager.clone(), state.client.clone());
         let sync_token = state.token().await;
         let sync_playlist = playlist.clone();
-        
+
         // Run full sync in foreground so user knows when it's done
-        sync_preloader.preload_all(&sync_playlist, sync_token.as_deref()).await;
+        sync_preloader
+            .preload_all(&sync_playlist, sync_token.as_deref())
+            .await;
         tracing::info!("Full sync complete");
     } else {
         // Preload first few items in background
         tokio::spawn(async move {
-            preloader.preload_next(&playlist_clone, 0, 3, token.as_deref()).await;
+            preloader
+                .preload_next(&playlist_clone, 0, 3, token.as_deref())
+                .await;
+        });
+    }
+
+    // Heartbeat: call device-auth every 12 hours to keep lastSeen fresh.
+    if let (Some(device_id), Some(api_key), Some(token)) = (
+        state.config.device_id.clone(),
+        state.config.device_api_key.clone(),
+        device_token,
+    ) {
+        let pb_url = state.config.pb_url.clone();
+        tokio::spawn(async move {
+            // TODO: pass token to authenticated device API calls once those endpoints exist.
+            let _ = token;
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap_or_default();
+            loop {
+                tokio::time::sleep(Duration::from_secs(12 * 3600)).await;
+                match device_auth(&client, &pb_url, &device_id, &api_key).await {
+                    Ok(_) => tracing::debug!("Device heartbeat OK"),
+                    Err(e) => tracing::warn!("Device heartbeat failed: {}", e),
+                }
+            }
         });
     }
 
@@ -533,14 +661,130 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Discovery mode render loop — shown when no device_id is configured.
+///
+/// Displays a PIN on screen, announces to the backend, and polls for a registration
+/// claim. On success, writes credentials to config.toml and exits (systemd restarts).
+async fn run_discovery_mode(config: &AppConfig) -> Result<()> {
+    let state = discovery::DiscoveryState::new()?;
+    tracing::info!(
+        "Discovery mode — PIN: {}  Session: {}",
+        state.pin,
+        state.session_id
+    );
+    tracing::info!("Local IP: {}  Hostname: {}", state.local_ip, state.hostname);
+    tracing::info!("Announcing to {}", config.pb_url);
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("Failed to create HTTP client")?;
+
+    let (claim_tx, mut claim_rx) = tokio::sync::mpsc::channel::<discovery::ClaimResult>(1);
+
+    // Background task: announce every 15 seconds
+    {
+        let client = client.clone();
+        let pb_url = config.pb_url.clone();
+        let state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                match discovery::announce(&client, &pb_url, &state).await {
+                    Ok(()) => tracing::debug!("Announce sent"),
+                    Err(e) => tracing::warn!("Announce failed: {}", e),
+                }
+                tokio::time::sleep(Duration::from_secs(15)).await;
+            }
+        });
+    }
+
+    // Background task: poll for claim every 5 seconds
+    {
+        let client = client.clone();
+        let pb_url = config.pb_url.clone();
+        let session_id = state.session_id.clone();
+        let tx = claim_tx;
+        tokio::spawn(async move {
+            // Wait briefly so the announce fires first
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            loop {
+                match discovery::poll_claim(&client, &pb_url, &session_id).await {
+                    Ok(Some(result)) => {
+                        tracing::info!("Claim received — device registered!");
+                        tx.send(result).await.ok();
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::debug!("Claim poll: {}", e),
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+    }
+
+    // Initialize TTF
+    let ttf_context =
+        sdl2::ttf::init().map_err(|e| anyhow::anyhow!("SDL TTF init failed: {}", e))?;
+
+    // Show the PIN screen via SDL2
+    let mut renderer = renderer::Renderer::new(
+        &ttf_context,
+        renderer::Transition::Cut,
+        0,
+        config.fullscreen,
+        false,
+        false,
+    )?;
+
+    loop {
+        // Check for successful registration
+        if let Ok(result) = claim_rx.try_recv() {
+            match discovery::write_device_credentials(&result.device_id, &result.api_key) {
+                Ok(()) => tracing::info!("Credentials written — restarting"),
+                Err(e) => tracing::error!("Failed to write credentials: {}", e),
+            }
+            std::thread::sleep(Duration::from_secs(1));
+            // Re-exec this binary in-place so env vars (AUTH_EMAIL etc.) are inherited.
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                let exe = std::env::current_exe()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("frame-viewer"));
+                let err = std::process::Command::new(&exe)
+                    .args(std::env::args_os().skip(1))
+                    .exec();
+                tracing::error!("Re-exec failed: {} — falling back to exit", err);
+            }
+            std::process::exit(0);
+        }
+
+        // Handle quit key
+        if renderer.process_events_extended() == renderer::UserAction::Quit { break }
+
+        renderer.render_discovery_screen(&state.pin, &state.local_ip)?;
+        renderer.frame_delay();
+    }
+
+    Ok(())
+}
+
 /// Main render loop.
 async fn run_render_loop(
     state: Arc<AppState>,
     realtime_rx: &mut Option<tokio::sync::mpsc::Receiver<RealtimeEvent>>,
 ) -> Result<()> {
     // Initialize renderer
+    let ttf_context =
+        sdl2::ttf::init().map_err(|e| anyhow::anyhow!("SDL TTF init failed: {}", e))?;
     let transition = Transition::from_str(&state.config.transition);
-    let mut renderer = Renderer::new(transition, state.config.transition_duration_ms)?;
+    let mut renderer = Renderer::new(
+        &ttf_context,
+        transition,
+        state.config.transition_duration_ms,
+        state.config.fullscreen,
+        state.config.blur_background,
+        state.config.show_clock,
+    )?;
 
     // Initialize video manager
     let mut video_manager = VideoManager::new(state.config.video_loop_threshold_sec);
@@ -558,7 +802,7 @@ async fn run_render_loop(
 
     // Track if we're showing video
     let mut is_video_playing = false;
-    
+
     // Overlay state
     let mut overlay_visible = false;
     let mut is_paused = false;
@@ -724,7 +968,11 @@ async fn run_render_loop(
         }
 
         // Render
-        renderer.render(&mut current_textures, next_textures.as_mut())?;
+        renderer.render(
+            &texture_creator,
+            &mut current_textures,
+            next_textures.as_mut(),
+        )?;
 
         // Render overlay if visible
         if overlay_visible {
@@ -762,12 +1010,12 @@ async fn build_overlay_info(
     let playlist = state.playlist.read().await;
     let current_index = *state.current_index.read().await;
     let is_offline = *state.is_offline.read().await;
-    
+
     let media_title = playlist
         .get(current_index)
         .map(|m| m.id.clone())
         .unwrap_or_default();
-    
+
     let is_video = playlist
         .get(current_index)
         .map(|m| m.is_video())
@@ -775,7 +1023,7 @@ async fn build_overlay_info(
 
     let cache = state.cache.read().await;
     let cache_stats = cache.stats();
-    
+
     OverlayInfo {
         is_connected: is_realtime_connected,
         is_offline,
@@ -787,15 +1035,23 @@ async fn build_overlay_info(
         cache_items: cache_stats.item_count,
         is_video,
         is_paused,
-        video_duration: if is_video_playing { video_manager.duration() } else { None },
-        video_position: if is_video_playing { video_manager.position() } else { None },
+        video_duration: if is_video_playing {
+            video_manager.duration()
+        } else {
+            None
+        },
+        video_position: if is_video_playing {
+            video_manager.position()
+        } else {
+            None
+        },
     }
 }
 
 /// Load the current item into textures.
 async fn load_current_item<'a>(
     state: &AppState,
-    renderer: &mut Renderer,
+    renderer: &mut Renderer<'_>,
     texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
     textures: &mut MediaTextures<'a>,
     video_manager: &mut VideoManager,
@@ -812,11 +1068,7 @@ async fn load_current_item<'a>(
     tracing::debug!("Loading media: {} ({})", media.id, media.media_type);
 
     // Ensure assets are cached
-    let token = state.token().await;
-    state
-        .asset_manager
-        .preload_media(media, &state.client, token.as_deref())
-        .await?;
+    state.preload_media_safe(media).await?;
 
     // Load textures
     let cache = state.cache.read().await;
@@ -831,22 +1083,7 @@ async fn load_current_item<'a>(
     cache.touch(&media.id, AssetType::Blur);
 
     // Start video if applicable
-    *is_video_playing = false;
-    if media.is_video() {
-        if let Some(video_path) = cache.get_cached_path(&media.id, AssetType::Video) {
-            if video_path.exists() {
-                match video_manager.play_video(&video_path, media.duration) {
-                    Ok(()) => {
-                        *is_video_playing = true;
-                        tracing::debug!("Started video playback");
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to start video: {}", e);
-                    }
-                }
-            }
-        }
-    }
+    start_video_if_applicable(media, &cache, video_manager, is_video_playing);
 
     Ok(())
 }
@@ -854,7 +1091,7 @@ async fn load_current_item<'a>(
 /// Advance to the next item in the playlist.
 async fn advance_to_next<'a>(
     state: &AppState,
-    renderer: &mut Renderer,
+    renderer: &mut Renderer<'_>,
     texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
     current_textures: &mut MediaTextures<'a>,
     next_textures: &mut Option<MediaTextures<'a>>,
@@ -886,21 +1123,20 @@ async fn advance_to_next<'a>(
     let next_idx = next_index;
 
     tokio::spawn(async move {
-        preloader.preload_next(&playlist_clone, next_idx, 2, token.as_deref()).await;
+        preloader
+            .preload_next(&playlist_clone, next_idx, 2, token.as_deref())
+            .await;
     });
 
     // Ensure current item is cached
-    let token = state.token().await;
-    state
-        .asset_manager
-        .preload_media(media, &state.client, token.as_deref())
-        .await?;
+    state.preload_media_safe(media).await?;
 
     // Load next textures
     let cache = state.cache.read().await;
-    let new_textures = state
-        .asset_manager
-        .load_textures(renderer, texture_creator, media, &cache)?;
+    let new_textures =
+        state
+            .asset_manager
+            .load_textures(renderer, texture_creator, media, &cache)?;
     drop(cache);
 
     // Prepare next frame and kick off transition if needed
@@ -923,20 +1159,7 @@ async fn advance_to_next<'a>(
     cache.touch(&media.id, AssetType::Blur);
 
     // Start video if applicable
-    if media.is_video() {
-        if let Some(video_path) = cache.get_cached_path(&media.id, AssetType::Video) {
-            if video_path.exists() {
-                match video_manager.play_video(&video_path, media.duration) {
-                    Ok(()) => {
-                        *is_video_playing = true;
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to start video: {}", e);
-                    }
-                }
-            }
-        }
-    }
+    start_video_if_applicable(media, &cache, video_manager, is_video_playing);
 
     Ok(())
 }
@@ -944,7 +1167,7 @@ async fn advance_to_next<'a>(
 /// Go to the previous item in the playlist.
 async fn go_to_previous<'a>(
     state: &AppState,
-    renderer: &mut Renderer,
+    renderer: &mut Renderer<'_>,
     texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
     current_textures: &mut MediaTextures<'a>,
     next_textures: &mut Option<MediaTextures<'a>>,
@@ -974,17 +1197,14 @@ async fn go_to_previous<'a>(
     tracing::debug!("Going to previous: {} ({})", media.id, media.media_type);
 
     // Ensure current item is cached
-    let token = state.token().await;
-    state
-        .asset_manager
-        .preload_media(media, &state.client, token.as_deref())
-        .await?;
+    state.preload_media_safe(media).await?;
 
     // Load textures
     let cache = state.cache.read().await;
-    let new_textures = state
-        .asset_manager
-        .load_textures(renderer, texture_creator, media, &cache)?;
+    let new_textures =
+        state
+            .asset_manager
+            .load_textures(renderer, texture_creator, media, &cache)?;
     drop(cache);
 
     // Use cut transition for manual navigation
@@ -997,20 +1217,7 @@ async fn go_to_previous<'a>(
     cache.touch(&media.id, AssetType::Blur);
 
     // Start video if applicable
-    if media.is_video() {
-        if let Some(video_path) = cache.get_cached_path(&media.id, AssetType::Video) {
-            if video_path.exists() {
-                match video_manager.play_video(&video_path, media.duration) {
-                    Ok(()) => {
-                        *is_video_playing = true;
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to start video: {}", e);
-                    }
-                }
-            }
-        }
-    }
+    start_video_if_applicable(media, &cache, video_manager, is_video_playing);
 
     Ok(())
 }
@@ -1082,6 +1289,29 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
 
             let cache = state.cache.read().await;
             let _ = cache.save_playlist(&playlist);
+        }
+    }
+}
+
+fn start_video_if_applicable(
+    media: &Media,
+    cache: &Cache,
+    video_manager: &mut VideoManager,
+    is_video_playing: &mut bool,
+) {
+    *is_video_playing = false;
+    if media.is_video() {
+        if let Some(video_path) = cache.get_cached_path(&media.id, AssetType::Video) {
+            if video_path.exists() {
+                match video_manager.play_video(&video_path, media.duration) {
+                    Ok(()) => {
+                        *is_video_playing = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to start video: {}", e);
+                    }
+                }
+            }
         }
     }
 }
