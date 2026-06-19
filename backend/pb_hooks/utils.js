@@ -168,24 +168,27 @@ const FFMPEG_THUMB_SCALE   = "scale=300:-1";
 // $os.stat() in PocketBase JSVM can't find system binaries, so we try absolute
 // paths directly rather than relying on findBinary() for these tools.
 function decodeHeic(heicPath, pngPath) {
+    console.log("decodeHeic: heicPath=" + heicPath + " pngPath=" + pngPath);
+    console.log("decodeHeic: $os.cmd=" + (typeof $os.cmd) + " $os.exec=" + (typeof $os.exec));
     const candidates = [
-        // macOS — sips is a system binary always at this path
         ["/usr/bin/sips", ["-s", "format", "png", heicPath, "--out", pngPath]],
-        // Linux — libheif-examples package (apt install libheif-examples)
         ["/usr/bin/heif-convert", [heicPath, pngPath]],
         ["/usr/local/bin/heif-convert", [heicPath, pngPath]],
-        // Fallback: whatever resolved via findBinary PATH lookup
         [HEIF_CONVERT, [heicPath, pngPath]],
     ];
     for (const [bin, args] of candidates) {
         try {
-            // Use $os.cmd directly — sips/heif-convert write to a file and produce
-            // no stdout, so execCommand() would throw "returned null" even on success.
-            const run = $os.cmd ? $os.cmd : $os.exec;
-            try { run(bin, ...args); } catch (_) {}
-            $os.stat(pngPath); // throws if file wasn't created
+            console.log("decodeHeic: trying " + bin + " " + args.join(" "));
+            const run = $os.cmd ? $os.cmd.bind($os) : $os.exec.bind($os);
+            let cmdErr = null;
+            try { run(bin, ...args); } catch (e) { cmdErr = String(e); }
+            console.log("decodeHeic: cmd done, err=" + cmdErr);
+            $os.stat(pngPath);
+            console.log("decodeHeic: success with " + bin);
             return;
-        } catch (_) {}
+        } catch (e) {
+            console.log("decodeHeic: candidate failed: " + String(e));
+        }
     }
     throw new Error("No HEIC decoder available (need sips on macOS or heif-convert on Linux)");
 }
