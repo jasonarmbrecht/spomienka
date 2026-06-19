@@ -458,6 +458,7 @@ def main() -> None:
         "gstreamer1.0-libav", "gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad",
         "gstreamer1.0-plugins-ugly", "gstreamer1.0-alsa", "gstreamer1.0-tools",
         "exiftool", "curl", "unzip", "at", "expect",
+        "libheif-examples",
     ]
 
     with Status("Running apt update & upgrade…", console=console):

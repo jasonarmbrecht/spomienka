@@ -11,6 +11,7 @@ type Media = {
   collectionId: string;
   file: string;
   status: string;
+  processingStatus?: string;
   type: "image" | "video";
   title?: string;
   tags?: string[];
@@ -54,6 +55,8 @@ export function LibraryPage() {
   const [hoveredItem, setHoveredItem] = useState<Media | null>(null);
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
   const [mediaToDelete, setMediaToDelete] = useState<Media | null>(null);
+  const [reprocessing, setReprocessing] = useState<Set<string>>(new Set());
+  const [reprocessingAll, setReprocessingAll] = useState(false);
 
   const deleteMedia = async (id: string) => {
     try {
@@ -66,11 +69,48 @@ export function LibraryPage() {
       setMediaToDelete(null);
     }
   };
+
+  const reprocessMedia = async (id: string) => {
+    setReprocessing((prev) => new Set(prev).add(id));
+    try {
+      await pb.send(`/api/spomienka/reprocess?id=${id}`, { method: "POST" });
+      // Refresh this item's data so processingStatus and URLs update
+      const updated = await pb.collection("media").getOne<Media>(id);
+      setItems((prev) => prev.map((m) => (m.id === id ? updated : m)));
+    } catch (err) {
+      console.error("Reprocess failed:", err);
+    } finally {
+      setReprocessing((prev) => { const s = new Set(prev); s.delete(id); return s; });
+    }
+  };
+
+  const reprocessAll = async () => {
+    setReprocessingAll(true);
+    try {
+      // Collect all media IDs across all pages
+      const all = await pb.collection("media").getFullList<Media>({ fields: "id" });
+      for (const m of all) {
+        setReprocessing((prev) => new Set(prev).add(m.id));
+        try {
+          await pb.send(`/api/spomienka/reprocess?id=${m.id}`, { method: "POST" });
+          const updated = await pb.collection("media").getOne<Media>(m.id);
+          setItems((prev) => prev.map((item) => (item.id === m.id ? updated : item)));
+        } catch (err) {
+          console.error(`Reprocess failed for ${m.id}:`, err);
+        } finally {
+          setReprocessing((prev) => { const s = new Set(prev); s.delete(m.id); return s; });
+        }
+      }
+    } finally {
+      setReprocessingAll(false);
+    }
+  };
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | "image" | "video">("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [tagFilter, setTagFilter] = useState("");
+  const [sortField, setSortField] = useState<string>("-created");
   const [loading, setLoading] = useState(false);
   const { error, setError, showError } = useNotification();
   const [page, setPage] = useState(1);
@@ -114,7 +154,7 @@ export function LibraryPage() {
 
         const res = await pb.collection("media").getList<Media>(page, ITEMS_PER_PAGE, {
           filter: filterString,
-          sort: "-created",
+          sort: sortField,
           requestKey: null,
         });
         setItems(res.items);
@@ -127,15 +167,25 @@ export function LibraryPage() {
       }
     };
     load();
-  }, [filter, page, searchQuery, typeFilter, dateFrom, dateTo, tagFilter]);
+  }, [filter, page, searchQuery, typeFilter, dateFrom, dateTo, tagFilter, sortField]);
 
   useEffect(() => {
     setPage(1);
-  }, [filter, searchQuery, typeFilter, dateFrom, dateTo, tagFilter]);
+  }, [filter, searchQuery, typeFilter, dateFrom, dateTo, tagFilter, sortField]);
 
   return (
     <section className="page-wide">
-      <h1>Library</h1>
+      <div className="section-header">
+        <h1>Library</h1>
+        <button
+          className="btn btn-secondary"
+          onClick={reprocessAll}
+          disabled={reprocessingAll}
+          title="Re-run ffmpeg processing on all media to regenerate assets in the current output format"
+        >
+          {reprocessingAll ? "Reprocessing…" : "Reprocess All"}
+        </button>
+      </div>
 
       <div className="filter-bar">
         <div className="filter-row">
@@ -203,6 +253,21 @@ export function LibraryPage() {
               placeholder="Filter by tag..."
             />
           </label>
+
+          <label>
+            Sort By
+            <select
+              value={sortField}
+              onChange={(e) => setSortField(e.target.value)}
+            >
+              <option value="-created">Date Added (newest)</option>
+              <option value="created">Date Added (oldest)</option>
+              <option value="-takenAt">Date Taken (newest)</option>
+              <option value="takenAt">Date Taken (oldest)</option>
+              <option value="title">Title (A–Z)</option>
+              <option value="-title">Title (Z–A)</option>
+            </select>
+          </label>
         </div>
       </div>
 
@@ -225,8 +290,9 @@ export function LibraryPage() {
       <ul>
         {items.map((m) => {
           const fileBase = `/api/files/${m.collectionId}/${m.id}/${m.file}`;
+          const isHeic = /\.heic$/i.test(m.file);
           const thumbSrc = m.thumbUrl || m.displayUrl || m.posterUrl
-            || (m.type === "image" ? `${fileBase}?thumb=144x108` : null);
+            || (m.type === "image" && !isHeic ? `${fileBase}?thumb=144x108` : null);
           const meta = buildMeta(m);
           return (
             <li key={m.id} className="library-item">
@@ -248,6 +314,17 @@ export function LibraryPage() {
               </div>
               <div className="library-actions">
                 <span className="library-status">{m.status}</span>
+                {m.processingStatus && m.processingStatus !== "completed" && (
+                  <span className="library-status">{m.processingStatus}</span>
+                )}
+                <button
+                  className="btn btn-sm btn-secondary"
+                  onClick={() => reprocessMedia(m.id)}
+                  disabled={reprocessing.has(m.id)}
+                  title="Regenerate processed assets (display, blur, thumb) using the current output format"
+                >
+                  {reprocessing.has(m.id) ? "…" : "Reprocess"}
+                </button>
                 <button
                   className="btn btn-sm btn-secondary"
                   onClick={() => {/* TODO: edit */}}
@@ -280,8 +357,9 @@ export function LibraryPage() {
 
       {hoveredItem && (() => {
         const fileBase = `/api/files/${hoveredItem.collectionId}/${hoveredItem.id}/${hoveredItem.file}`;
+        const isHeic = /\.heic$/i.test(hoveredItem.file);
         const previewSrc = hoveredItem.displayUrl || hoveredItem.posterUrl || hoveredItem.thumbUrl
-          || (hoveredItem.type === "image" ? `${fileBase}?thumb=840x0` : null);
+          || (hoveredItem.type === "image" && !isHeic ? `${fileBase}?thumb=840x0` : null);
         if (!previewSrc) return null;
         const PREVIEW_W = 420;
         const OFFSET_X = 18;

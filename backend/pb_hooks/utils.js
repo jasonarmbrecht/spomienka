@@ -21,6 +21,10 @@ function findBinary(candidates) {
 const FFMPEG   = findBinary(["/opt/homebrew/bin/ffmpeg",   "/usr/bin/ffmpeg",   "/usr/local/bin/ffmpeg",   "ffmpeg"]);
 const FFPROBE  = findBinary(["/opt/homebrew/bin/ffprobe",  "/usr/bin/ffprobe",  "/usr/local/bin/ffprobe",  "ffprobe"]);
 const EXIFTOOL = findBinary(["/opt/homebrew/bin/exiftool", "/usr/bin/exiftool", "/usr/local/bin/exiftool", "exiftool"]);
+// sips: macOS built-in HEIC decoder (uses Apple frameworks, handles primary image)
+// heif-convert: Linux equivalent from libheif-examples package
+const SIPS         = findBinary(["/usr/bin/sips", "sips"]);
+const HEIF_CONVERT = findBinary(["/usr/bin/heif-convert", "/usr/local/bin/heif-convert", "heif-convert"]);
 
 // sha256sum is Linux-only; macOS ships shasum instead.
 const SHA256_CMD  = findBinary(["/usr/bin/sha256sum", "/opt/homebrew/bin/shasum", "/usr/bin/shasum", "sha256sum"]);
@@ -158,30 +162,74 @@ const FFMPEG_DISPLAY_SCALE = "scale='min(1920,iw)':'min(1080,ih)':force_original
 const FFMPEG_BLUR_FILTER   = "scale=80:-1,gblur=sigma=20,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080";
 const FFMPEG_THUMB_SCALE   = "scale=300:-1";
 
+// Convert HEIC to a temporary PNG that ffmpeg can process.
+// ffmpeg only decodes HEIC auxiliary streams (depth maps, thumbnails); the primary
+// image requires a native HEIF decoder: sips on macOS, heif-convert on Linux.
+// $os.stat() in PocketBase JSVM can't find system binaries, so we try absolute
+// paths directly rather than relying on findBinary() for these tools.
+function decodeHeic(heicPath, pngPath) {
+    console.log("decodeHeic: heicPath=" + heicPath + " pngPath=" + pngPath);
+    console.log("decodeHeic: $os.cmd=" + (typeof $os.cmd) + " $os.exec=" + (typeof $os.exec));
+    const candidates = [
+        ["/usr/bin/sips", ["-s", "format", "png", heicPath, "--out", pngPath]],
+        ["/usr/bin/heif-convert", [heicPath, pngPath]],
+        ["/usr/local/bin/heif-convert", [heicPath, pngPath]],
+        [HEIF_CONVERT, [heicPath, pngPath]],
+    ];
+    // $os.stat is not available in PB 0.25 executor VMs; use readdir to check existence.
+    const pngDir  = pngPath.substring(0, pngPath.lastIndexOf("/"));
+    const pngName = pngPath.substring(pngPath.lastIndexOf("/") + 1);
+    for (const [bin, args] of candidates) {
+        try {
+            console.log("decodeHeic: trying " + bin + " " + args.join(" "));
+            const run = $os.cmd ? $os.cmd.bind($os) : $os.exec.bind($os);
+            let cmdErr = null;
+            try { run(bin, ...args); } catch (e) { cmdErr = String(e); }
+            console.log("decodeHeic: cmd done, err=" + cmdErr);
+            const files = $os.readdir(pngDir);
+            if (!files || files.indexOf(pngName) < 0) throw new Error("output file not created");
+            console.log("decodeHeic: success with " + bin);
+            return;
+        } catch (e) {
+            console.log("decodeHeic: candidate failed: " + String(e));
+        }
+    }
+    throw new Error("No HEIC decoder available (need sips on macOS or heif-convert on Linux)");
+}
+
 function processImage(record, originalPath, procDir, storagePath) {
     const recordId = record.id;
     const collectionId = record.collection().id;
 
+    // HEIC/HEIF: pre-convert to PNG so ffmpeg can read the primary image.
+    // ffmpeg only decodes auxiliary streams (depth maps, thumbnails) from Apple HEIC.
+    const isHeic = /\.heic$/i.test(originalPath);
+    if (isHeic) {
+        const tmpPng = procDir + "/original.png";
+        decodeHeic(originalPath, tmpPng);
+        originalPath = tmpPng;
+    }
+
     try {
-        const displayPath = procDir + "/display.jpg";
-        execCommand(FFMPEG, ["-y", "-i", originalPath, "-vf", FFMPEG_DISPLAY_SCALE, "-q:v", "3", displayPath]);
-        const name = "display_" + recordId + ".jpg";
+        const displayPath = procDir + "/display.png";
+        execCommand(FFMPEG, ["-y", "-i", originalPath, "-map", "0:v:0", "-vf", FFMPEG_DISPLAY_SCALE, displayPath]);
+        const name = "display_" + recordId + ".png";
         $os.rename(displayPath, storagePath + "/" + name);
         record.set("displayUrl", buildFileUrl(collectionId, recordId, name));
     } catch (err) { console.error("Display image failed:", err); }
 
     try {
-        const blurPath = procDir + "/blur.jpg";
-        execCommand(FFMPEG, ["-y", "-i", originalPath, "-vf", FFMPEG_BLUR_FILTER, "-q:v", "5", blurPath]);
-        const name = "blur_" + recordId + ".jpg";
+        const blurPath = procDir + "/blur.png";
+        execCommand(FFMPEG, ["-y", "-i", originalPath, "-map", "0:v:0", "-vf", FFMPEG_BLUR_FILTER, blurPath]);
+        const name = "blur_" + recordId + ".png";
         $os.rename(blurPath, storagePath + "/" + name);
         record.set("blurUrl", buildFileUrl(collectionId, recordId, name));
     } catch (err) { console.error("Blur image failed:", err); }
 
     try {
-        const thumbPath = procDir + "/thumb.jpg";
-        execCommand(FFMPEG, ["-y", "-i", originalPath, "-vf", FFMPEG_THUMB_SCALE, "-q:v", "4", thumbPath]);
-        const name = "thumb_" + recordId + ".jpg";
+        const thumbPath = procDir + "/thumb.png";
+        execCommand(FFMPEG, ["-y", "-i", originalPath, "-map", "0:v:0", "-vf", FFMPEG_THUMB_SCALE, thumbPath]);
+        const name = "thumb_" + recordId + ".png";
         $os.rename(thumbPath, storagePath + "/" + name);
         record.set("thumbUrl", buildFileUrl(collectionId, recordId, name));
     } catch (err) { console.error("Thumbnail failed:", err); }
@@ -213,11 +261,11 @@ function processVideo(record, originalPath, procDir, storagePath) {
 
     let posterCreated = false;
     try {
-        const posterPath = procDir + "/poster.jpg";
+        const posterPath = procDir + "/poster.png";
         execCommand(FFMPEG, ["-y", "-i", originalPath, "-ss", "00:00:01", "-vframes", "1",
-            "-vf", FFMPEG_DISPLAY_SCALE, "-q:v", "3", posterPath]);
+            "-vf", FFMPEG_DISPLAY_SCALE, posterPath]);
         try { $os.stat(posterPath); } catch (_) { throw new Error("Poster file not created"); }
-        const name = "poster_" + recordId + ".jpg";
+        const name = "poster_" + recordId + ".png";
         $os.rename(posterPath, storagePath + "/" + name);
         record.set("posterUrl", buildFileUrl(collectionId, recordId, name));
         posterCreated = true;
@@ -225,21 +273,21 @@ function processVideo(record, originalPath, procDir, storagePath) {
 
     if (posterCreated) {
         try {
-            const posterSource = storagePath + "/poster_" + recordId + ".jpg";
+            const posterSource = storagePath + "/poster_" + recordId + ".png";
             try { $os.stat(posterSource); } catch (_) { throw new Error("Poster not found in storage"); }
-            const blurPath = procDir + "/blur.jpg";
-            execCommand(FFMPEG, ["-y", "-i", posterSource, "-vf", FFMPEG_BLUR_FILTER, "-q:v", "5", blurPath]);
-            const name = "blur_" + recordId + ".jpg";
+            const blurPath = procDir + "/blur.png";
+            execCommand(FFMPEG, ["-y", "-i", posterSource, "-vf", FFMPEG_BLUR_FILTER, blurPath]);
+            const name = "blur_" + recordId + ".png";
             $os.rename(blurPath, storagePath + "/" + name);
             record.set("blurUrl", buildFileUrl(collectionId, recordId, name));
         } catch (err) { console.error("Video blur failed:", err); }
     }
 
     try {
-        const thumbPath = procDir + "/thumb.jpg";
+        const thumbPath = procDir + "/thumb.png";
         execCommand(FFMPEG, ["-y", "-i", originalPath, "-ss", "00:00:01", "-vframes", "1",
-            "-vf", FFMPEG_THUMB_SCALE, "-q:v", "4", thumbPath]);
-        const name = "thumb_" + recordId + ".jpg";
+            "-vf", FFMPEG_THUMB_SCALE, thumbPath]);
+        const name = "thumb_" + recordId + ".png";
         $os.rename(thumbPath, storagePath + "/" + name);
         record.set("thumbUrl", buildFileUrl(collectionId, recordId, name));
     } catch (err) { console.error("Video thumbnail failed:", err); }

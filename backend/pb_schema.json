@@ -312,7 +312,7 @@
       {
         "id": "f_disp",
         "name": "displayUrl",
-        "type": "url",
+        "type": "text",
         "system": false,
         "required": false,
         "presentable": false,
@@ -323,7 +323,7 @@
       {
         "id": "f_blur",
         "name": "blurUrl",
-        "type": "url",
+        "type": "text",
         "system": false,
         "required": false,
         "presentable": false,
@@ -334,7 +334,7 @@
       {
         "id": "f_thumb",
         "name": "thumbUrl",
-        "type": "url",
+        "type": "text",
         "system": false,
         "required": false,
         "presentable": false,
@@ -345,7 +345,7 @@
       {
         "id": "f_video",
         "name": "videoUrl",
-        "type": "url",
+        "type": "text",
         "system": false,
         "required": false,
         "presentable": false,
@@ -356,7 +356,7 @@
       {
         "id": "f_poster",
         "name": "posterUrl",
-        "type": "url",
+        "type": "text",
         "system": false,
         "required": false,
         "presentable": false,

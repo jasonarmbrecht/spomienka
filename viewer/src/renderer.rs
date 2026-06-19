@@ -209,6 +209,24 @@ impl<'ttf> Renderer<'ttf> {
         canvas.clear();
         canvas.present();
 
+        // Use physical pixel dimensions for all rendering so that on HiDPI/Retina
+        // displays we draw at full resolution rather than letting SDL2 upscale a
+        // half-sized logical framebuffer (which causes a double-resampling blur).
+        let (physical_width, physical_height) = canvas
+            .output_size()
+            .map_err(|e| anyhow::anyhow!("Failed to get canvas output size: {}", e))?;
+        if physical_width != screen_width || physical_height != screen_height {
+            tracing::info!(
+                "HiDPI detected: logical {}x{} → physical {}x{}",
+                screen_width,
+                screen_height,
+                physical_width,
+                physical_height
+            );
+        }
+        let screen_width = physical_width;
+        let screen_height = physical_height;
+
         let event_pump = sdl_context
             .event_pump()
             .map_err(|e| anyhow::anyhow!("Failed to get event pump: {}", e))?;
@@ -274,7 +292,12 @@ impl<'ttf> Renderer<'ttf> {
         texture_creator: &'a TextureCreator<WindowContext>,
         path: &Path,
     ) -> Result<(Texture<'a>, u32, u32)> {
-        let img = image::open(path).context("Failed to open image")?;
+        let img = image::ImageReader::open(path)
+            .context("Failed to open image")?
+            .with_guessed_format()
+            .context("Failed to guess image format")?
+            .decode()
+            .context("Failed to open image")?;
         let rgba = img.to_rgba8();
         let (width, height) = rgba.dimensions();
 
@@ -321,7 +344,12 @@ impl<'ttf> Renderer<'ttf> {
     ) -> Result<Texture<'a>> {
         use image::imageops::{self, FilterType};
 
-        let img = image::open(path).context("Failed to open image for blur")?;
+        let img = image::ImageReader::open(path)
+            .context("Failed to open image for blur")?
+            .with_guessed_format()
+            .context("Failed to guess image format for blur")?
+            .decode()
+            .context("Failed to open image for blur")?;
 
         // Step 1: Downscale aggressively to strip fine detail (fast on CPU)
         // 256x144 at 16:9 — any finer detail is meaningless after the blur
