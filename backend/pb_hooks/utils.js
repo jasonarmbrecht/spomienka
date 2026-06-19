@@ -176,6 +176,9 @@ function decodeHeic(heicPath, pngPath) {
         ["/usr/local/bin/heif-convert", [heicPath, pngPath]],
         [HEIF_CONVERT, [heicPath, pngPath]],
     ];
+    // $os.stat is not available in PB 0.25 executor VMs; use readdir to check existence.
+    const pngDir  = pngPath.substring(0, pngPath.lastIndexOf("/"));
+    const pngName = pngPath.substring(pngPath.lastIndexOf("/") + 1);
     for (const [bin, args] of candidates) {
         try {
             console.log("decodeHeic: trying " + bin + " " + args.join(" "));
@@ -183,7 +186,8 @@ function decodeHeic(heicPath, pngPath) {
             let cmdErr = null;
             try { run(bin, ...args); } catch (e) { cmdErr = String(e); }
             console.log("decodeHeic: cmd done, err=" + cmdErr);
-            $os.stat(pngPath);
+            const files = $os.readdir(pngDir);
+            if (!files || files.indexOf(pngName) < 0) throw new Error("output file not created");
             console.log("decodeHeic: success with " + bin);
             return;
         } catch (e) {
