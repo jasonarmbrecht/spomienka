@@ -47,8 +47,6 @@ const ITEMS_PER_PAGE = 50;
 const escapeFilterValue = (value: string) =>
   value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
-const pbUrl = import.meta.env.VITE_PB_URL || "";
-
 export function LibraryPage() {
   const [items, setItems] = useState<Media[]>([]);
   const [filter, setFilter] = useState<"all" | "published" | "pending" | "rejected">("all");
@@ -291,19 +289,22 @@ export function LibraryPage() {
         {items.map((m) => {
           const fileBase = `/api/files/${m.collectionId}/${m.id}/${m.file}`;
           const isHeic = /\.heic$/i.test(m.file);
-          const thumbSrc = m.thumbUrl || m.displayUrl || m.posterUrl
-            || (m.type === "image" && !isHeic ? `${fileBase}?thumb=144x108` : null);
+          const thumbSrc = m.processingStatus !== "failed"
+            ? (m.thumbUrl || m.displayUrl || m.posterUrl
+               || (m.type === "image" && !isHeic ? `${fileBase}?thumb=144x108` : null))
+            : null;
           const meta = buildMeta(m);
           return (
             <li key={m.id} className="library-item">
               {thumbSrc ? (
                 <img
-                  src={`${pbUrl}${thumbSrc}`}
+                  src={thumbSrc}
                   alt=""
                   className="library-thumb"
                   onMouseEnter={() => setHoveredItem(m)}
                   onMouseLeave={() => setHoveredItem(null)}
                   onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                 />
               ) : (
                 <div className="library-thumb library-thumb-placeholder" />
@@ -373,7 +374,7 @@ export function LibraryPage() {
             className="library-hover-preview"
             style={{ left: x, top: y }}
           >
-            <img src={`${pbUrl}${previewSrc}`} alt="" />
+            <img src={previewSrc} alt="" />
           </div>
         );
       })()}
