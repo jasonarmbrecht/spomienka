@@ -73,7 +73,7 @@ export function LibraryPage() {
   const reprocessMedia = async (id: string) => {
     setReprocessing((prev) => new Set(prev).add(id));
     try {
-      await pb.send(`/api/spomienka/reprocess/${id}`, { method: "POST" });
+      await pb.send(`/api/spomienka/reprocess?id=${id}`, { method: "POST" });
       // Refresh this item's data so processingStatus and URLs update
       const updated = await pb.collection("media").getOne<Media>(id);
       setItems((prev) => prev.map((m) => (m.id === id ? updated : m)));
@@ -92,7 +92,7 @@ export function LibraryPage() {
       for (const m of all) {
         setReprocessing((prev) => new Set(prev).add(m.id));
         try {
-          await pb.send(`/api/spomienka/reprocess/${m.id}`, { method: "POST" });
+          await pb.send(`/api/spomienka/reprocess?id=${m.id}`, { method: "POST" });
           const updated = await pb.collection("media").getOne<Media>(m.id);
           setItems((prev) => prev.map((item) => (item.id === m.id ? updated : item)));
         } catch (err) {

@@ -336,9 +336,9 @@ cronAdd("cleanup-pending-devices", "0 * * * *", () => {
 // with the current output format (PNG instead of JPEG, etc.).
 // ---------------------------------------------------------------------------
 
-routerAdd("POST", "/api/spomienka/reprocess/:id", (e) => {
+routerAdd("POST", "/api/spomienka/reprocess", (e) => {
     const { processMediaRecord } = require(__hooks + "/utils.js");
-    const id = e.request.pathValue("id");
+    const id = (e.requestInfo().query["id"] || "").trim();
     if (!id) throw new BadRequestError("Missing media id");
 
     let record;
