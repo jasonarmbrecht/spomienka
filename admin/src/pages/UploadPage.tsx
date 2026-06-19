@@ -1,4 +1,4 @@
-import { FormEvent, useState, useRef } from "react";
+import React, { FormEvent, useState, useRef } from "react";
 import { pb } from "../pb/client";
 import { useAuth } from "../pb/auth";
 import { MAX_FILE_SIZE, ALLOWED_IMAGE_TYPES, ALLOWED_VIDEO_TYPES, MAX_FILE_SIZE_DISPLAY } from "../constants";
