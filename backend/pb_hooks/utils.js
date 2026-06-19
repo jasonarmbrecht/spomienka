@@ -176,18 +176,15 @@ function decodeHeic(heicPath, pngPath) {
         ["/usr/local/bin/heif-convert", [heicPath, pngPath]],
         [HEIF_CONVERT, [heicPath, pngPath]],
     ];
-    // $os.stat is not available in PB 0.25 executor VMs; use readdir to check existence.
-    const pngDir  = pngPath.substring(0, pngPath.lastIndexOf("/"));
-    const pngName = pngPath.substring(pngPath.lastIndexOf("/") + 1);
+    // $os.stat/$os.readdir are not available in PB 0.25 executor VMs.
+    // Use `sh -c "test -f ..."` to verify the output file was actually created.
     for (const [bin, args] of candidates) {
         try {
             console.log("decodeHeic: trying " + bin + " " + args.join(" "));
-            const run = $os.cmd ? $os.cmd.bind($os) : $os.exec.bind($os);
             let cmdErr = null;
-            try { run(bin, ...args); } catch (e) { cmdErr = String(e); }
+            try { $os.exec(bin, ...args); } catch (e) { cmdErr = String(e); }
             console.log("decodeHeic: cmd done, err=" + cmdErr);
-            const files = $os.readdir(pngDir);
-            if (!files || files.indexOf(pngName) < 0) throw new Error("output file not created");
+            $os.exec("sh", "-c", "test -f '" + pngPath + "'");
             console.log("decodeHeic: success with " + bin);
             return;
         } catch (e) {
