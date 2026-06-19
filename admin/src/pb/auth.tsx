@@ -40,12 +40,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       await pb.collection("users").authWithPassword(email, password);
       setAuthError(null);
-    } catch (err: any) {
-      // Handle 401 or other auth errors
-      if (err?.status === 401 || err?.response?.code === 400) {
+    } catch (err) {
+      const e = err as { status?: number; response?: { code?: number }; message?: string };
+      if (e?.status === 401 || e?.response?.code === 400) {
         setAuthError("Invalid email or password");
       } else {
-        setAuthError(err?.message || "Login failed");
+        setAuthError(e?.message || "Login failed");
       }
       throw err;
     }
