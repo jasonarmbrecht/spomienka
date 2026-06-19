@@ -11,6 +11,7 @@ pnpm-lock.yaml
 # Rust
 target/
 Cargo.lock
+!viewer/Cargo.lock
 
 # PocketBase data (runtime)
 pb_data/
