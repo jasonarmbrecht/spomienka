@@ -1,6 +1,6 @@
 # Raspberry Pi Installer Script
 
-Script: `scripts/install_pi.sh`
+Script: `scripts/install_pi.py`
 
 ## What It Does (Interactive)
 
@@ -14,13 +14,13 @@ Script: `scripts/install_pi.sh`
 ## Usage (On the Pi, 64-bit OS)
 
 ```bash
-chmod +x scripts/install_pi.sh
-./scripts/install_pi.sh
+chmod +x scripts/install_pi.py
+./scripts/install_pi.py
 ```
 
 Or run directly from the web:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jasonarmbrecht/spomienka/main/scripts/install_pi.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jasonarmbrecht/spomienka/main/scripts/install_pi.py | bash
 ```
 
 ## Key Prompts
@@ -87,7 +87,7 @@ Environment variables can override config file values:
 - TLS is skipped by default; add Caddy/NGINX manually if later needed.
 - Admin UI remote option: build `admin` and host elsewhere (Netlify/Vercel/S3+CF) with `VITE_PB_URL` pointing to your PocketBase.
 - GL driver set to Full KMS via `raspi-config`; may need a reboot.
-- To update the installation: `cd $HOME/spomienka && git pull && ./scripts/install_pi.sh`
+- To update the installation: `cd $HOME/spomienka && git pull && ./scripts/install_pi.py`
 
 ## Troubleshooting
 
