@@ -179,7 +179,10 @@ function decodeHeic(heicPath, pngPath) {
     ];
     for (const [bin, args] of candidates) {
         try {
-            execCommand(bin, args);
+            // Use $os.cmd directly — sips/heif-convert write to a file and produce
+            // no stdout, so execCommand() would throw "returned null" even on success.
+            const run = $os.cmd ? $os.cmd : $os.exec;
+            try { run(bin, ...args); } catch (_) {}
             $os.stat(pngPath); // throws if file wasn't created
             return;
         } catch (_) {}
