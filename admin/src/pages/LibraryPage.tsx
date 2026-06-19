@@ -71,6 +71,7 @@ export function LibraryPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [tagFilter, setTagFilter] = useState("");
+  const [sortField, setSortField] = useState<string>("-created");
   const [loading, setLoading] = useState(false);
   const { error, setError, showError } = useNotification();
   const [page, setPage] = useState(1);
@@ -114,7 +115,7 @@ export function LibraryPage() {
 
         const res = await pb.collection("media").getList<Media>(page, ITEMS_PER_PAGE, {
           filter: filterString,
-          sort: "-created",
+          sort: sortField,
           requestKey: null,
         });
         setItems(res.items);
@@ -127,11 +128,11 @@ export function LibraryPage() {
       }
     };
     load();
-  }, [filter, page, searchQuery, typeFilter, dateFrom, dateTo, tagFilter]);
+  }, [filter, page, searchQuery, typeFilter, dateFrom, dateTo, tagFilter, sortField]);
 
   useEffect(() => {
     setPage(1);
-  }, [filter, searchQuery, typeFilter, dateFrom, dateTo, tagFilter]);
+  }, [filter, searchQuery, typeFilter, dateFrom, dateTo, tagFilter, sortField]);
 
   return (
     <section className="page-wide">
@@ -202,6 +203,21 @@ export function LibraryPage() {
               onChange={(e) => setTagFilter(e.target.value)}
               placeholder="Filter by tag..."
             />
+          </label>
+
+          <label>
+            Sort By
+            <select
+              value={sortField}
+              onChange={(e) => setSortField(e.target.value)}
+            >
+              <option value="-created">Date Added (newest)</option>
+              <option value="created">Date Added (oldest)</option>
+              <option value="-takenAt">Date Taken (newest)</option>
+              <option value="takenAt">Date Taken (oldest)</option>
+              <option value="title">Title (A–Z)</option>
+              <option value="-title">Title (Z–A)</option>
+            </select>
           </label>
         </div>
       </div>
