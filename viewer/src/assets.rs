@@ -83,7 +83,7 @@ impl AssetType {
 
     pub fn extension(&self) -> &'static str {
         match self {
-            AssetType::Display | AssetType::Blur | AssetType::Poster => "jpg",
+            AssetType::Display | AssetType::Blur | AssetType::Poster => "png",
             AssetType::Video => "mp4",
         }
     }

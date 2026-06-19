@@ -16,7 +16,6 @@ Cargo.lock
 # PocketBase data (runtime)
 pb_data/
 pb_public/
-pb_migrations/
 /var/lib/pocketbase
 
 # Coverage/logs

@@ -329,3 +329,48 @@ cronAdd("cleanup-pending-devices", "0 * * * *", () => {
         console.error("cleanup-pending-devices error:", String(err));
     }
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/spomienka/reprocess/:id  (admin only)
+// Re-runs processMediaRecord for a single media item so it gets regenerated
+// with the current output format (PNG instead of JPEG, etc.).
+// ---------------------------------------------------------------------------
+
+routerAdd("POST", "/api/spomienka/reprocess/:id", (e) => {
+    const { processMediaRecord } = require(__hooks + "/utils.js");
+    const id = e.request.pathValue("id");
+    if (!id) throw new BadRequestError("Missing media id");
+
+    let record;
+    try {
+        record = $app.findRecordById("media", id);
+    } catch (_) {
+        throw new NotFoundError("Media record not found");
+    }
+
+    // Delete old processed derivatives so the hook regenerates them cleanly.
+    const collectionId = record.collection().id;
+    const storagePath = $app.dataDir() + "/storage/" + collectionId + "/" + id;
+    const derived = ["display_", "blur_", "thumb_", "poster_"];
+    try {
+        const files = $os.readdir(storagePath);
+        for (const file of files) {
+            for (const prefix of derived) {
+                if (file.startsWith(prefix)) {
+                    try { $os.remove(storagePath + "/" + file); } catch (_) {}
+                }
+            }
+        }
+    } catch (_) {}
+
+    // Mark as pending so the UI reflects in-progress state.
+    // Do NOT clear URL fields here — setting them to null stores "" which fails
+    // PocketBase's URL format validation. processMediaRecord will overwrite them
+    // with fresh values once ffmpeg succeeds.
+    record.set("processingStatus", "pending");
+    try { $app.save(record); } catch (_) {}
+
+    processMediaRecord(record);
+
+    e.json(200, { ok: true, id });
+}, $apis.requireAuth());

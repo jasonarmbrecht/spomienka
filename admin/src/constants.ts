@@ -8,6 +8,8 @@ export const ALLOWED_IMAGE_TYPES = [
   "image/png",
   "image/gif",
   "image/webp",
+  "image/heic",
+  "image/heif",
 ] as const;
 
 export const ALLOWED_VIDEO_TYPES = [
