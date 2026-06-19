@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-PROJECT="$(cd "$(dirname "$0")" && pwd)"
+PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 BACKEND="$PROJECT/backend"
 ADMIN="$PROJECT/admin"
 

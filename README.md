@@ -28,23 +28,37 @@ The interactive installer sets up all dependencies, PocketBase backend, admin UI
 
 ## Development
 
-First-time setup (creates local PocketBase users and imports schema):
+### macOS Setup
+
+Install prerequisites if you don't have them:
+
+```bash
+# Homebrew (if not installed)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Node.js and npm (for the admin SPA)
+brew install node
+```
+
+First-time setup (downloads PocketBase, creates local users, and imports schema):
 
 ```bash
 scripts/setup_dev.sh <admin-email> <admin-password>
 ```
 
-Start all services for development:
+Start the backend and admin UI:
 
 ```bash
 scripts/dev.sh
 ```
 
-This runs PocketBase on `http://localhost:8090` and the admin SPA on `http://localhost:5173`. Run the viewer separately:
+This runs PocketBase on `http://localhost:8090` and the admin SPA on `http://localhost:5173`. Open `http://localhost:5173` in your browser to use the admin interface.
 
-```bash
-cd viewer && AUTH_EMAIL=... AUTH_PASSWORD=... cargo run
-```
+> **Note:** The viewer (Rust/SDL2/GStreamer) is designed for Raspberry Pi and is not needed for testing uploads and approvals on macOS. If you want to run it on Mac anyway, install the native dependencies first:
+> ```bash
+> brew install sdl2 sdl2_image sdl2_ttf gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad
+> cd viewer && AUTH_EMAIL=... AUTH_PASSWORD=... cargo run
+> ```
 
 To reset the local database:
 

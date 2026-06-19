@@ -12,7 +12,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", 
 config = { version = "0.14", features = ["toml"] }
 
 # Rendering
-sdl2 = { version = "0.37", features = ["ttf", "image"] }
+sdl2 = { version = "0.38", features = ["ttf", "image"] }
 
 # Video playback
 gstreamer = { version = "0.23", features = ["v1_20"] }
