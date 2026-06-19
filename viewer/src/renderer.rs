@@ -212,12 +212,16 @@ impl<'ttf> Renderer<'ttf> {
         // Use physical pixel dimensions for all rendering so that on HiDPI/Retina
         // displays we draw at full resolution rather than letting SDL2 upscale a
         // half-sized logical framebuffer (which causes a double-resampling blur).
-        let (physical_width, physical_height) = canvas.output_size()
+        let (physical_width, physical_height) = canvas
+            .output_size()
             .map_err(|e| anyhow::anyhow!("Failed to get canvas output size: {}", e))?;
         if physical_width != screen_width || physical_height != screen_height {
             tracing::info!(
                 "HiDPI detected: logical {}x{} → physical {}x{}",
-                screen_width, screen_height, physical_width, physical_height
+                screen_width,
+                screen_height,
+                physical_width,
+                physical_height
             );
         }
         let screen_width = physical_width;
