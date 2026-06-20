@@ -121,7 +121,9 @@ routerAdd("POST", "/api/spomienka/device-auth", (e) => {
         const token = payload + "." + sig;
 
         // Return token + device display config in one call
-        const cfg = device.get("config") || {};
+        // device.get("config") returns a raw JSON string in PB 0.25 JSVM — must parse.
+        let cfg;
+        try { cfg = JSON.parse(device.getString("config") || "{}"); } catch(_) { cfg = {}; }
         e.json(200, {
             token: token,
             expires_at: expiry,
@@ -331,7 +333,6 @@ cronAdd("cleanup-pending-devices", "0 * * * *", () => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/spomienka/reprocess/:id  (admin only)
 // Re-runs processMediaRecord for a single media item so it gets regenerated
 // with the current output format (PNG instead of JPEG, etc.).
 // ---------------------------------------------------------------------------

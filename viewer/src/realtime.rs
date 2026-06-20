@@ -22,6 +22,7 @@ pub enum RealtimeEvent {
     MediaUpdated(Media),
     MediaDeleted(String),
     RefreshNeeded,
+    ConfigChanged,
 }
 
 #[derive(Debug, Default)]
@@ -69,15 +70,25 @@ impl RealtimeManager {
         }
     }
 
-    fn build_subscription(&self) -> String {
-        if let Some(ref device_id) = self.device_id {
+    fn build_subscriptions(&self) -> Vec<String> {
+        let media_sub = if let Some(ref device_id) = self.device_id {
             format!(
                 "media?filter=(status='published') && (deviceScopes~'\"{}\"' || deviceScopes = null || deviceScopes = '[]' || deviceScopes = '')",
                 device_id
             )
         } else {
             "media?filter=status='published'".to_string()
+        };
+        let mut subs = vec![media_sub];
+        if let Some(ref device_id) = self.device_id {
+            // Subscribe to the inbox for this device — public read rule allows this
+            // without admin auth. A "create" event here means config changed.
+            subs.push(format!(
+                "device_inbox?filter=(device_id='{}')",
+                device_id
+            ));
         }
+        subs
     }
 
     pub async fn run(&self, token: Option<String>) {
@@ -149,10 +160,10 @@ impl RealtimeManager {
 
                     // POST the subscription
                     let sub_url = format!("{}/api/realtime", self.pb_url);
-                    let subscription = self.build_subscription();
+                    let subscriptions = self.build_subscriptions();
                     let mut sub_req = client.post(&sub_url).json(&serde_json::json!({
                         "clientId": client_id,
-                        "subscriptions": [subscription],
+                        "subscriptions": subscriptions,
                     }));
                     if let Some(t) = token {
                         sub_req = sub_req.bearer_auth(t);
@@ -168,7 +179,7 @@ impl RealtimeManager {
                     subscribed = true;
                     let _ = self.event_tx.send(RealtimeEvent::Connected).await;
                     let _ = self.event_tx.send(RealtimeEvent::RefreshNeeded).await;
-                    tracing::info!("Realtime connected and subscribed to: {}", subscription);
+                    tracing::info!("Realtime connected and subscribed to: {:?}", subscriptions);
                 } else if subscribed {
                     self.handle_sse_event(&ev).await;
                 }
@@ -180,6 +191,12 @@ impl RealtimeManager {
 
     async fn handle_sse_event(&self, ev: &SseEvent) {
         if ev.data.is_empty() {
+            return;
+        }
+
+        // device_inbox create → config changed, restart to apply.
+        if ev.event_type.starts_with("device_inbox") {
+            let _ = self.event_tx.send(RealtimeEvent::ConfigChanged).await;
             return;
         }
 

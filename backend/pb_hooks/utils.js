@@ -21,10 +21,6 @@ function findBinary(candidates) {
 const FFMPEG   = findBinary(["/opt/homebrew/bin/ffmpeg",   "/usr/bin/ffmpeg",   "/usr/local/bin/ffmpeg",   "ffmpeg"]);
 const FFPROBE  = findBinary(["/opt/homebrew/bin/ffprobe",  "/usr/bin/ffprobe",  "/usr/local/bin/ffprobe",  "ffprobe"]);
 const EXIFTOOL = findBinary(["/opt/homebrew/bin/exiftool", "/usr/bin/exiftool", "/usr/local/bin/exiftool", "exiftool"]);
-// sips: macOS built-in HEIC decoder (uses Apple frameworks, handles primary image)
-// heif-convert: Linux equivalent from libheif-examples package
-const SIPS         = findBinary(["/usr/bin/sips", "sips"]);
-const HEIF_CONVERT = findBinary(["/usr/bin/heif-convert", "/usr/local/bin/heif-convert", "heif-convert"]);
 
 // sha256sum is Linux-only; macOS ships shasum instead.
 const SHA256_CMD  = findBinary(["/usr/bin/sha256sum", "/opt/homebrew/bin/shasum", "/usr/bin/shasum", "sha256sum"]);
@@ -170,39 +166,16 @@ const FFMPEG_DISPLAY_SCALE = "scale='min(1920,iw)':'min(1080,ih)':force_original
 const FFMPEG_BLUR_FILTER   = "scale=80:-1,gblur=sigma=20,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080";
 const FFMPEG_THUMB_SCALE   = "scale=300:-1";
 
-// Convert HEIC to a temporary PNG that ffmpeg can process.
-// ffmpeg only decodes HEIC auxiliary streams (depth maps, thumbnails); the primary
-// image requires a native HEIF decoder: sips on macOS, heif-convert on Linux.
-// $os.stat() in PocketBase JSVM can't find system binaries, so we try absolute
-// paths directly rather than relying on findBinary() for these tools.
-function decodeHeic(heicPath, pngPath) {
-    const candidates = [
-        ["/usr/bin/sips", ["-s", "format", "png", heicPath, "--out", pngPath]],
-        ["/usr/bin/heif-convert", [heicPath, pngPath]],
-        ["/usr/local/bin/heif-convert", [heicPath, pngPath]],
-        [HEIF_CONVERT, [heicPath, pngPath]],
-    ];
-    for (const [bin, args] of candidates) {
-        try {
-            execCommand(bin, args);
-            return;
-        } catch (e) {
-            console.log("decodeHeic: " + bin + " failed: " + String(e));
-        }
-    }
-    throw new Error("No HEIC decoder available (need sips on macOS or heif-convert on Linux)");
-}
 
 function processImage(record, originalPath, procDir, storagePath) {
     const recordId = record.id;
     const collectionId = record.collection().id;
 
-    // HEIC/HEIF: pre-convert to PNG so ffmpeg can read the primary image.
-    // ffmpeg only decodes auxiliary streams (depth maps, thumbnails) from Apple HEIC.
+    // HEIC/HEIF: ffmpeg on macOS (VideoToolbox) can decode HEIC directly.
     const isHeic = /\.heic$/i.test(originalPath);
     if (isHeic) {
         const tmpPng = procDir + "/original.png";
-        decodeHeic(originalPath, tmpPng);
+        execCommand(FFMPEG, ["-y", "-i", originalPath, "-frames:v", "1", "-update", "1", tmpPng]);
         originalPath = tmpPng;
     }
 

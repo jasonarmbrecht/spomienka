@@ -57,6 +57,7 @@ export function SettingsPage() {
   const [blur, setBlur] = useState(true);
   const [shuffle, setShuffle] = useState(false);
   const [showClock, setShowClock] = useState(true);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   useEffect(() => {
     loadDevices();
@@ -88,6 +89,7 @@ export function SettingsPage() {
         setShuffle(device.config.shuffle ?? false);
         setShowClock(device.config.showClock ?? true);
       }
+      setSaveSuccess(false);
     }
   }, [selectedDeviceId, devices]);
 
@@ -186,12 +188,24 @@ export function SettingsPage() {
     }
   };
 
+  const selectedDevice = devices.find((d) => d.id === selectedDeviceId) ?? null;
+  const savedConfig = selectedDevice?.config;
+  const isDirty =
+    !savedConfig ||
+    savedConfig.interval !== slideInterval ||
+    savedConfig.transition !== transition ||
+    savedConfig.transitionDuration !== transitionDuration ||
+    savedConfig.blur !== blur ||
+    savedConfig.shuffle !== shuffle ||
+    savedConfig.showClock !== showClock;
+
   const saveConfig = async () => {
     if (!selectedDeviceId) {
       setError("No device selected");
       return;
     }
     clear();
+    setSaveSuccess(false);
     try {
       const newConfig = {
         interval: slideInterval,
@@ -207,7 +221,16 @@ export function SettingsPage() {
           d.id === selectedDeviceId ? { ...d, config: newConfig } : d
         )
       );
-      showMessage("Settings saved successfully");
+      // Notify the viewer via device_inbox so it restarts and applies the new config.
+      try {
+        await pb.collection("device_inbox").create({
+          device_id: selectedDeviceId,
+          type: "config_reload",
+        });
+      } catch (err) {
+        console.warn("Failed to send config reload signal:", err);
+      }
+      setSaveSuccess(true);
     } catch (err) {
       showError(err, "Failed to save settings");
     }
@@ -277,7 +300,6 @@ export function SettingsPage() {
 
   // suppress unused var warning for user — auth context available but not directly used here
   void user;
-  const selectedDevice = devices.find((d) => d.id === selectedDeviceId) ?? null;
 
   return (
     <section>
@@ -437,14 +459,14 @@ export function SettingsPage() {
               <input
                 type="number"
                 value={slideInterval}
-                onChange={(e) => setSlideInterval(Number(e.target.value))}
+                onChange={(e) => { setSlideInterval(Number(e.target.value)); setSaveSuccess(false); }}
                 min={1000}
                 step={1000}
               />
             </label>
             <label>
               Transition Effect
-              <select value={transition} onChange={(e) => setTransition(e.target.value)}>
+              <select value={transition} onChange={(e) => { setTransition(e.target.value); setSaveSuccess(false); }}>
                 <option value="fade">Fade</option>
                 <option value="crossfade">Crossfade</option>
                 <option value="cut">Cut</option>
@@ -455,7 +477,7 @@ export function SettingsPage() {
               <input
                 type="number"
                 value={transitionDuration}
-                onChange={(e) => setTransitionDuration(Number(e.target.value))}
+                onChange={(e) => { setTransitionDuration(Number(e.target.value)); setSaveSuccess(false); }}
                 min={100}
                 step={100}
               />
@@ -464,7 +486,7 @@ export function SettingsPage() {
               <input
                 type="checkbox"
                 checked={blur}
-                onChange={(e) => setBlur(e.target.checked)}
+                onChange={(e) => { setBlur(e.target.checked); setSaveSuccess(false); }}
               />
               Background Blur
             </label>
@@ -472,7 +494,7 @@ export function SettingsPage() {
               <input
                 type="checkbox"
                 checked={shuffle}
-                onChange={(e) => setShuffle(e.target.checked)}
+                onChange={(e) => { setShuffle(e.target.checked); setSaveSuccess(false); }}
               />
               Shuffle Playlist
             </label>
@@ -480,11 +502,14 @@ export function SettingsPage() {
               <input
                 type="checkbox"
                 checked={showClock}
-                onChange={(e) => setShowClock(e.target.checked)}
+                onChange={(e) => { setShowClock(e.target.checked); setSaveSuccess(false); }}
               />
               Clock
             </label>
-            <button onClick={saveConfig}>Save Settings</button>
+            {saveSuccess && (
+              <p className="save-success-msg">Settings saved — viewer will restart shortly.</p>
+            )}
+            <button onClick={saveConfig} disabled={!isDirty}>Save Settings</button>
           </div>
 
           {selectedDevice && (
