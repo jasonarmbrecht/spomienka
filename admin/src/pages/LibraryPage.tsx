@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import { pb } from "../pb/client";
+
+const pbUrl = import.meta.env.VITE_PB_URL as string;
+
 import { LoadingSpinner } from "../components/LoadingSpinner";
 import { EmptyState } from "../components/EmptyState";
 import { Modal } from "../components/Modal";
@@ -42,13 +45,6 @@ function buildMeta(m: Media): string {
   return parts.join(" · ");
 }
 
-function thumbHeight(m: Media): number {
-  if (m.width && m.height && m.width > 0) {
-    return Math.min(108, Math.max(40, Math.round(72 * (m.height / m.width))));
-  }
-  return 54;
-}
-
 const ITEMS_PER_PAGE = 50;
 
 const escapeFilterValue = (value: string) =>
@@ -63,28 +59,35 @@ export function LibraryPage() {
   const [reprocessing, setReprocessing] = useState<Set<string>>(new Set());
   const [reprocessingAll, setReprocessingAll] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkDeletePending, setBulkDeletePending] = useState(false);
-  const [filtersExpanded, setFiltersExpanded] = useState(() => {
-    return localStorage.getItem("libraryFiltersExpanded") === "true";
-  });
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
 
-  const toggleFilters = () => {
-    setFiltersExpanded((v) => {
-      localStorage.setItem("libraryFiltersExpanded", String(!v));
-      return !v;
-    });
+  const bulkDelete = async () => {
+    setBulkDeleting(true);
+    try {
+      await Promise.all([...selectedIds].map((id) => pb.collection("media").delete(id)));
+      setItems((prev) => prev.filter((m) => !selectedIds.has(m.id)));
+      setTotalItems((n) => n - selectedIds.size);
+      setSelectedIds(new Set());
+    } catch (err) {
+      console.error("Bulk delete failed:", err);
+    } finally {
+      setBulkDeleting(false);
+      setShowBulkDeleteModal(false);
+    }
   };
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
       return next;
     });
   };
 
   const allSelected = items.length > 0 && items.every((m) => selectedIds.has(m.id));
+  const someSelected = items.some((m) => selectedIds.has(m.id));
+
   const toggleSelectAll = () => {
     if (allSelected) {
       setSelectedIds((prev) => {
@@ -106,27 +109,11 @@ export function LibraryPage() {
       await pb.collection("media").delete(id);
       setItems((prev) => prev.filter((m) => m.id !== id));
       setTotalItems((n) => n - 1);
-      setSelectedIds((prev) => { const s = new Set(prev); s.delete(id); return s; });
     } catch (err) {
       console.error("Failed to delete media:", err);
     } finally {
       setMediaToDelete(null);
     }
-  };
-
-  const bulkDelete = async () => {
-    const ids = Array.from(selectedIds);
-    for (const id of ids) {
-      try {
-        await pb.collection("media").delete(id);
-        setItems((prev) => prev.filter((m) => m.id !== id));
-        setTotalItems((n) => n - 1);
-      } catch (err) {
-        console.error("Failed to delete media:", err);
-      }
-    }
-    setSelectedIds(new Set());
-    setBulkDeletePending(false);
   };
 
   const reprocessMedia = async (id: string) => {
@@ -181,35 +168,19 @@ export function LibraryPage() {
       setError(null);
       try {
         const filters: string[] = [];
-
-        if (filter !== "all") {
-          filters.push(`status='${filter}'`);
-        }
-
-        if (typeFilter !== "all") {
-          filters.push(`type='${typeFilter}'`);
-        }
-
+        if (filter !== "all") filters.push(`status='${filter}'`);
+        if (typeFilter !== "all") filters.push(`type='${typeFilter}'`);
         if (searchQuery.trim()) {
           const term = escapeFilterValue(searchQuery.trim());
           filters.push(`title~'${term}' || file~'${term}'`);
         }
-
-        if (dateFrom) {
-          filters.push(`created>='${escapeFilterValue(dateFrom)}'`);
-        }
-
-        if (dateTo) {
-          filters.push(`created<='${escapeFilterValue(dateTo)}'`);
-        }
-
+        if (dateFrom) filters.push(`created>='${escapeFilterValue(dateFrom)}'`);
+        if (dateTo) filters.push(`created<='${escapeFilterValue(dateTo)}'`);
         if (tagFilter.trim()) {
           const tag = escapeFilterValue(tagFilter.trim());
           filters.push(`tags~'${tag}'`);
         }
-
-        const filterString = filters.length > 0 ? filters.join(" && ") : "";
-
+        const filterString = filters.join(" && ");
         const res = await pb.collection("media").getList<Media>(page, ITEMS_PER_PAGE, {
           filter: filterString,
           sort: sortField,
@@ -229,14 +200,18 @@ export function LibraryPage() {
 
   useEffect(() => {
     setPage(1);
+    setSelectedIds(new Set());
   }, [filter, searchQuery, typeFilter, dateFrom, dateTo, tagFilter, sortField]);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [page]);
 
   return (
     <section className="page-wide">
       <div className="section-header">
         <h1>Library</h1>
         <button
-          className="btn btn-secondary"
           onClick={reprocessAll}
           disabled={reprocessingAll}
           title="Re-run ffmpeg processing on all media to regenerate assets in the current output format"
@@ -246,97 +221,60 @@ export function LibraryPage() {
       </div>
 
       <div className="filter-bar">
-        <div className="filter-row">
-          <label className="filter-label-grow">
-            Search
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by title or filename..."
-            />
-          </label>
-
-          <label>
-            Status
-            <select
-              value={filter}
-              onChange={(e) => setFilter(e.target.value as typeof filter)}
-            >
-              <option value="all">All</option>
-              <option value="published">Published</option>
-              <option value="pending">Pending</option>
-              <option value="rejected">Rejected</option>
-            </select>
-          </label>
-
-          <label>
-            Type
-            <select
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)}
-            >
-              <option value="all">All</option>
-              <option value="image">Image</option>
-              <option value="video">Video</option>
-            </select>
-          </label>
-
-          <label>
-            Sort
-            <select
-              value={sortField}
-              onChange={(e) => setSortField(e.target.value)}
-            >
-              <option value="-created">Date Added ↓</option>
-              <option value="created">Date Added ↑</option>
-              <option value="-takenAt">Date Taken ↓</option>
-              <option value="takenAt">Date Taken ↑</option>
-              <option value="title">Title A–Z</option>
-              <option value="-title">Title Z–A</option>
-            </select>
-          </label>
-
-          <button
-            className="btn btn-secondary filter-toggle-btn"
-            onClick={toggleFilters}
-            title="Toggle date and tag filters"
-          >
-            Filters {filtersExpanded ? "▲" : "▼"}
-          </button>
-        </div>
-
-        {filtersExpanded && (
-          <div className="filter-row">
-            <label>
-              Date From
-              <input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-              />
-            </label>
-
-            <label>
-              Date To
-              <input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-              />
-            </label>
-
-            <label className="filter-label-grow">
-              Tag Filter
-              <input
-                type="text"
-                value={tagFilter}
-                onChange={(e) => setTagFilter(e.target.value)}
-                placeholder="Filter by tag..."
-              />
-            </label>
-          </div>
-        )}
+        <label className="filter-label-grow">
+          Search
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search..."
+          />
+        </label>
+        <label>
+          Status
+          <select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
+            <option value="all">All</option>
+            <option value="published">Published</option>
+            <option value="pending">Pending</option>
+            <option value="rejected">Rejected</option>
+          </select>
+        </label>
+        <label>
+          Type
+          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)}>
+            <option value="all">All</option>
+            <option value="image">Image</option>
+            <option value="video">Video</option>
+          </select>
+        </label>
+        <label>
+          From
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+        </label>
+        <label>
+          To
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+        </label>
+        <label>
+          Tag
+          <input
+            type="text"
+            value={tagFilter}
+            onChange={(e) => setTagFilter(e.target.value)}
+            placeholder="Tag..."
+          />
+        </label>
+        <label>
+          Sort
+          <select value={sortField} onChange={(e) => setSortField(e.target.value)}>
+            <option value="-created">Added ↓</option>
+            <option value="created">Added ↑</option>
+            <option value="-takenAt">Taken ↓</option>
+            <option value="takenAt">Taken ↑</option>
+            <option value="title">Title A–Z</option>
+            <option value="-title">Title Z–A</option>
+          </select>
+        </label>
       </div>
 
       {loading && <LoadingSpinner label="Loading library..." />}
@@ -350,20 +288,23 @@ export function LibraryPage() {
 
       {!loading && !error && totalItems > 0 && (
         <div className="library-list-header">
-          <label className="library-select-all">
+          <label className="label-checkbox">
             <input
               type="checkbox"
               checked={allSelected}
+              ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
               onChange={toggleSelectAll}
             />
-            {selectedIds.size > 0 ? `${selectedIds.size} selected` : `${totalItems} items`}
+            Select all
+            {someSelected && <span className="library-selection-count">({selectedIds.size} selected)</span>}
           </label>
           {selectedIds.size > 0 && (
             <button
               className="btn btn-sm btn-danger"
-              onClick={() => setBulkDeletePending(true)}
+              onClick={() => setShowBulkDeleteModal(true)}
+              disabled={bulkDeleting}
             >
-              Delete Selected ({selectedIds.size})
+              Delete {selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""}
             </button>
           )}
         </div>
@@ -371,45 +312,48 @@ export function LibraryPage() {
 
       <ul>
         {items.map((m) => {
-          const fileBase = `/api/files/${m.collectionId}/${m.id}/${m.file}`;
           const isHeic = /\.heic$/i.test(m.file);
-          const thumbSrc = m.processingStatus !== "failed"
-            ? (m.thumbUrl || m.displayUrl || m.posterUrl
-               || (m.type === "image" && !isHeic ? `${fileBase}?thumb=144x108` : null))
+          const derivedUrl = m.processingStatus !== "failed"
+            ? (m.thumbUrl || m.displayUrl || m.posterUrl) || null
             : null;
+          const fallbackUrl = (m.type === "image" && !isHeic && m.processingStatus !== "failed")
+            ? pb.files.getURL(m, m.file, { thumb: "144x0" })
+            : null;
+          const thumbSrc = derivedUrl ? `${pbUrl}${derivedUrl}` : (fallbackUrl || null);
           const meta = buildMeta(m);
-          const h = thumbHeight(m);
           const isSelected = selectedIds.has(m.id);
           return (
-            <li key={m.id} className={`library-item${isSelected ? " selected" : ""}`}>
+            <li key={m.id} className={`library-item${isSelected ? " library-item-selected" : ""}`}>
               <input
                 type="checkbox"
-                className="library-item-checkbox"
+                className="library-checkbox"
                 checked={isSelected}
                 onChange={() => toggleSelect(m.id)}
+                aria-label={`Select ${m.title || m.file}`}
               />
-              {thumbSrc ? (
+              {thumbSrc && (
                 <img
                   src={thumbSrc}
                   alt=""
                   className="library-thumb"
-                  style={{ width: 72, height: h }}
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                   onMouseEnter={() => setHoveredItem(m)}
                   onMouseLeave={() => setHoveredItem(null)}
                   onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                 />
-              ) : (
-                <div className="library-thumb library-thumb-placeholder" style={{ width: 72, height: h }} />
               )}
               <div className="library-item-info">
                 <span>{m.title || m.file}</span>
                 {meta && <p className="library-item-meta">{meta}</p>}
               </div>
               <div className="library-actions">
-                <span className="library-status">{m.status}</span>
+                <span className={`library-status${m.status === "published" ? " library-status-published" : m.status === "rejected" ? " library-status-failed" : ""}`}>
+                  {m.status}
+                </span>
                 {m.processingStatus && m.processingStatus !== "completed" && (
-                  <span className="library-status">{m.processingStatus}</span>
+                  <span className={`library-status${m.processingStatus === "failed" ? " library-status-failed" : ""}`}>
+                    {m.processingStatus}
+                  </span>
                 )}
                 <button
                   className="btn btn-sm btn-secondary"
@@ -437,6 +381,18 @@ export function LibraryPage() {
         })}
       </ul>
 
+      {showBulkDeleteModal && (
+        <Modal
+          title="Delete Selected"
+          onConfirm={bulkDelete}
+          onCancel={() => setShowBulkDeleteModal(false)}
+          confirmLabel={bulkDeleting ? "Deleting…" : `Delete ${selectedIds.size} item${selectedIds.size !== 1 ? "s" : ""}`}
+          confirmDestructive
+        >
+          <p>Delete <strong>{selectedIds.size}</strong> item{selectedIds.size !== 1 ? "s" : ""}? This cannot be undone.</p>
+        </Modal>
+      )}
+
       {mediaToDelete && (
         <Modal
           title="Delete Media"
@@ -449,23 +405,14 @@ export function LibraryPage() {
         </Modal>
       )}
 
-      {bulkDeletePending && (
-        <Modal
-          title="Delete Selected"
-          onConfirm={bulkDelete}
-          onCancel={() => setBulkDeletePending(false)}
-          confirmLabel="Delete"
-          confirmDestructive
-        >
-          <p>Delete <strong>{selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""}</strong>? This cannot be undone.</p>
-        </Modal>
-      )}
-
       {hoveredItem && (() => {
-        const fileBase = `/api/files/${hoveredItem.collectionId}/${hoveredItem.id}/${hoveredItem.file}`;
         const isHeic = /\.heic$/i.test(hoveredItem.file);
-        const previewSrc = hoveredItem.displayUrl || hoveredItem.posterUrl || hoveredItem.thumbUrl
-          || (hoveredItem.type === "image" && !isHeic ? `${fileBase}?thumb=840x0` : null);
+        const derivedPreview = hoveredItem.displayUrl || hoveredItem.posterUrl || hoveredItem.thumbUrl || null;
+        const previewSrc = derivedPreview
+          ? `${pbUrl}${derivedPreview}`
+          : (hoveredItem.type === "image" && !isHeic
+              ? pb.files.getURL(hoveredItem, hoveredItem.file, { thumb: "840x0" })
+              : null);
         if (!previewSrc) return null;
         const PREVIEW_W = 420;
         const OFFSET_X = 18;
@@ -475,10 +422,7 @@ export function LibraryPage() {
           : hoverPos.x + OFFSET_X;
         const y = Math.max(8, Math.min(hoverPos.y - OFFSET_Y, window.innerHeight - 320));
         return (
-          <div
-            className="library-hover-preview"
-            style={{ left: x, top: y }}
-          >
+          <div className="library-hover-preview" style={{ left: x, top: y }}>
             <img src={previewSrc} alt="" />
           </div>
         );

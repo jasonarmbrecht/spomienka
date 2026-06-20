@@ -183,6 +183,7 @@ select {
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   color: var(--color-text);
+  font-family: inherit;
   font-size: 0.9375rem;
   transition: border-color 0.15s;
 }
@@ -442,28 +443,49 @@ p:last-child {
   margin-bottom: 0;
 }
 
-/* Filter bar (Library page) */
+/* Filter bar (Library page) — compact single row */
 .filter-bar {
   display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 1rem;
 }
 
-.filter-row {
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+.filter-bar label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.7rem;
+  color: var(--color-text);
+  margin-bottom: 0;
+}
+
+.filter-bar input,
+.filter-bar select {
+  font-size: 0.8rem;
+  font-family: inherit;
+  padding: 0.25rem 0.4rem;
+  height: 2rem;
+  width: auto;
+  max-width: none;
+  color: var(--color-text);
+}
+
+.filter-bar input[type="text"],
+.filter-bar input[type="date"] {
+  min-width: 7rem;
 }
 
 .filter-label-grow {
-  min-width: 200px;
+  flex: 1 1 10rem;
 }
 
-.filter-row label,
-.filter-row input,
-.filter-row select {
-  max-width: none;
+.filter-bar input[type="date"]::-webkit-datetime-edit-text,
+.filter-bar input[type="date"]::-webkit-datetime-edit-month-field,
+.filter-bar input[type="date"]::-webkit-datetime-edit-day-field,
+.filter-bar input[type="date"]::-webkit-datetime-edit-year-field {
+  color: var(--color-text);
 }
 
 .result-count {
@@ -757,11 +779,62 @@ tr.current-user {
   cursor: pointer;
 }
 
-.label-checkbox input[type="checkbox"] {
-  width: auto;
+/* Custom checkbox — matches the dark design system */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
   margin: 0;
-  accent-color: var(--color-primary);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  position: relative;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+input[type="checkbox"]:checked {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 0.2rem;
+  top: 0.05rem;
+  width: 0.35rem;
+  height: 0.6rem;
+  border: 2px solid #fff;
+  border-top: none;
+  border-left: none;
+  transform: rotate(45deg);
+}
+
+input[type="checkbox"]:indeterminate {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+input[type="checkbox"]:indeterminate::after {
+  content: "";
+  position: absolute;
+  left: 0.2rem;
+  top: 0.4rem;
+  width: 0.55rem;
+  height: 2px;
+  background: #fff;
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+input[type="checkbox"]:hover:not(:checked) {
+  border-color: var(--color-primary);
 }
 
 /* Date inputs — native picker popup uses dark theme; icon tinted to match */
@@ -786,8 +859,9 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   align-items: center;
 }
 
-.library-item.selected {
-  background: var(--color-surface);
+.library-item-selected {
+  background: rgba(29, 155, 240, 0.08);
+  border-color: var(--color-primary);
 }
 
 .library-item-checkbox,
@@ -833,9 +907,16 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .library-list-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 1rem;
   padding: 0.4rem 0;
   margin-bottom: 0.25rem;
+}
+
+.library-selection-count {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  margin-left: 0.25rem;
 }
 
 .library-select-all {
@@ -856,7 +937,11 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 }
 
 .library-thumb {
-  object-fit: cover;
+  max-width: 96px;
+  max-height: 72px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
   border-radius: var(--radius-sm);
   border: 1px solid var(--color-border);
   flex-shrink: 0;
@@ -915,9 +1000,97 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 }
 
 .library-status {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   color: var(--color-text-muted);
-  margin-right: 0.25rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.library-status-published {
+  background: rgba(0, 186, 124, 0.15);
+  color: var(--color-success);
+}
+
+.library-status-failed {
+  background: rgba(244, 33, 46, 0.15);
+  color: var(--color-error);
+}
+
+/* Device card grid (Settings page) */
+.device-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.25rem;
+}
+
+.device-card {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.device-card-header {
+  padding: 1rem 1rem 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.device-card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.device-card-name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0;
+}
+
+.device-card-lastseen {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  margin-top: 0.25rem;
+  margin-bottom: 0;
+}
+
+.device-card-body {
+  padding: 1rem;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.device-card-body h3 {
+  margin: 0 0 0.5rem;
+}
+
+.device-card-body label {
+  margin-bottom: 0;
+}
+
+.device-card-body input,
+.device-card-body select {
+  max-width: none;
+}
+
+.device-card-footer {
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+/* Wide page variant (Library) */
+.page-wide {
+  max-width: var(--data-page-max-width);
 }
 
 @media (max-width: 760px) {
@@ -961,6 +1134,10 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   .library-item {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .device-grid {
+    grid-template-columns: 1fr;
   }
 
   ul li button + button,
