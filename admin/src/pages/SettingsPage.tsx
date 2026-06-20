@@ -257,7 +257,7 @@ export function SettingsPage() {
     return () => clearInterval(interval);
   }, []);
 
-  const loadDevices = async (_preferredId?: string) => {
+  const loadDevices = async () => {
     setLoading(true);
     setError(null);
     try {
