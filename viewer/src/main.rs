@@ -619,7 +619,6 @@ async fn main() -> Result<()> {
         });
     }
 
-
     // Start realtime subscription if enabled
     let mut realtime_rx = if state.config.enable_realtime {
         let token = state.token().await;

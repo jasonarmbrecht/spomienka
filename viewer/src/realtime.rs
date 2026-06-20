@@ -83,10 +83,7 @@ impl RealtimeManager {
         if let Some(ref device_id) = self.device_id {
             // Subscribe to the inbox for this device — public read rule allows this
             // without admin auth. A "create" event here means config changed.
-            subs.push(format!(
-                "device_inbox?filter=(device_id='{}')",
-                device_id
-            ));
+            subs.push(format!("device_inbox?filter=(device_id='{}')", device_id));
         }
         subs
     }

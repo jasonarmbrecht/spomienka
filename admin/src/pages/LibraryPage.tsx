@@ -394,14 +394,10 @@ export function LibraryPage() {
                   alt=""
                   className="library-thumb"
                   style={{ width: 72, height: h }}
-                  onError={(e) => {
-                    const fallback = `${pbUrl}${fileBase}?thumb=144x108`;
-                    if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
-                  }}
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                   onMouseEnter={() => setHoveredItem(m)}
                   onMouseLeave={() => setHoveredItem(null)}
                   onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                 />
               ) : (
                 <div className="library-thumb library-thumb-placeholder" style={{ width: 72, height: h }} />
