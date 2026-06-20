@@ -31,18 +31,207 @@ type PendingDevice = {
   created: string;
 };
 
+type DeviceCardProps = {
+  device: Device;
+  onRefresh: (preferredId?: string) => void;
+  showMessage: (msg: string) => void;
+  showError: (err: unknown, fallback: string) => void;
+  onNewApiKey: (key: string) => void;
+};
+
+function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: DeviceCardProps) {
+  const cfg = device.config ?? {};
+  const [slideInterval, setSlideInterval] = useState(cfg.interval ?? 8000);
+  const [transition, setTransition] = useState(cfg.transition ?? "fade");
+  const [transitionDuration, setTransitionDuration] = useState(cfg.transitionDuration ?? 1000);
+  const [blur, setBlur] = useState(cfg.blur ?? true);
+  const [shuffle, setShuffle] = useState(cfg.shuffle ?? false);
+  const [showClock, setShowClock] = useState(cfg.showClock ?? true);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  const isDirty =
+    (cfg.interval ?? 8000) !== slideInterval ||
+    (cfg.transition ?? "fade") !== transition ||
+    (cfg.transitionDuration ?? 1000) !== transitionDuration ||
+    (cfg.blur ?? true) !== blur ||
+    (cfg.shuffle ?? false) !== shuffle ||
+    (cfg.showClock ?? true) !== showClock;
+
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(device.name);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showRegenModal, setShowRegenModal] = useState(false);
+
+  const saveConfig = async () => {
+    try {
+      const newConfig = { interval: slideInterval, transition, transitionDuration, blur, shuffle, showClock };
+      await pb.collection("devices").update(device.id, { config: newConfig });
+      try {
+        await pb.collection("device_inbox").create({ device_id: device.id, type: "config_reload" });
+      } catch {
+        // non-fatal — viewer will pick up changes on next poll
+      }
+      setSaveSuccess(true);
+      showMessage("Settings saved — viewer will restart shortly.");
+      onRefresh(device.id);
+    } catch (err) {
+      showError(err, "Failed to save settings");
+    }
+  };
+
+  const saveEditName = async () => {
+    if (!editName.trim()) return;
+    try {
+      await pb.collection("devices").update(device.id, { name: editName.trim() });
+      setEditing(false);
+      showMessage("Device name updated");
+      onRefresh(device.id);
+    } catch (err) {
+      showError(err, "Failed to update device name");
+    }
+  };
+
+  const regenerateApiKey = async () => {
+    try {
+      const newKey = generateApiKey();
+      await pb.collection("devices").update(device.id, { apiKey: newKey });
+      setShowRegenModal(false);
+      onNewApiKey(newKey);
+      showMessage("API key regenerated successfully");
+      onRefresh(device.id);
+    } catch (err) {
+      showError(err, "Failed to regenerate API key");
+    }
+  };
+
+  const deleteDevice = async () => {
+    try {
+      await pb.collection("devices").delete(device.id);
+      setShowDeleteModal(false);
+      showMessage("Device deleted successfully");
+      onRefresh();
+    } catch (err) {
+      showError(err, "Failed to delete device");
+    }
+  };
+
+  return (
+    <div className="device-card">
+      {showRegenModal && (
+        <Modal
+          title="Regenerate API Key"
+          onConfirm={regenerateApiKey}
+          onCancel={() => setShowRegenModal(false)}
+          confirmLabel="Regenerate"
+          confirmDestructive
+        >
+          <p>The old API key will stop working immediately. The device will need to be reconfigured with the new key.</p>
+        </Modal>
+      )}
+      {showDeleteModal && (
+        <Modal
+          title="Confirm Deletion"
+          onConfirm={deleteDevice}
+          onCancel={() => setShowDeleteModal(false)}
+          confirmLabel="Delete"
+          confirmDestructive
+        >
+          <p>Are you sure you want to delete this device? This action cannot be undone.</p>
+        </Modal>
+      )}
+
+      <div className="device-card-header">
+        {editing ? (
+          <div className="device-action-row">
+            <input
+              type="text"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") saveEditName(); if (e.key === "Escape") setEditing(false); }}
+              autoFocus
+            />
+            <button onClick={saveEditName} className="btn btn-sm">Save</button>
+            <button onClick={() => { setEditing(false); setEditName(device.name); }} className="btn btn-secondary btn-sm">Cancel</button>
+          </div>
+        ) : (
+          <div className="device-card-title-row">
+            <h2 className="device-card-name">{device.name}</h2>
+            <button onClick={() => { setEditing(true); setEditName(device.name); }} className="btn btn-secondary btn-sm">
+              Rename
+            </button>
+          </div>
+        )}
+        {device.lastSeen && (
+          <p className="device-card-lastseen">Last seen: {new Date(device.lastSeen).toLocaleString()}</p>
+        )}
+      </div>
+
+      <div className="device-card-body">
+        <h3>Slideshow Settings</h3>
+        <label>
+          Display Duration (ms)
+          <input
+            type="number"
+            value={slideInterval}
+            onChange={(e) => { setSlideInterval(Number(e.target.value)); setSaveSuccess(false); }}
+            min={1000}
+            step={1000}
+          />
+        </label>
+        <label>
+          Transition Effect
+          <select value={transition} onChange={(e) => { setTransition(e.target.value); setSaveSuccess(false); }}>
+            <option value="fade">Fade</option>
+            <option value="crossfade">Crossfade</option>
+            <option value="cut">Cut</option>
+          </select>
+        </label>
+        <label>
+          Transition Duration (ms)
+          <input
+            type="number"
+            value={transitionDuration}
+            onChange={(e) => { setTransitionDuration(Number(e.target.value)); setSaveSuccess(false); }}
+            min={100}
+            step={100}
+          />
+        </label>
+        <label className="label-checkbox">
+          <input type="checkbox" checked={blur} onChange={(e) => { setBlur(e.target.checked); setSaveSuccess(false); }} />
+          Background Blur
+        </label>
+        <label className="label-checkbox">
+          <input type="checkbox" checked={shuffle} onChange={(e) => { setShuffle(e.target.checked); setSaveSuccess(false); }} />
+          Shuffle Playlist
+        </label>
+        <label className="label-checkbox">
+          <input type="checkbox" checked={showClock} onChange={(e) => { setShowClock(e.target.checked); setSaveSuccess(false); }} />
+          Clock
+        </label>
+        {saveSuccess && <p className="save-success-msg">Settings saved — viewer will restart shortly.</p>}
+        <button onClick={saveConfig} className="btn" disabled={!isDirty}>Save Settings</button>
+      </div>
+
+      <div className="device-card-footer">
+        <button onClick={() => setShowRegenModal(true)} className="btn btn-warning btn-sm">
+          Regenerate Key
+        </button>
+        <button onClick={() => setShowDeleteModal(true)} className="btn btn-danger btn-sm">
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const { user } = useAuth();
   const { error, message, setError, clear, showError, showMessage } = useNotification();
   const [devices, setDevices] = useState<Device[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
-  const [editingDeviceId, setEditingDeviceId] = useState<string | null>(null);
-  const [editDeviceName, setEditDeviceName] = useState("");
-  const [deviceToDelete, setDeviceToDelete] = useState<string | null>(null);
-  const [deviceToRegenKey, setDeviceToRegenKey] = useState<string | null>(null);
   const [showAddDeviceModal, setShowAddDeviceModal] = useState(false);
+  const [newDeviceName, setNewDeviceName] = useState("");
 
   const [pendingDevices, setPendingDevices] = useState<PendingDevice[]>([]);
   const [registeringSession, setRegisteringSession] = useState<PendingDevice | null>(null);
@@ -50,20 +239,10 @@ export function SettingsPage() {
   const [registerPin, setRegisterPin] = useState("");
   const [registerError, setRegisterError] = useState<string | null>(null);
 
-  const [newDeviceName, setNewDeviceName] = useState("");
-  const [slideInterval, setSlideInterval] = useState(8000);
-  const [transition, setTransition] = useState("fade");
-  const [transitionDuration, setTransitionDuration] = useState(1000);
-  const [blur, setBlur] = useState(true);
-  const [shuffle, setShuffle] = useState(false);
-  const [showClock, setShowClock] = useState(true);
-  const [saveSuccess, setSaveSuccess] = useState(false);
-
   useEffect(() => {
     loadDevices();
   }, []);
 
-  // Poll for unregistered viewers every 5 seconds
   useEffect(() => {
     const poll = async () => {
       try {
@@ -78,22 +257,7 @@ export function SettingsPage() {
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    if (selectedDeviceId) {
-      const device = devices.find((d) => d.id === selectedDeviceId);
-      if (device?.config) {
-        setSlideInterval(device.config.interval ?? 8000);
-        setTransition(device.config.transition ?? "fade");
-        setTransitionDuration(device.config.transitionDuration ?? 1000);
-        setBlur(device.config.blur ?? true);
-        setShuffle(device.config.shuffle ?? false);
-        setShowClock(device.config.showClock ?? true);
-      }
-      setSaveSuccess(false);
-    }
-  }, [selectedDeviceId, devices]);
-
-  const loadDevices = async (preferredSelectedId?: string) => {
+  const loadDevices = async (_preferredId?: string) => {
     setLoading(true);
     setError(null);
     try {
@@ -102,15 +266,6 @@ export function SettingsPage() {
         requestKey: null,
       });
       setDevices(res.items);
-      if (res.items.length === 0) {
-        setSelectedDeviceId(null);
-        return;
-      }
-
-      const nextSelectedId = preferredSelectedId ?? selectedDeviceId;
-      if (!nextSelectedId || !res.items.some((d) => d.id === nextSelectedId)) {
-        setSelectedDeviceId(res.items[0].id);
-      }
     } catch (err) {
       showError(err, "Failed to load devices");
     } finally {
@@ -127,29 +282,17 @@ export function SettingsPage() {
 
   const registerPendingDevice = async () => {
     if (!registeringSession) return;
-    if (!registerName.trim()) {
-      setRegisterError("Device name is required");
-      return;
-    }
-    if (!/^\d{6}$/.test(registerPin)) {
-      setRegisterError("PIN must be exactly 6 digits");
-      return;
-    }
+    if (!registerName.trim()) { setRegisterError("Device name is required"); return; }
+    if (!/^\d{6}$/.test(registerPin)) { setRegisterError("PIN must be exactly 6 digits"); return; }
     setRegisterError(null);
     try {
       await pb.send("/api/spomienka/register", {
         method: "POST",
-        body: JSON.stringify({
-          session_id: registeringSession.session_id,
-          name: registerName.trim(),
-          pin: registerPin,
-        }),
+        body: JSON.stringify({ session_id: registeringSession.session_id, name: registerName.trim(), pin: registerPin }),
         headers: { "Content-Type": "application/json" },
       });
       setRegisteringSession(null);
-      setPendingDevices((prev) =>
-        prev.filter((p) => p.session_id !== registeringSession.session_id)
-      );
+      setPendingDevices((prev) => prev.filter((p) => p.session_id !== registeringSession.session_id));
       showMessage(`Viewer "${registerName.trim()}" registered successfully! It will restart automatically.`);
       await loadDevices();
     } catch (err) {
@@ -158,27 +301,16 @@ export function SettingsPage() {
   };
 
   const createDevice = async () => {
-    if (!newDeviceName.trim()) {
-      setError("Device name is required");
-      return;
-    }
+    if (!newDeviceName.trim()) { setError("Device name is required"); return; }
     clear();
     try {
       const apiKey = generateApiKey();
       const device = await pb.collection("devices").create<Device>({
         name: newDeviceName.trim(),
         apiKey,
-        config: {
-          interval: slideInterval,
-          transition,
-          transitionDuration,
-          blur,
-          shuffle,
-          showClock,
-        },
+        config: { interval: 8000, transition: "fade", transitionDuration: 1000, blur: true, shuffle: false, showClock: true },
       });
-      setDevices([...devices, device]);
-      setSelectedDeviceId(device.id);
+      setDevices((prev) => [...prev, device]);
       setNewDeviceName("");
       setShowAddDeviceModal(false);
       setNewApiKey(apiKey);
@@ -188,106 +320,7 @@ export function SettingsPage() {
     }
   };
 
-  const selectedDevice = devices.find((d) => d.id === selectedDeviceId) ?? null;
-  const savedConfig = selectedDevice?.config;
-  const isDirty =
-    !savedConfig ||
-    savedConfig.interval !== slideInterval ||
-    savedConfig.transition !== transition ||
-    savedConfig.transitionDuration !== transitionDuration ||
-    savedConfig.blur !== blur ||
-    savedConfig.shuffle !== shuffle ||
-    savedConfig.showClock !== showClock;
-
-  const saveConfig = async () => {
-    if (!selectedDeviceId) {
-      setError("No device selected");
-      return;
-    }
-    clear();
-    setSaveSuccess(false);
-    try {
-      const newConfig = {
-        interval: slideInterval,
-        transition,
-        transitionDuration,
-        blur,
-        shuffle,
-        showClock,
-      };
-      await pb.collection("devices").update(selectedDeviceId, { config: newConfig });
-      setDevices(
-        devices.map((d) =>
-          d.id === selectedDeviceId ? { ...d, config: newConfig } : d
-        )
-      );
-      // Notify the viewer via device_inbox so it restarts and applies the new config.
-      try {
-        await pb.collection("device_inbox").create({
-          device_id: selectedDeviceId,
-          type: "config_reload",
-        });
-      } catch (err) {
-        console.warn("Failed to send config reload signal:", err);
-      }
-      setSaveSuccess(true);
-    } catch (err) {
-      showError(err, "Failed to save settings");
-    }
-  };
-
-  const startEditDevice = (device: Device) => {
-    setEditingDeviceId(device.id);
-    setEditDeviceName(device.name);
-  };
-
-  const cancelEditDevice = () => {
-    setEditingDeviceId(null);
-    setEditDeviceName("");
-  };
-
-  const saveEditDevice = async (deviceId: string) => {
-    if (!editDeviceName.trim()) {
-      setError("Device name is required");
-      return;
-    }
-    setError(null);
-    try {
-      await pb.collection("devices").update(deviceId, { name: editDeviceName.trim() });
-      await loadDevices(deviceId);
-      setEditingDeviceId(null);
-      setEditDeviceName("");
-      showMessage("Device name updated successfully");
-    } catch (err) {
-      showError(err, "Failed to update device name");
-    }
-  };
-
-  const regenerateApiKey = async (deviceId: string) => {
-    setError(null);
-    try {
-      const newKey = generateApiKey();
-      await pb.collection("devices").update(deviceId, { apiKey: newKey });
-      await loadDevices(deviceId);
-      setDeviceToRegenKey(null);
-      setNewApiKey(newKey);
-      showMessage("API key regenerated successfully");
-    } catch (err) {
-      showError(err, "Failed to regenerate API key");
-    }
-  };
-
-  const deleteDevice = async (deviceId: string) => {
-    setError(null);
-    try {
-      await pb.collection("devices").delete(deviceId);
-      await loadDevices();
-      setDeviceToDelete(null);
-      showMessage("Device deleted successfully");
-    } catch (err) {
-      showError(err, "Failed to delete device");
-    }
-  };
+  void user;
 
   if (loading) {
     return (
@@ -298,13 +331,13 @@ export function SettingsPage() {
     );
   }
 
-  // suppress unused var warning for user — auth context available but not directly used here
-  void user;
-
   return (
     <section>
       <div className="section-header">
         <h1>Settings</h1>
+        <button onClick={() => setShowAddDeviceModal(true)}>
+          Add Device Manually
+        </button>
       </div>
 
       <Notification error={error} message={message} />
@@ -319,9 +352,7 @@ export function SettingsPage() {
           onCancel={() => setRegisteringSession(null)}
           confirmLabel="Connect"
         >
-          <p style={{ marginBottom: "1rem" }}>
-            Enter the 6-digit PIN shown on the viewer screen.
-          </p>
+          <p style={{ marginBottom: "1rem" }}>Enter the 6-digit PIN shown on the viewer screen.</p>
           {registerError && <p className="error" style={{ marginBottom: "0.75rem" }}>{registerError}</p>}
           <label style={{ display: "block", marginBottom: "0.75rem" }}>
             Device Name
@@ -352,11 +383,7 @@ export function SettingsPage() {
         <Modal
           title="Add Device"
           onConfirm={createDevice}
-          onCancel={() => {
-            setShowAddDeviceModal(false);
-            setNewDeviceName("");
-            setError(null);
-          }}
+          onCancel={() => { setShowAddDeviceModal(false); setNewDeviceName(""); setError(null); }}
           confirmLabel="Add Device"
         >
           <label>
@@ -383,14 +410,10 @@ export function SettingsPage() {
               <li key={p.session_id}>
                 <div style={{ flex: 1 }}>
                   <strong>{p.hostname}</strong>
-                  <span style={{ color: "var(--color-text-muted)", marginLeft: "0.5rem", fontSize: "0.875rem" }}>
-                    {p.ip}
-                  </span>
+                  <span style={{ color: "var(--color-text-muted)", marginLeft: "0.5rem", fontSize: "0.875rem" }}>{p.ip}</span>
                 </div>
                 <div>
-                  <button onClick={() => openRegisterModal(p)} className="btn btn-sm">
-                    Connect
-                  </button>
+                  <button onClick={() => openRegisterModal(p)} className="btn btn-sm">Connect</button>
                 </div>
               </li>
             ))}
@@ -402,167 +425,20 @@ export function SettingsPage() {
         <div className="create-device">
           <h2>No Devices Found</h2>
           <p>Run the viewer app to discover it automatically, then connect it from the Discovered Viewers area.</p>
-          <details className="advanced-device-actions">
-            <summary>Advanced</summary>
-            <p>Manually create a device record and API key when automatic discovery is not available.</p>
-            <button onClick={() => setShowAddDeviceModal(true)} className="btn btn-secondary btn-sm">
-              Add Device Manually
-            </button>
-          </details>
         </div>
       ) : (
-        <>
-          <div className="device-selector">
-            <label>
-              Select Device
-              <select
-                value={selectedDeviceId ?? ""}
-                onChange={(e) => setSelectedDeviceId(e.target.value)}
-              >
-                {devices.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          {deviceToRegenKey && (
-            <Modal
-              title="Regenerate API Key"
-              onConfirm={() => regenerateApiKey(deviceToRegenKey)}
-              onCancel={() => setDeviceToRegenKey(null)}
-              confirmLabel="Regenerate"
-              confirmDestructive
-            >
-              <p>The old API key will stop working immediately. The device will need to be reconfigured with the new key.</p>
-            </Modal>
-          )}
-
-          {deviceToDelete && (
-            <Modal
-              title="Confirm Deletion"
-              onConfirm={() => deleteDevice(deviceToDelete)}
-              onCancel={() => setDeviceToDelete(null)}
-              confirmLabel="Delete"
-              confirmDestructive
-            >
-              <p>Are you sure you want to delete this device? This action cannot be undone.</p>
-            </Modal>
-          )}
-
-          <div className="device-config">
-            <h2>Slideshow Settings</h2>
-            <label>
-              Display Duration (ms)
-              <input
-                type="number"
-                value={slideInterval}
-                onChange={(e) => { setSlideInterval(Number(e.target.value)); setSaveSuccess(false); }}
-                min={1000}
-                step={1000}
-              />
-            </label>
-            <label>
-              Transition Effect
-              <select value={transition} onChange={(e) => { setTransition(e.target.value); setSaveSuccess(false); }}>
-                <option value="fade">Fade</option>
-                <option value="crossfade">Crossfade</option>
-                <option value="cut">Cut</option>
-              </select>
-            </label>
-            <label>
-              Transition Duration (ms)
-              <input
-                type="number"
-                value={transitionDuration}
-                onChange={(e) => { setTransitionDuration(Number(e.target.value)); setSaveSuccess(false); }}
-                min={100}
-                step={100}
-              />
-            </label>
-            <label className="label-checkbox">
-              <input
-                type="checkbox"
-                checked={blur}
-                onChange={(e) => { setBlur(e.target.checked); setSaveSuccess(false); }}
-              />
-              Background Blur
-            </label>
-            <label className="label-checkbox">
-              <input
-                type="checkbox"
-                checked={shuffle}
-                onChange={(e) => { setShuffle(e.target.checked); setSaveSuccess(false); }}
-              />
-              Shuffle Playlist
-            </label>
-            <label className="label-checkbox">
-              <input
-                type="checkbox"
-                checked={showClock}
-                onChange={(e) => { setShowClock(e.target.checked); setSaveSuccess(false); }}
-              />
-              Clock
-            </label>
-            {saveSuccess && (
-              <p className="save-success-msg">Settings saved — viewer will restart shortly.</p>
-            )}
-            <button onClick={saveConfig} disabled={!isDirty}>Save Settings</button>
-          </div>
-
-          {selectedDevice && (
-            <div className="device-actions">
-              <h2>Device Actions</h2>
-              {selectedDevice.lastSeen && (
-                <p>Last seen: {new Date(selectedDevice.lastSeen).toLocaleString()}</p>
-              )}
-
-              {editingDeviceId === selectedDevice.id ? (
-                <div className="device-action-row">
-                  <input
-                    type="text"
-                    value={editDeviceName}
-                    onChange={(e) => setEditDeviceName(e.target.value)}
-                  />
-                  <button onClick={() => saveEditDevice(selectedDevice.id)} className="btn btn-sm">
-                    Save
-                  </button>
-                  <button onClick={cancelEditDevice} className="btn btn-secondary btn-sm">
-                    Cancel
-                  </button>
-                </div>
-              ) : (
-                <div className="device-action-row">
-                  <button onClick={() => startEditDevice(selectedDevice)} className="btn btn-sm">
-                    Rename
-                  </button>
-                  <button
-                    onClick={() => setDeviceToRegenKey(selectedDevice.id)}
-                    className="btn btn-warning btn-sm"
-                  >
-                    Regenerate Key
-                  </button>
-                  <button
-                    onClick={() => setDeviceToDelete(selectedDevice.id)}
-                    className="btn btn-danger btn-sm"
-                  >
-                    Delete
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          <details className="advanced-device-actions">
-            <summary>Advanced</summary>
-            <p>Manually create a device record and API key when automatic discovery is not available.</p>
-            <button onClick={() => setShowAddDeviceModal(true)} className="btn btn-secondary btn-sm">
-              Add Device Manually
-            </button>
-          </details>
-        </>
+        <div className="device-grid">
+          {devices.map((device) => (
+            <DeviceCard
+              key={device.id}
+              device={device}
+              onRefresh={loadDevices}
+              showMessage={showMessage}
+              showError={showError}
+              onNewApiKey={setNewApiKey}
+            />
+          ))}
+        </div>
       )}
     </section>
   );
