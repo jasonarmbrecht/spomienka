@@ -515,7 +515,7 @@ async fn main() -> Result<()> {
         .build()
         .unwrap_or_default();
 
-    let device_token: Option<String> = if let (Some(ref id), Some(ref key)) =
+    let _device_token: Option<String> = if let (Some(ref id), Some(ref key)) =
         (config.device_id.clone(), config.device_api_key.clone())
     {
         match device_auth(&pre_client, &config.pb_url, id, key).await {
@@ -616,30 +616,6 @@ async fn main() -> Result<()> {
             preloader
                 .preload_next(&playlist_clone, 0, 3, token.as_deref())
                 .await;
-        });
-    }
-
-    // Heartbeat: call device-auth every 12 hours to keep lastSeen fresh.
-    if let (Some(device_id), Some(api_key), Some(token)) = (
-        state.config.device_id.clone(),
-        state.config.device_api_key.clone(),
-        device_token,
-    ) {
-        let pb_url = state.config.pb_url.clone();
-        tokio::spawn(async move {
-            // TODO: pass token to authenticated device API calls once those endpoints exist.
-            let _ = token;
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
-                .build()
-                .unwrap_or_default();
-            loop {
-                tokio::time::sleep(Duration::from_secs(12 * 3600)).await;
-                match device_auth(&client, &pb_url, &device_id, &api_key).await {
-                    Ok(_) => tracing::debug!("Device heartbeat OK"),
-                    Err(e) => tracing::warn!("Device heartbeat failed: {}", e),
-                }
-            }
         });
     }
 
@@ -1291,6 +1267,20 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
 
             let cache = state.cache.read().await;
             let _ = cache.save_playlist(&playlist);
+        }
+        RealtimeEvent::ConfigChanged => {
+            tracing::info!("Device config changed — restarting to apply new settings");
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                let exe = std::env::current_exe()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("frame-viewer"));
+                let err = std::process::Command::new(&exe)
+                    .args(std::env::args_os().skip(1))
+                    .exec();
+                tracing::error!("Re-exec failed: {} — falling back to exit", err);
+            }
+            std::process::exit(0);
         }
     }
 }

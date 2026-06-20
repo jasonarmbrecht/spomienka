@@ -42,6 +42,13 @@ function buildMeta(m: Media): string {
   return parts.join(" · ");
 }
 
+function thumbHeight(m: Media): number {
+  if (m.width && m.height && m.width > 0) {
+    return Math.min(108, Math.max(40, Math.round(72 * (m.height / m.width))));
+  }
+  return 54;
+}
+
 const ITEMS_PER_PAGE = 50;
 
 const escapeFilterValue = (value: string) =>
@@ -55,12 +62,51 @@ export function LibraryPage() {
   const [mediaToDelete, setMediaToDelete] = useState<Media | null>(null);
   const [reprocessing, setReprocessing] = useState<Set<string>>(new Set());
   const [reprocessingAll, setReprocessingAll] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeletePending, setBulkDeletePending] = useState(false);
+  const [filtersExpanded, setFiltersExpanded] = useState(() => {
+    return localStorage.getItem("libraryFiltersExpanded") === "true";
+  });
+
+  const toggleFilters = () => {
+    setFiltersExpanded((v) => {
+      localStorage.setItem("libraryFiltersExpanded", String(!v));
+      return !v;
+    });
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const allSelected = items.length > 0 && items.every((m) => selectedIds.has(m.id));
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        items.forEach((m) => next.delete(m.id));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        items.forEach((m) => next.add(m.id));
+        return next;
+      });
+    }
+  };
 
   const deleteMedia = async (id: string) => {
     try {
       await pb.collection("media").delete(id);
       setItems((prev) => prev.filter((m) => m.id !== id));
       setTotalItems((n) => n - 1);
+      setSelectedIds((prev) => { const s = new Set(prev); s.delete(id); return s; });
     } catch (err) {
       console.error("Failed to delete media:", err);
     } finally {
@@ -68,11 +114,25 @@ export function LibraryPage() {
     }
   };
 
+  const bulkDelete = async () => {
+    const ids = Array.from(selectedIds);
+    for (const id of ids) {
+      try {
+        await pb.collection("media").delete(id);
+        setItems((prev) => prev.filter((m) => m.id !== id));
+        setTotalItems((n) => n - 1);
+      } catch (err) {
+        console.error("Failed to delete media:", err);
+      }
+    }
+    setSelectedIds(new Set());
+    setBulkDeletePending(false);
+  };
+
   const reprocessMedia = async (id: string) => {
     setReprocessing((prev) => new Set(prev).add(id));
     try {
       await pb.send(`/api/spomienka/reprocess?id=${id}`, { method: "POST" });
-      // Refresh this item's data so processingStatus and URLs update
       const updated = await pb.collection("media").getOne<Media>(id);
       setItems((prev) => prev.map((m) => (m.id === id ? updated : m)));
     } catch (err) {
@@ -85,7 +145,6 @@ export function LibraryPage() {
   const reprocessAll = async () => {
     setReprocessingAll(true);
     try {
-      // Collect all media IDs across all pages
       const all = await pb.collection("media").getFullList<Media>({ fields: "id" });
       for (const m of all) {
         setReprocessing((prev) => new Set(prev).add(m.id));
@@ -103,6 +162,7 @@ export function LibraryPage() {
       setReprocessingAll(false);
     }
   };
+
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | "image" | "video">("all");
   const [dateFrom, setDateFrom] = useState("");
@@ -221,52 +281,62 @@ export function LibraryPage() {
               <option value="video">Video</option>
             </select>
           </label>
-        </div>
-
-        <div className="filter-row">
-          <label>
-            Date From
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-            />
-          </label>
 
           <label>
-            Date To
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-            />
-          </label>
-
-          <label className="filter-label-grow">
-            Tag Filter
-            <input
-              type="text"
-              value={tagFilter}
-              onChange={(e) => setTagFilter(e.target.value)}
-              placeholder="Filter by tag..."
-            />
-          </label>
-
-          <label>
-            Sort By
+            Sort
             <select
               value={sortField}
               onChange={(e) => setSortField(e.target.value)}
             >
-              <option value="-created">Date Added (newest)</option>
-              <option value="created">Date Added (oldest)</option>
-              <option value="-takenAt">Date Taken (newest)</option>
-              <option value="takenAt">Date Taken (oldest)</option>
-              <option value="title">Title (A–Z)</option>
-              <option value="-title">Title (Z–A)</option>
+              <option value="-created">Date Added ↓</option>
+              <option value="created">Date Added ↑</option>
+              <option value="-takenAt">Date Taken ↓</option>
+              <option value="takenAt">Date Taken ↑</option>
+              <option value="title">Title A–Z</option>
+              <option value="-title">Title Z–A</option>
             </select>
           </label>
+
+          <button
+            className="btn btn-secondary filter-toggle-btn"
+            onClick={toggleFilters}
+            title="Toggle date and tag filters"
+          >
+            Filters {filtersExpanded ? "▲" : "▼"}
+          </button>
         </div>
+
+        {filtersExpanded && (
+          <div className="filter-row">
+            <label>
+              Date From
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+              />
+            </label>
+
+            <label>
+              Date To
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+              />
+            </label>
+
+            <label className="filter-label-grow">
+              Tag Filter
+              <input
+                type="text"
+                value={tagFilter}
+                onChange={(e) => setTagFilter(e.target.value)}
+                placeholder="Filter by tag..."
+              />
+            </label>
+          </div>
+        )}
       </div>
 
       {loading && <LoadingSpinner label="Loading library..." />}
@@ -279,10 +349,24 @@ export function LibraryPage() {
       )}
 
       {!loading && !error && totalItems > 0 && (
-        <p className="result-count">
-          Showing {(page - 1) * ITEMS_PER_PAGE + 1} to{" "}
-          {Math.min(page * ITEMS_PER_PAGE, totalItems)} of {totalItems} items
-        </p>
+        <div className="library-list-header">
+          <label className="library-select-all">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleSelectAll}
+            />
+            {selectedIds.size > 0 ? `${selectedIds.size} selected` : `${totalItems} items`}
+          </label>
+          {selectedIds.size > 0 && (
+            <button
+              className="btn btn-sm btn-danger"
+              onClick={() => setBulkDeletePending(true)}
+            >
+              Delete Selected ({selectedIds.size})
+            </button>
+          )}
+        </div>
       )}
 
       <ul>
@@ -294,20 +378,29 @@ export function LibraryPage() {
                || (m.type === "image" && !isHeic ? `${fileBase}?thumb=144x108` : null))
             : null;
           const meta = buildMeta(m);
+          const h = thumbHeight(m);
+          const isSelected = selectedIds.has(m.id);
           return (
-            <li key={m.id} className="library-item">
+            <li key={m.id} className={`library-item${isSelected ? " selected" : ""}`}>
+              <input
+                type="checkbox"
+                className="library-item-checkbox"
+                checked={isSelected}
+                onChange={() => toggleSelect(m.id)}
+              />
               {thumbSrc ? (
                 <img
                   src={thumbSrc}
                   alt=""
                   className="library-thumb"
+                  style={{ width: 72, height: h }}
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                   onMouseEnter={() => setHoveredItem(m)}
                   onMouseLeave={() => setHoveredItem(null)}
                   onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                 />
               ) : (
-                <div className="library-thumb library-thumb-placeholder" />
+                <div className="library-thumb library-thumb-placeholder" style={{ width: 72, height: h }} />
               )}
               <div className="library-item-info">
                 <span>{m.title || m.file}</span>
@@ -353,6 +446,18 @@ export function LibraryPage() {
           confirmDestructive
         >
           <p>Delete <strong>{mediaToDelete.title || mediaToDelete.file}</strong>? This cannot be undone.</p>
+        </Modal>
+      )}
+
+      {bulkDeletePending && (
+        <Modal
+          title="Delete Selected"
+          onConfirm={bulkDelete}
+          onCancel={() => setBulkDeletePending(false)}
+          confirmLabel="Delete"
+          confirmDestructive
+        >
+          <p>Delete <strong>{selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""}</strong>? This cannot be undone.</p>
         </Modal>
       )}
 

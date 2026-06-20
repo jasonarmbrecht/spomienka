@@ -471,14 +471,26 @@ impl<'ttf> Renderer<'ttf> {
         };
 
         let elapsed = start.elapsed().as_millis() as f32;
-        let half_duration = self.transition_duration_ms as f32 / 2.0;
+        let is_crossfade = self.transition_type == Transition::Crossfade;
+        // Crossfade uses the full duration as one continuous blend; Fade splits into two halves.
+        let out_duration = if is_crossfade {
+            self.transition_duration_ms as f32
+        } else {
+            self.transition_duration_ms as f32 / 2.0
+        };
 
         match self.transition_state {
             TransitionState::Idle => false,
             TransitionState::TransitioningOut { .. } => {
-                let progress = (elapsed / half_duration).min(1.0);
+                let progress = (elapsed / out_duration).min(1.0);
                 if progress >= 1.0 {
-                    self.transition_state = TransitionState::TransitioningIn { progress: 0.0 };
+                    if is_crossfade {
+                        // Crossfade is done — swap and go idle immediately.
+                        self.transition_state = TransitionState::Idle;
+                        self.transition_start = None;
+                    } else {
+                        self.transition_state = TransitionState::TransitioningIn { progress: 0.0 };
+                    }
                     true // Signal to swap textures
                 } else {
                     self.transition_state = TransitionState::TransitioningOut { progress };
@@ -486,7 +498,8 @@ impl<'ttf> Renderer<'ttf> {
                 }
             }
             TransitionState::TransitioningIn { .. } => {
-                let progress = ((elapsed - half_duration) / half_duration).min(1.0);
+                let half = self.transition_duration_ms as f32 / 2.0;
+                let progress = ((elapsed - half) / half).min(1.0);
                 if progress >= 1.0 {
                     self.transition_state = TransitionState::Idle;
                     self.transition_start = None;
