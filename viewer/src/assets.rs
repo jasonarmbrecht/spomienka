@@ -96,6 +96,15 @@ fn is_image_asset(asset_type: AssetType) -> bool {
     )
 }
 
+fn is_supported_raw_extension(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".png")
+        || lower.ends_with(".webp")
+        || lower.ends_with(".gif")
+}
+
 fn is_supported_image_file(path: &Path) -> bool {
     let Ok(bytes) = std::fs::read(path) else {
         return false;
@@ -148,7 +157,15 @@ impl AssetManager {
                 AssetType::Display if !media.is_video() => {
                     fallback = media.raw_file_url();
                     match fallback.as_deref() {
-                        Some(u) => u,
+                        Some(u) if is_supported_raw_extension(u) => u,
+                        Some(u) => {
+                            tracing::debug!(
+                                "Skipping unsupported raw file fallback for {}: {}",
+                                media.id,
+                                u
+                            );
+                            return Ok(None);
+                        }
                         None => return Ok(None),
                     }
                 }
@@ -167,9 +184,17 @@ impl AssetManager {
 
         let full_url = self.full_url(url);
 
-        // Check if already cached
+        // Check if already cached or permanently failed
         {
             let cache = self.cache.read().await;
+            if cache.is_permanently_failed(&full_url) {
+                tracing::debug!(
+                    "Skipping permanently-failed {} for {}",
+                    asset_type.as_str(),
+                    media.id
+                );
+                return Ok(None);
+            }
             if let Some(path) = cache.get_cached_path(&media.id, asset_type) {
                 if path.exists() {
                     if is_image_asset(asset_type) && !is_supported_image_file(&path) {

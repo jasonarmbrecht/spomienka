@@ -5,7 +5,7 @@
 use crate::assets::{AssetType, Media};
 use anyhow::{Context, Result};
 use lru::LruCache;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -31,6 +31,8 @@ pub struct Cache {
     lru: LruCache<String, CacheEntry>,
     /// Quick lookup by media ID and asset type.
     index: HashMap<String, PathBuf>,
+    /// URLs that returned a permanent error (4xx) — skip until process restart.
+    failed_urls: HashSet<String>,
 }
 
 impl Cache {
@@ -47,6 +49,7 @@ impl Cache {
             current_size: 0,
             lru: LruCache::new(NonZeroUsize::new(10000).unwrap()),
             index: HashMap::new(),
+            failed_urls: HashSet::new(),
         };
 
         // Scan existing cache directory
@@ -118,6 +121,11 @@ impl Cache {
         self.index.get(&key).cloned()
     }
 
+    /// Returns true if this URL previously returned a 4xx and should not be retried.
+    pub fn is_permanently_failed(&self, url: &str) -> bool {
+        self.failed_urls.contains(url)
+    }
+
     /// Download and cache an asset.
     pub async fn download_and_cache(
         &mut self,
@@ -144,9 +152,22 @@ impl Cache {
         }
 
         let response = request.send().await.context("Failed to send request")?;
-        let response = response
-            .error_for_status()
-            .context("Server returned error")?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<unreadable body>".to_string());
+            if status.is_client_error() {
+                self.failed_urls.insert(url.to_string());
+            }
+            anyhow::bail!(
+                "Server returned {} for {}: {}",
+                status,
+                url,
+                body.chars().take(200).collect::<String>()
+            );
+        }
 
         let bytes = response.bytes().await.context("Failed to read response")?;
         let size = bytes.len() as u64;

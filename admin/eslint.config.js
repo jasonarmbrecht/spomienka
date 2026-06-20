@@ -7,6 +7,10 @@ import globals from 'globals'
 
 export default [
   { ignores: ['dist'] },
+  {
+    files: ['vite.config.ts'],
+    languageOptions: { globals: { ...globals.node } },
+  },
   js.configs.recommended,
   {
     files: ['**/*.ts', '**/*.tsx'],

@@ -32,7 +32,7 @@ const SHA256_ARGS = SHA256_CMD.includes("shasum") ? ["-a", "256"] : [];
 
 const RATE_LIMITS = {
     login:    { max: 5,   windowMs: 60000 },
-    upload:   { max: 10,  windowMs: 60000 },
+    upload:   { max: 100, windowMs: 60000 },
     api:      { max: 100, windowMs: 60000 },
     announce: { max: 30,  windowMs: 60000 },
     claim:    { max: 60,  windowMs: 60000 },
@@ -107,6 +107,14 @@ function execCommand(cmd, args) {
 }
 
 function buildFileUrl(collectionId, recordId, fileName) {
+    // Derived files (display_, blur_, thumb_, poster_, video_) are placed on disk
+    // by the processing hook and served via a custom route because PocketBase's
+    // /api/files/ endpoint only serves files registered in file-type schema fields.
+    const DERIVED_PREFIXES = ["display_", "blur_", "thumb_", "poster_", "video_"];
+    const isDerived = DERIVED_PREFIXES.some((p) => fileName.startsWith(p));
+    if (isDerived) {
+        return "/api/spomienka/media/" + collectionId + "/" + recordId + "/" + fileName;
+    }
     return "/api/files/" + collectionId + "/" + recordId + "/" + fileName;
 }
 
@@ -168,27 +176,18 @@ const FFMPEG_THUMB_SCALE   = "scale=300:-1";
 // $os.stat() in PocketBase JSVM can't find system binaries, so we try absolute
 // paths directly rather than relying on findBinary() for these tools.
 function decodeHeic(heicPath, pngPath) {
-    console.log("decodeHeic: heicPath=" + heicPath + " pngPath=" + pngPath);
-    console.log("decodeHeic: $os.cmd=" + (typeof $os.cmd) + " $os.exec=" + (typeof $os.exec));
     const candidates = [
         ["/usr/bin/sips", ["-s", "format", "png", heicPath, "--out", pngPath]],
         ["/usr/bin/heif-convert", [heicPath, pngPath]],
         ["/usr/local/bin/heif-convert", [heicPath, pngPath]],
         [HEIF_CONVERT, [heicPath, pngPath]],
     ];
-    // $os.stat/$os.readdir are not available in PB 0.25 executor VMs.
-    // Use `sh -c "test -f ..."` to verify the output file was actually created.
     for (const [bin, args] of candidates) {
         try {
-            console.log("decodeHeic: trying " + bin + " " + args.join(" "));
-            let cmdErr = null;
-            try { $os.exec(bin, ...args); } catch (e) { cmdErr = String(e); }
-            console.log("decodeHeic: cmd done, err=" + cmdErr);
-            $os.exec("sh", "-c", "test -f '" + pngPath + "'");
-            console.log("decodeHeic: success with " + bin);
+            execCommand(bin, args);
             return;
         } catch (e) {
-            console.log("decodeHeic: candidate failed: " + String(e));
+            console.log("decodeHeic: " + bin + " failed: " + String(e));
         }
     }
     throw new Error("No HEIC decoder available (need sips on macOS or heif-convert on Linux)");

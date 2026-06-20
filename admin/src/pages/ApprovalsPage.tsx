@@ -127,7 +127,6 @@ export function ApprovalsPage() {
     load();
   }, [load]);
 
-  const pbUrl = import.meta.env.VITE_PB_URL || "";
 
   return (
     <section>
@@ -150,7 +149,7 @@ export function ApprovalsPage() {
       <ul>
         {items.map((m) => {
           const previewUrl = m.thumbUrl || m.displayUrl || m.posterUrl;
-          const fullPreviewUrl = previewUrl ? `${pbUrl}${previewUrl}` : null;
+          const fullPreviewUrl = previewUrl || null;
 
           return (
             <li key={m.id}>
@@ -216,14 +215,14 @@ export function ApprovalsPage() {
         >
           {selectedMedia.type === "image" ? (
             <img
-              src={`${pbUrl}${selectedMedia.displayUrl || selectedMedia.file}`}
+              src={selectedMedia.displayUrl || selectedMedia.file}
               alt={selectedMedia.title || selectedMedia.file}
               style={{ maxWidth: "100%", maxHeight: "70vh", objectFit: "contain", display: "block" }}
             />
           ) : (
             <video
-              src={`${pbUrl}${selectedMedia.videoUrl || selectedMedia.file}`}
-              poster={selectedMedia.posterUrl ? `${pbUrl}${selectedMedia.posterUrl}` : undefined}
+              src={selectedMedia.videoUrl || selectedMedia.file}
+              poster={selectedMedia.posterUrl || undefined}
               controls
               style={{ maxWidth: "100%", maxHeight: "70vh", display: "block" }}
             />
