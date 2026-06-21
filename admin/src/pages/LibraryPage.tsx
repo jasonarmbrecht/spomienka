@@ -52,11 +52,12 @@ const escapeFilterValue = (value: string) =>
 
 export function LibraryPage() {
   const [items, setItems] = useState<Media[]>([]);
-  const [filter, setFilter] = useState<"all" | "published" | "pending" | "rejected">("all");
+  const [filter, setFilter] = useState<"all" | "published" | "pending" | "rejected" | "unpublished">("all");
   const [hoveredItem, setHoveredItem] = useState<Media | null>(null);
   const [hoverPos, setHoverPos] = useState({ x: 0, y: 0 });
   const [mediaToDelete, setMediaToDelete] = useState<Media | null>(null);
   const [reprocessing, setReprocessing] = useState<Set<string>>(new Set());
+  const [togglingPublish, setTogglingPublish] = useState<Set<string>>(new Set());
   const [reprocessingAll, setReprocessingAll] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -113,6 +114,19 @@ export function LibraryPage() {
       console.error("Failed to delete media:", err);
     } finally {
       setMediaToDelete(null);
+    }
+  };
+
+  const togglePublish = async (id: string, currentStatus: string) => {
+    setTogglingPublish((prev) => new Set(prev).add(id));
+    try {
+      const newStatus = currentStatus === "published" ? "unpublished" : "published";
+      await pb.collection("media").update(id, { status: newStatus });
+      setItems((prev) => prev.map((m) => m.id === id ? { ...m, status: newStatus } : m));
+    } catch (err) {
+      console.error("Failed to toggle publish status:", err);
+    } finally {
+      setTogglingPublish((prev) => { const s = new Set(prev); s.delete(id); return s; });
     }
   };
 
@@ -235,6 +249,7 @@ export function LibraryPage() {
           <select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
             <option value="all">All</option>
             <option value="published">Published</option>
+            <option value="unpublished">Unpublished</option>
             <option value="pending">Pending</option>
             <option value="rejected">Rejected</option>
           </select>
@@ -347,9 +362,17 @@ export function LibraryPage() {
                 {meta && <p className="library-item-meta">{meta}</p>}
               </div>
               <div className="library-actions">
-                <span className={`library-status${m.status === "published" ? " library-status-published" : m.status === "rejected" ? " library-status-failed" : ""}`}>
+                <span className={`library-status${m.status === "published" ? " library-status-published" : m.status === "rejected" ? " library-status-failed" : m.status === "unpublished" ? " library-status-unpublished" : ""}`}>
                   {m.status}
                 </span>
+                <button
+                  className={`btn btn-sm library-toggle-btn${m.status === "published" ? " library-toggle-btn-unpublish" : " library-toggle-btn-publish"}`}
+                  onClick={() => togglePublish(m.id, m.status)}
+                  disabled={togglingPublish.has(m.id)}
+                  title={m.status === "published" ? "Unpublish this item" : "Publish this item"}
+                >
+                  {togglingPublish.has(m.id) ? "…" : m.status === "published" ? "Unpublish" : "Publish"}
+                </button>
                 {m.processingStatus && m.processingStatus !== "completed" && (
                   <span className={`library-status${m.processingStatus === "failed" ? " library-status-failed" : ""}`}>
                     {m.processingStatus}
