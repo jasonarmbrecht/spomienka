@@ -25,8 +25,6 @@ import {
   TableHeader,
   TableBody,
   TableCell,
-  TableToolbar,
-  TableToolbarContent,
 } from "@carbon/react";
 import { Edit, TrashCan, Password } from "@carbon/icons-react";
 
