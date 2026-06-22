@@ -1,0 +1,40 @@
+/* Library filter toolbar — all text consistently the same grey */
+.library-filters .cds--label,
+.library-filters .cds--select-input,
+.library-filters .cds--text-input,
+.library-filters .cds--date-picker__input {
+  color: var(--cds-text-placeholder) !important;
+}
+.library-filters .cds--text-input::placeholder,
+.library-filters .cds--date-picker__input::placeholder {
+  color: var(--cds-text-placeholder) !important;
+  opacity: 1;
+}
+
+/* Remove the white focus border from header nav items; the blue ::after underline remains */
+a.cds--header__menu-item:focus,
+a.cds--header__menu-item[aria-current='page']:focus,
+a.cds--header__menu-item.cds--header__menu-item--current:focus {
+  border-color: transparent !important;
+  border: 2px solid transparent !important;
+  outline: none;
+}
+
+
+.library-hover-preview {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  border: 1px solid var(--cds-border-subtle-01);
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+  background: var(--cds-background);
+}
+
+.library-hover-preview img {
+  display: block;
+  max-width: 420px;
+  max-height: 420px;
+  object-fit: contain;
+}

@@ -142,6 +142,43 @@ routerAdd("POST", "/api/spomienka/device-auth", (e) => {
     }
 });
 
+// POST /api/spomienka/device-heartbeat
+// Lightweight ping that updates lastSeen without re-issuing a token.
+routerAdd("POST", "/api/spomienka/device-heartbeat", (e) => {
+    try {
+        const body = e.requestInfo().body;
+        const deviceId = (body.device_id || "").trim();
+        const apiKey = (body.api_key || "").trim();
+
+        if (!deviceId || !apiKey) {
+            throw new BadRequestError("Missing device_id or api_key");
+        }
+
+        let device;
+        try {
+            device = $app.findRecordById("devices", deviceId);
+        } catch (_) {
+            throw new UnauthorizedError("Device not found");
+        }
+
+        const utils = require(__hooks + "/utils.js");
+        const expectedHash = utils.hashApiKey(apiKey);
+        const storedHash = device.getString("apiKey");
+
+        if (expectedHash !== storedHash) {
+            throw new UnauthorizedError("Invalid API key");
+        }
+
+        device.set("lastSeen", new Date().toISOString());
+        $app.save(device);
+
+        e.json(200, { status: "ok" });
+    } catch (err) {
+        if (err && err.code) throw err;
+        throw new BadRequestError("Heartbeat failed: " + String(err));
+    }
+});
+
 // GET /api/spomienka/pending  (admin only)
 // Returns unclaimed viewers that have announced in the last 10 minutes.
 routerAdd("GET", "/api/spomienka/pending", (e) => {

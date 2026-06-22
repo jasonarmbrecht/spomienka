@@ -10,10 +10,14 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@carbon/ibm-products": "^2.92.1",
+    "@carbon/icons-react": "^11.82.0",
+    "@carbon/react": "^1.110.0",
     "pocketbase": "^0.22.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.1"
+    "react-router-dom": "^6.26.1",
+    "sass": "^1.101.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
