@@ -3,5 +3,12 @@ interface EmptyStateProps {
 }
 
 export function EmptyState({ message }: EmptyStateProps) {
-  return <p className="empty-state">{message}</p>;
+  return (
+    <p
+      className="cds--label"
+      style={{ padding: "2rem 0", textAlign: "center", color: "var(--cds-text-secondary)" }}
+    >
+      {message}
+    </p>
+  );
 }

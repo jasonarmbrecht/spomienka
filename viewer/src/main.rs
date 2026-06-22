@@ -619,6 +619,29 @@ async fn main() -> Result<()> {
         });
     }
 
+    // Periodic heartbeat — keeps lastSeen fresh so the admin UI can show live status.
+    // Runs every 90 seconds; errors are silently dropped so a network blip never crashes the viewer.
+    if let (Some(device_id), Some(api_key)) = (
+        state.config.device_id.clone(),
+        state.config.device_api_key.clone(),
+    ) {
+        let hb_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+        let pb_url = state.config.pb_url.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(90)).await;
+                let _ = hb_client
+                    .post(format!("{}/api/spomienka/device-heartbeat", pb_url))
+                    .json(&serde_json::json!({ "device_id": device_id, "api_key": api_key }))
+                    .send()
+                    .await;
+            }
+        });
+    }
+
     // Start realtime subscription if enabled
     let mut realtime_rx = if state.config.enable_realtime {
         let token = state.token().await;

@@ -1,4 +1,5 @@
 import React from "react";
+import { Modal as CarbonModal } from "@carbon/react";
 
 interface ModalProps {
   title: string;
@@ -19,26 +20,32 @@ export function Modal({
   confirmDestructive = false,
   disabled = false,
 }: ModalProps) {
-  return (
-    <div className="modal-overlay" onClick={onCancel}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-        <h3>{title}</h3>
+  if (!onConfirm) {
+    return (
+      <CarbonModal
+        open
+        passiveModal
+        modalHeading={title}
+        onRequestClose={onCancel}
+      >
         {children}
-        {onConfirm && (
-          <div className="modal-actions">
-            <button className="btn btn-secondary" onClick={onCancel} disabled={disabled}>
-              Cancel
-            </button>
-            <button
-              className={`btn${confirmDestructive ? " btn-danger" : ""}`}
-              onClick={onConfirm}
-              disabled={disabled}
-            >
-              {confirmLabel}
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
+      </CarbonModal>
+    );
+  }
+
+  return (
+    <CarbonModal
+      open
+      danger={confirmDestructive}
+      modalHeading={title}
+      primaryButtonText={confirmLabel}
+      secondaryButtonText="Cancel"
+      primaryButtonDisabled={disabled}
+      onRequestSubmit={onConfirm}
+      onRequestClose={onCancel}
+      onSecondarySubmit={onCancel}
+    >
+      {children}
+    </CarbonModal>
   );
 }

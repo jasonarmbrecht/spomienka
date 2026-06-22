@@ -1,13 +1,39 @@
 import { useEffect, useState } from "react";
 import { pb } from "../pb/client";
-
-const pbUrl = import.meta.env.VITE_PB_URL as string;
-
-import { LoadingSpinner } from "../components/LoadingSpinner";
-import { EmptyState } from "../components/EmptyState";
 import { Modal } from "../components/Modal";
 import { Pagination } from "../components/Pagination";
 import { useNotification } from "../hooks/useNotification";
+import {
+  Grid,
+  Column,
+  Heading,
+  Button,
+  Tag,
+  InlineNotification,
+  DataTableSkeleton,
+  DataTable,
+  Table,
+  TableHead,
+  TableRow,
+  TableHeader,
+  TableBody,
+  TableCell,
+  TableToolbar,
+  TableToolbarContent,
+  TableToolbarSearch,
+  TableBatchActions,
+  TableBatchAction,
+  TableSelectAll,
+  TableSelectRow,
+  Select,
+  SelectItem,
+  DatePicker,
+  DatePickerInput,
+  TextInput,
+} from "@carbon/react";
+import { TrashCan, View, ViewOff, Renew, Edit } from "@carbon/icons-react";
+
+const pbUrl = import.meta.env.VITE_PB_URL as string;
 
 type Media = {
   id: string;
@@ -50,6 +76,23 @@ const ITEMS_PER_PAGE = 50;
 const escapeFilterValue = (value: string) =>
   value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
+function statusTagType(status: string): "green" | "gray" | "red" | "magenta" | "outline" {
+  switch (status) {
+    case "published": return "green";
+    case "unpublished": return "gray";
+    case "rejected": return "red";
+    case "pending": return "magenta";
+    default: return "outline";
+  }
+}
+
+const headers = [
+  { key: "thumb", header: "" },
+  { key: "title", header: "Title / Meta" },
+  { key: "status", header: "Status" },
+  { key: "actions", header: "Actions" },
+];
+
 export function LibraryPage() {
   const [items, setItems] = useState<Media[]>([]);
   const [filter, setFilter] = useState<"all" | "published" | "pending" | "rejected" | "unpublished">("all");
@@ -59,49 +102,34 @@ export function LibraryPage() {
   const [reprocessing, setReprocessing] = useState<Set<string>>(new Set());
   const [togglingPublish, setTogglingPublish] = useState<Set<string>>(new Set());
   const [reprocessingAll, setReprocessingAll] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [pendingBulkIds, setPendingBulkIds] = useState<string[]>([]);
 
-  const bulkDelete = async () => {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<"all" | "image" | "video">("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [tagFilter, setTagFilter] = useState("");
+  const [sortField, setSortField] = useState<string>("-created");
+  const [loading, setLoading] = useState(false);
+  const { error, setError, showError } = useNotification();
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalItems, setTotalItems] = useState(0);
+
+  const bulkDelete = async (selectedIds: string[]) => {
     setBulkDeleting(true);
     try {
-      await Promise.all([...selectedIds].map((id) => pb.collection("media").delete(id)));
-      setItems((prev) => prev.filter((m) => !selectedIds.has(m.id)));
-      setTotalItems((n) => n - selectedIds.size);
-      setSelectedIds(new Set());
+      await Promise.all(selectedIds.map((id) => pb.collection("media").delete(id)));
+      setItems((prev) => prev.filter((m) => !selectedIds.includes(m.id)));
+      setTotalItems((n) => n - selectedIds.length);
     } catch (err) {
       console.error("Bulk delete failed:", err);
     } finally {
       setBulkDeleting(false);
       setShowBulkDeleteModal(false);
-    }
-  };
-
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) { next.delete(id); } else { next.add(id); }
-      return next;
-    });
-  };
-
-  const allSelected = items.length > 0 && items.every((m) => selectedIds.has(m.id));
-  const someSelected = items.some((m) => selectedIds.has(m.id));
-
-  const toggleSelectAll = () => {
-    if (allSelected) {
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        items.forEach((m) => next.delete(m.id));
-        return next;
-      });
-    } else {
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        items.forEach((m) => next.add(m.id));
-        return next;
-      });
+      setPendingBulkIds([]);
     }
   };
 
@@ -122,11 +150,15 @@ export function LibraryPage() {
     try {
       const newStatus = currentStatus === "published" ? "unpublished" : "published";
       await pb.collection("media").update(id, { status: newStatus });
-      setItems((prev) => prev.map((m) => m.id === id ? { ...m, status: newStatus } : m));
+      setItems((prev) => prev.map((m) => (m.id === id ? { ...m, status: newStatus } : m)));
     } catch (err) {
       console.error("Failed to toggle publish status:", err);
     } finally {
-      setTogglingPublish((prev) => { const s = new Set(prev); s.delete(id); return s; });
+      setTogglingPublish((prev) => {
+        const s = new Set(prev);
+        s.delete(id);
+        return s;
+      });
     }
   };
 
@@ -139,7 +171,11 @@ export function LibraryPage() {
     } catch (err) {
       console.error("Reprocess failed:", err);
     } finally {
-      setReprocessing((prev) => { const s = new Set(prev); s.delete(id); return s; });
+      setReprocessing((prev) => {
+        const s = new Set(prev);
+        s.delete(id);
+        return s;
+      });
     }
   };
 
@@ -156,25 +192,17 @@ export function LibraryPage() {
         } catch (err) {
           console.error(`Reprocess failed for ${m.id}:`, err);
         } finally {
-          setReprocessing((prev) => { const s = new Set(prev); s.delete(m.id); return s; });
+          setReprocessing((prev) => {
+            const s = new Set(prev);
+            s.delete(m.id);
+            return s;
+          });
         }
       }
     } finally {
       setReprocessingAll(false);
     }
   };
-
-  const [searchQuery, setSearchQuery] = useState("");
-  const [typeFilter, setTypeFilter] = useState<"all" | "image" | "video">("all");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [tagFilter, setTagFilter] = useState("");
-  const [sortField, setSortField] = useState<string>("-created");
-  const [loading, setLoading] = useState(false);
-  const { error, setError, showError } = useNotification();
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalItems, setTotalItems] = useState(0);
 
   useEffect(() => {
     const load = async () => {
@@ -214,244 +242,338 @@ export function LibraryPage() {
 
   useEffect(() => {
     setPage(1);
-    setSelectedIds(new Set());
   }, [filter, searchQuery, typeFilter, dateFrom, dateTo, tagFilter, sortField]);
 
-  useEffect(() => {
-    setSelectedIds(new Set());
-  }, [page]);
+  const rows = items.map((m) => {
+    const isHeic = /\.heic$/i.test(m.file);
+    const derivedUrl =
+      m.processingStatus !== "failed"
+        ? m.thumbUrl || m.displayUrl || m.posterUrl || null
+        : null;
+    const fallbackUrl =
+      m.type === "image" && !isHeic && m.processingStatus !== "failed"
+        ? pb.files.getURL(m, m.file, { thumb: "144x0" })
+        : null;
+    const thumbSrc = derivedUrl ? `${pbUrl}${derivedUrl}` : fallbackUrl || null;
+    const meta = buildMeta(m);
+
+    return {
+      id: m.id,
+      thumb: thumbSrc,
+      title: `${m.title || m.file}||${meta}`,
+      status: m.status,
+      processingStatus: m.processingStatus,
+      actions: m.id,
+      _media: m,
+    };
+  });
 
   return (
-    <section className="page-wide">
-      <div className="section-header">
-        <h1>Library</h1>
-        <button
-          onClick={reprocessAll}
-          disabled={reprocessingAll}
-          title="Re-run ffmpeg processing on all media to regenerate assets in the current output format"
-        >
-          {reprocessingAll ? "Reprocessing…" : "Reprocess All"}
-        </button>
-      </div>
-
-      <div className="filter-bar">
-        <label className="filter-label-grow">
-          Search
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search..."
-          />
-        </label>
-        <label>
-          Status
-          <select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
-            <option value="all">All</option>
-            <option value="published">Published</option>
-            <option value="unpublished">Unpublished</option>
-            <option value="pending">Pending</option>
-            <option value="rejected">Rejected</option>
-          </select>
-        </label>
-        <label>
-          Type
-          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)}>
-            <option value="all">All</option>
-            <option value="image">Image</option>
-            <option value="video">Video</option>
-          </select>
-        </label>
-        <label>
-          From
-          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-        </label>
-        <label>
-          To
-          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-        </label>
-        <label>
-          Tag
-          <input
-            type="text"
-            value={tagFilter}
-            onChange={(e) => setTagFilter(e.target.value)}
-            placeholder="Tag..."
-          />
-        </label>
-        <label>
-          Sort
-          <select value={sortField} onChange={(e) => setSortField(e.target.value)}>
-            <option value="-created">Added ↓</option>
-            <option value="created">Added ↑</option>
-            <option value="-takenAt">Taken ↓</option>
-            <option value="takenAt">Taken ↑</option>
-            <option value="title">Title A–Z</option>
-            <option value="-title">Title Z–A</option>
-          </select>
-        </label>
-      </div>
-
-      {loading && <LoadingSpinner label="Loading library..." />}
-      {error && <p className="error">{error}</p>}
-
-      {!loading && !error && items.length === 0 && (
-        <EmptyState
-          message={`No media found${filter !== "all" ? ` with status "${filter}"` : ""}.`}
-        />
-      )}
-
-      {!loading && !error && totalItems > 0 && (
-        <div className="library-list-header">
-          <label className="label-checkbox">
-            <input
-              type="checkbox"
-              checked={allSelected}
-              ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
-              onChange={toggleSelectAll}
-            />
-            Select all
-            {someSelected && <span className="library-selection-count">({selectedIds.size} selected)</span>}
-          </label>
-          {selectedIds.size > 0 && (
-            <button
-              className="btn btn-sm btn-danger"
-              onClick={() => setShowBulkDeleteModal(true)}
-              disabled={bulkDeleting}
-            >
-              Delete {selectedIds.size} item{selectedIds.size !== 1 ? "s" : ""}
-            </button>
-          )}
+    <Grid>
+      <Column sm={4} md={8} lg={16} style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.5rem" }}>
+          <Heading>Library</Heading>
+          <Button
+            kind="ghost"
+            size="sm"
+            renderIcon={Renew}
+            onClick={reprocessAll}
+            disabled={reprocessingAll}
+            title="Re-run ffmpeg processing on all media to regenerate assets in the current output format"
+          >
+            {reprocessingAll ? "Reprocessing…" : "Reprocess All"}
+          </Button>
         </div>
-      )}
 
-      <ul>
-        {items.map((m) => {
-          const isHeic = /\.heic$/i.test(m.file);
-          const derivedUrl = m.processingStatus !== "failed"
-            ? (m.thumbUrl || m.displayUrl || m.posterUrl) || null
-            : null;
-          const fallbackUrl = (m.type === "image" && !isHeic && m.processingStatus !== "failed")
-            ? pb.files.getURL(m, m.file, { thumb: "144x0" })
-            : null;
-          const thumbSrc = derivedUrl ? `${pbUrl}${derivedUrl}` : (fallbackUrl || null);
-          const meta = buildMeta(m);
-          const isSelected = selectedIds.has(m.id);
-          return (
-            <li key={m.id} className={`library-item${isSelected ? " library-item-selected" : ""}`}>
-              <input
-                type="checkbox"
-                className="library-checkbox"
-                checked={isSelected}
-                onChange={() => toggleSelect(m.id)}
-                aria-label={`Select ${m.title || m.file}`}
-              />
-              {thumbSrc && (
-                <img
-                  src={thumbSrc}
-                  alt=""
-                  className="library-thumb"
-                  onMouseEnter={() => setHoveredItem(m)}
-                  onMouseLeave={() => setHoveredItem(null)}
-                  onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                />
-              )}
-              <div className="library-item-info">
-                <span>{m.title || m.file}</span>
-                {meta && <p className="library-item-meta">{meta}</p>}
-              </div>
-              <div className="library-actions">
-                <span className={`library-status${m.status === "published" ? " library-status-published" : m.status === "rejected" ? " library-status-failed" : m.status === "unpublished" ? " library-status-unpublished" : ""}`}>
-                  {m.status}
-                </span>
-                <button
-                  className={`btn btn-sm library-toggle-btn${m.status === "published" ? " library-toggle-btn-unpublish" : " library-toggle-btn-publish"}`}
-                  onClick={() => togglePublish(m.id, m.status)}
-                  disabled={togglingPublish.has(m.id)}
-                  title={m.status === "published" ? "Unpublish this item" : "Publish this item"}
-                >
-                  {togglingPublish.has(m.id) ? "…" : m.status === "published" ? "Unpublish" : "Publish"}
-                </button>
-                {m.processingStatus && m.processingStatus !== "completed" && (
-                  <span className={`library-status${m.processingStatus === "failed" ? " library-status-failed" : ""}`}>
-                    {m.processingStatus}
-                  </span>
-                )}
-                <button
-                  className="btn btn-sm btn-secondary"
-                  onClick={() => reprocessMedia(m.id)}
-                  disabled={reprocessing.has(m.id)}
-                  title="Regenerate processed assets (display, blur, thumb) using the current output format"
-                >
-                  {reprocessing.has(m.id) ? "…" : "Reprocess"}
-                </button>
-                <button
-                  className="btn btn-sm btn-secondary"
-                  onClick={() => {/* TODO: edit */}}
-                >
-                  Edit
-                </button>
-                <button
-                  className="btn btn-sm btn-danger"
-                  onClick={() => setMediaToDelete(m)}
-                >
-                  Delete
-                </button>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+        {error && (
+          <InlineNotification
+            kind="error"
+            title={error}
+            lowContrast
+            hideCloseButton
+            style={{ marginBottom: "1rem" }}
+          />
+        )}
 
-      {showBulkDeleteModal && (
-        <Modal
-          title="Delete Selected"
-          onConfirm={bulkDelete}
-          onCancel={() => setShowBulkDeleteModal(false)}
-          confirmLabel={bulkDeleting ? "Deleting…" : `Delete ${selectedIds.size} item${selectedIds.size !== 1 ? "s" : ""}`}
-          confirmDestructive
-        >
-          <p>Delete <strong>{selectedIds.size}</strong> item{selectedIds.size !== 1 ? "s" : ""}? This cannot be undone.</p>
-        </Modal>
-      )}
-
-      {mediaToDelete && (
-        <Modal
-          title="Delete Media"
-          onConfirm={() => deleteMedia(mediaToDelete.id)}
-          onCancel={() => setMediaToDelete(null)}
-          confirmLabel="Delete"
-          confirmDestructive
-        >
-          <p>Delete <strong>{mediaToDelete.title || mediaToDelete.file}</strong>? This cannot be undone.</p>
-        </Modal>
-      )}
-
-      {hoveredItem && (() => {
-        const isHeic = /\.heic$/i.test(hoveredItem.file);
-        const derivedPreview = hoveredItem.displayUrl || hoveredItem.posterUrl || hoveredItem.thumbUrl || null;
-        const previewSrc = derivedPreview
-          ? `${pbUrl}${derivedPreview}`
-          : (hoveredItem.type === "image" && !isHeic
-              ? pb.files.getURL(hoveredItem, hoveredItem.file, { thumb: "840x0" })
-              : null);
-        if (!previewSrc) return null;
-        const PREVIEW_W = 420;
-        const OFFSET_X = 18;
-        const OFFSET_Y = 12;
-        const x = hoverPos.x + OFFSET_X + PREVIEW_W > window.innerWidth
-          ? hoverPos.x - OFFSET_X - PREVIEW_W
-          : hoverPos.x + OFFSET_X;
-        const y = Math.max(8, Math.min(hoverPos.y - OFFSET_Y, window.innerHeight - 320));
-        return (
-          <div className="library-hover-preview" style={{ left: x, top: y }}>
-            <img src={previewSrc} alt="" />
+        {/* Filter toolbar — flex-wrap so filters reflow on small screens */}
+        <div className="library-filters" style={{ display: "flex", flexWrap: "wrap", gap: "1rem", marginBottom: "1rem", minWidth: 0 }}>
+          <div style={{ flex: "1 1 140px", minWidth: 0 }}>
+            <Select
+              id="status-filter"
+              labelText="Status"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value as typeof filter)}
+              size="sm"
+            >
+              <SelectItem value="all" text="All" />
+              <SelectItem value="published" text="Published" />
+              <SelectItem value="unpublished" text="Unpublished" />
+              <SelectItem value="pending" text="Pending" />
+              <SelectItem value="rejected" text="Rejected" />
+            </Select>
           </div>
-        );
-      })()}
+          <div style={{ flex: "1 1 120px", minWidth: 0 }}>
+            <Select
+              id="type-filter"
+              labelText="Type"
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)}
+              size="sm"
+            >
+              <SelectItem value="all" text="All" />
+              <SelectItem value="image" text="Image" />
+              <SelectItem value="video" text="Video" />
+            </Select>
+          </div>
+          <div style={{ flex: "2 1 260px", minWidth: 0 }}>
+            <DatePicker
+              datePickerType="range"
+              onChange={(dates) => {
+                if (dates[0]) setDateFrom(dates[0].toISOString().slice(0, 10));
+                if (dates[1]) setDateTo(dates[1].toISOString().slice(0, 10));
+                if (dates.length === 0) { setDateFrom(""); setDateTo(""); }
+              }}
+            >
+              <DatePickerInput id="date-from" labelText="From" placeholder="mm/dd/yyyy" size="sm" />
+              <DatePickerInput id="date-to" labelText="To" placeholder="mm/dd/yyyy" size="sm" />
+            </DatePicker>
+          </div>
+          <div style={{ flex: "1 1 120px", minWidth: 0 }}>
+            <TextInput
+              id="tag-filter"
+              labelText="Tag"
+              value={tagFilter}
+              onChange={(e) => setTagFilter(e.target.value)}
+              placeholder="Tag..."
+              size="sm"
+            />
+          </div>
+          <div style={{ flex: "1 1 140px", minWidth: 0 }}>
+            <Select
+              id="sort-filter"
+              labelText="Sort"
+              value={sortField}
+              onChange={(e) => setSortField(e.target.value)}
+              size="sm"
+            >
+              <SelectItem value="-created" text="Added ↓" />
+              <SelectItem value="created" text="Added ↑" />
+              <SelectItem value="-takenAt" text="Taken ↓" />
+              <SelectItem value="takenAt" text="Taken ↑" />
+              <SelectItem value="title" text="Title A–Z" />
+              <SelectItem value="-title" text="Title Z–A" />
+            </Select>
+          </div>
+        </div>
 
-      <Pagination page={page} totalPages={totalPages} loading={loading} onPageChange={setPage} />
-    </section>
+        {loading ? (
+          <DataTableSkeleton headers={headers.map((h) => h.header)} rowCount={8} showHeader={false} showToolbar={false} />
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+          <DataTable rows={rows} headers={headers}>
+            {({
+              rows: tableRows,
+              headers: tableHeaders,
+              getTableProps,
+              getHeaderProps,
+              getRowProps,
+              getToolbarProps,
+              getBatchActionProps,
+              getSelectionProps,
+              selectedRows,
+            }) => {
+              const batchActionProps = getBatchActionProps();
+              return (
+                <>
+                  <TableToolbar {...getToolbarProps()}>
+                    <TableBatchActions {...batchActionProps}>
+                      <TableBatchAction
+                        renderIcon={TrashCan}
+                        onClick={() => {
+                          setPendingBulkIds(selectedRows.map((r) => r.id));
+                          setShowBulkDeleteModal(true);
+                        }}
+                        disabled={bulkDeleting}
+                      >
+                        Delete
+                      </TableBatchAction>
+                    </TableBatchActions>
+                    <TableToolbarContent>
+                      <TableToolbarSearch
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery((e.target as HTMLInputElement).value)}
+                        placeholder="Search title or filename..."
+                        persistent
+                      />
+                    </TableToolbarContent>
+                  </TableToolbar>
+                  <Table {...getTableProps()} size="md">
+                    <TableHead>
+                      <TableRow>
+                        <TableSelectAll {...getSelectionProps()} />
+                        {tableHeaders.map((header) => (
+                          <TableHeader {...getHeaderProps({ header })} key={header.key}>
+                            {header.header}
+                          </TableHeader>
+                        ))}
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {tableRows.map((row) => {
+                        const m = items.find((item) => item.id === row.id)!;
+                        if (!m) return null;
+                        const thumbSrc = row.cells.find((c) => c.info.header === "thumb")?.value as string | null;
+                        const titleRaw = row.cells.find((c) => c.info.header === "title")?.value as string;
+                        const [titleText, metaText] = titleRaw?.split("||") ?? ["", ""];
+                        return (
+                          <TableRow {...getRowProps({ row })} key={row.id}>
+                            <TableSelectRow {...getSelectionProps({ row })} />
+                            <TableCell style={{ padding: "0.5rem" }}>
+                              {thumbSrc && (
+                                <img
+                                  src={thumbSrc}
+                                  alt=""
+                                  style={{ width: "64px", height: "48px", objectFit: "cover", display: "block", borderRadius: "2px" }}
+                                  onMouseEnter={() => setHoveredItem(m)}
+                                  onMouseLeave={() => setHoveredItem(null)}
+                                  onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
+                                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                                />
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <p style={{ fontWeight: 500 }}>{titleText}</p>
+                              {metaText && (
+                                <p className="cds--label" style={{ color: "var(--cds-text-secondary)" }}>
+                                  {metaText}
+                                </p>
+                              )}
+                            </TableCell>
+                            <TableCell style={{ minWidth: "160px" }}>
+                              <Tag type={statusTagType(m.status)} size="sm">
+                                {m.status}
+                              </Tag>
+                              {m.processingStatus && m.processingStatus !== "completed" && (
+                                <Tag type={m.processingStatus === "failed" ? "red" : "outline"} size="sm" style={{ marginLeft: "0.25rem" }}>
+                                  {m.processingStatus}
+                                </Tag>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <div style={{ display: "flex", gap: "0.25rem", flexWrap: "wrap" }}>
+                                <Button
+                                  kind="ghost"
+                                  size="sm"
+                                  renderIcon={m.status === "published" ? ViewOff : View}
+                                  onClick={() => togglePublish(m.id, m.status)}
+                                  disabled={togglingPublish.has(m.id)}
+                                  iconDescription={m.status === "published" ? "Unpublish" : "Publish"}
+                                >
+                                  {togglingPublish.has(m.id) ? "…" : m.status === "published" ? "Unpublish" : "Publish"}
+                                </Button>
+                                <Button
+                                  kind="ghost"
+                                  size="sm"
+                                  renderIcon={Renew}
+                                  onClick={() => reprocessMedia(m.id)}
+                                  disabled={reprocessing.has(m.id)}
+                                  iconDescription="Reprocess"
+                                  title="Regenerate processed assets using the current output format"
+                                >
+                                  {reprocessing.has(m.id) ? "…" : "Reprocess"}
+                                </Button>
+                                <Button
+                                  kind="ghost"
+                                  size="sm"
+                                  renderIcon={Edit}
+                                  iconDescription="Edit"
+                                >
+                                  Edit
+                                </Button>
+                                <Button
+                                  kind="danger--ghost"
+                                  size="sm"
+                                  renderIcon={TrashCan}
+                                  onClick={() => setMediaToDelete(m)}
+                                  iconDescription="Delete"
+                                >
+                                  Delete
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </>
+              );
+            }}
+          </DataTable>
+          </div>
+        )}
+
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          totalItems={totalItems}
+          pageSize={ITEMS_PER_PAGE}
+          loading={loading}
+          onPageChange={setPage}
+        />
+
+        {showBulkDeleteModal && (
+          <Modal
+            title="Delete Selected"
+            onConfirm={() => bulkDelete(pendingBulkIds)}
+            onCancel={() => { setShowBulkDeleteModal(false); setPendingBulkIds([]); }}
+            confirmLabel={bulkDeleting ? "Deleting…" : `Delete ${pendingBulkIds.length} item${pendingBulkIds.length !== 1 ? "s" : ""}`}
+            confirmDestructive
+          >
+            <p>
+              Delete <strong>{pendingBulkIds.length}</strong> item{pendingBulkIds.length !== 1 ? "s" : ""}? This cannot be undone.
+            </p>
+          </Modal>
+        )}
+
+        {mediaToDelete && (
+          <Modal
+            title="Delete Media"
+            onConfirm={() => deleteMedia(mediaToDelete.id)}
+            onCancel={() => setMediaToDelete(null)}
+            confirmLabel="Delete"
+            confirmDestructive
+          >
+            <p>
+              Delete <strong>{mediaToDelete.title || mediaToDelete.file}</strong>? This cannot be undone.
+            </p>
+          </Modal>
+        )}
+
+        {hoveredItem && (() => {
+          const isHeic = /\.heic$/i.test(hoveredItem.file);
+          const derivedPreview = hoveredItem.displayUrl || hoveredItem.posterUrl || hoveredItem.thumbUrl || null;
+          const previewSrc = derivedPreview
+            ? `${pbUrl}${derivedPreview}`
+            : hoveredItem.type === "image" && !isHeic
+            ? pb.files.getURL(hoveredItem, hoveredItem.file, { thumb: "840x0" })
+            : null;
+          if (!previewSrc) return null;
+          const PREVIEW_W = 420;
+          const OFFSET_X = 18;
+          const OFFSET_Y = 12;
+          const x =
+            hoverPos.x + OFFSET_X + PREVIEW_W > window.innerWidth
+              ? hoverPos.x - OFFSET_X - PREVIEW_W
+              : hoverPos.x + OFFSET_X;
+          const y = Math.max(8, Math.min(hoverPos.y - OFFSET_Y, window.innerHeight - 320));
+          return (
+            <div className="library-hover-preview" style={{ left: x, top: y }}>
+              <img src={previewSrc} alt="" />
+            </div>
+          );
+        })()}
+      </Column>
+    </Grid>
   );
 }

@@ -3,11 +3,79 @@ import { pb } from "../pb/client";
 import { useAuth } from "../pb/auth";
 import { SecureApiKeyDisplay } from "../components/SecureApiKeyDisplay";
 import { Modal } from "../components/Modal";
-import { LoadingSpinner } from "../components/LoadingSpinner";
 import { Notification } from "../components/Notification";
 import { PAGINATION } from "../constants";
 import { generateApiKey } from "../utils";
 import { useNotification } from "../hooks/useNotification";
+import {
+  Grid,
+  Column,
+  Heading,
+  Button,
+  Tile,
+  NumberInput,
+  Select,
+  SelectItem,
+  Toggle,
+  TextInput,
+  InlineNotification,
+  InlineLoading,
+  Stack,
+  StructuredListWrapper,
+  StructuredListRow,
+  StructuredListCell,
+  StructuredListBody,
+} from "@carbon/react";
+import { Edit, Renew, TrashCan, Link as LinkIcon } from "@carbon/icons-react";
+
+function getViewerStatus(lastSeen?: string): { label: string; color: string; detail: string } {
+  if (!lastSeen) return { label: "Never seen", color: "var(--cds-text-disabled)", detail: "" };
+  const diffMs = Date.now() - new Date(lastSeen).getTime();
+  const diffMin = diffMs / 60_000;
+
+  let label: string;
+  let color: string;
+  if (diffMin < 3) {
+    label = "Online";
+    color = "var(--cds-support-success)";
+  } else if (diffMin < 60) {
+    label = "Recently online";
+    color = "var(--cds-support-warning)";
+  } else {
+    label = "Offline";
+    color = "var(--cds-support-error)";
+  }
+
+  let detail: string;
+  if (diffMin < 1) {
+    detail = "just now";
+  } else if (diffMin < 60) {
+    detail = `${Math.floor(diffMin)}m ago`;
+  } else if (diffMin < 60 * 24) {
+    detail = `${Math.floor(diffMin / 60)}h ago`;
+  } else {
+    detail = new Date(lastSeen).toLocaleDateString();
+  }
+
+  return { label, color, detail };
+}
+
+function DeviceStatus({ lastSeen }: { lastSeen?: string }) {
+  const { label, color, detail } = getViewerStatus(lastSeen);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.25rem" }}>
+      <span style={{ color, fontSize: "0.6rem", lineHeight: 1 }}>●</span>
+      <span className="cds--helper-text-01" style={{ color }}>
+        {label}
+      </span>
+      {detail && (
+        <span className="cds--helper-text-01" style={{ color: "var(--cds-text-disabled)" }}>
+          — {detail}
+        </span>
+      )}
+    </div>
+  );
+}
 
 type Device = {
   id: string;
@@ -48,6 +116,10 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
   const [shuffle, setShuffle] = useState(cfg.shuffle ?? false);
   const [showClock, setShowClock] = useState(cfg.showClock ?? true);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(device.name);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showRegenModal, setShowRegenModal] = useState(false);
 
   const isDirty =
     (cfg.interval ?? 8000) !== slideInterval ||
@@ -56,11 +128,6 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
     (cfg.blur ?? true) !== blur ||
     (cfg.shuffle ?? false) !== shuffle ||
     (cfg.showClock ?? true) !== showClock;
-
-  const [editing, setEditing] = useState(false);
-  const [editName, setEditName] = useState(device.name);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [showRegenModal, setShowRegenModal] = useState(false);
 
   const saveConfig = async () => {
     try {
@@ -116,7 +183,7 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
   };
 
   return (
-    <div className="device-card">
+    <Tile style={{ height: "100%" }}>
       {showRegenModal && (
         <Modal
           title="Regenerate API Key"
@@ -140,87 +207,123 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
         </Modal>
       )}
 
-      <div className="device-card-header">
-        {editing ? (
-          <div className="device-action-row">
-            <input
-              type="text"
-              value={editName}
-              onChange={(e) => setEditName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") saveEditName(); if (e.key === "Escape") setEditing(false); }}
-              autoFocus
+      <Stack gap={5}>
+        {/* Header */}
+        <div>
+          {editing ? (
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end" }}>
+              <TextInput
+                id={`rename-${device.id}`}
+                labelText="Device name"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveEditName();
+                  if (e.key === "Escape") { setEditing(false); setEditName(device.name); }
+                }}
+                autoFocus
+                size="sm"
+              />
+              <Button size="sm" onClick={saveEditName}>Save</Button>
+              <Button kind="secondary" size="sm" onClick={() => { setEditing(false); setEditName(device.name); }}>Cancel</Button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <p className="cds--productive-heading-03">{device.name}</p>
+              <Button kind="ghost" size="sm" renderIcon={Edit} iconDescription="Rename" onClick={() => { setEditing(true); setEditName(device.name); }}>
+                Rename
+              </Button>
+            </div>
+          )}
+          <DeviceStatus lastSeen={device.lastSeen} />
+        </div>
+
+        {/* Slideshow Settings */}
+        <div>
+          <p className="cds--productive-heading-01" style={{ marginBottom: "1rem" }}>Slideshow Settings</p>
+          <Stack gap={4}>
+            <NumberInput
+              id={`interval-${device.id}`}
+              label="Display Duration (ms)"
+              value={slideInterval}
+              min={1000}
+              step={1000}
+              onChange={(_e, { value }) => { setSlideInterval(Number(value)); setSaveSuccess(false); }}
+              size="sm"
             />
-            <button onClick={saveEditName} className="btn btn-sm">Save</button>
-            <button onClick={() => { setEditing(false); setEditName(device.name); }} className="btn btn-secondary btn-sm">Cancel</button>
-          </div>
-        ) : (
-          <div className="device-card-title-row">
-            <h2 className="device-card-name">{device.name}</h2>
-            <button onClick={() => { setEditing(true); setEditName(device.name); }} className="btn btn-secondary btn-sm">
-              Rename
-            </button>
-          </div>
-        )}
-        {device.lastSeen && (
-          <p className="device-card-lastseen">Last seen: {new Date(device.lastSeen).toLocaleString()}</p>
-        )}
-      </div>
+            <Select
+              id={`transition-${device.id}`}
+              labelText="Transition Effect"
+              value={transition}
+              onChange={(e) => { setTransition(e.target.value); setSaveSuccess(false); }}
+              size="sm"
+            >
+              <SelectItem value="fade" text="Fade" />
+              <SelectItem value="crossfade" text="Crossfade" />
+              <SelectItem value="cut" text="Cut" />
+            </Select>
+            <NumberInput
+              id={`transition-duration-${device.id}`}
+              label="Transition Duration (ms)"
+              value={transitionDuration}
+              min={100}
+              step={100}
+              onChange={(_e, { value }) => { setTransitionDuration(Number(value)); setSaveSuccess(false); }}
+              size="sm"
+            />
+            <Toggle
+              id={`blur-${device.id}`}
+              labelText="Background Blur"
+              toggled={blur}
+              onToggle={(val) => { setBlur(val); setSaveSuccess(false); }}
+              size="sm"
+            />
+            <Toggle
+              id={`shuffle-${device.id}`}
+              labelText="Shuffle Playlist"
+              toggled={shuffle}
+              onToggle={(val) => { setShuffle(val); setSaveSuccess(false); }}
+              size="sm"
+            />
+            <Toggle
+              id={`clock-${device.id}`}
+              labelText="Clock"
+              toggled={showClock}
+              onToggle={(val) => { setShowClock(val); setSaveSuccess(false); }}
+              size="sm"
+            />
+          </Stack>
+          {saveSuccess && (
+            <InlineNotification
+              kind="success"
+              title="Settings saved — viewer will restart shortly."
+              hideCloseButton
+              lowContrast
+              style={{ marginTop: "1rem" }}
+            />
+          )}
+          <Button
+            kind="primary"
+            size="sm"
+            onClick={saveConfig}
+            disabled={!isDirty}
+            style={{ marginTop: "1rem" }}
+          >
+            Save Settings
+          </Button>
+        </div>
 
-      <div className="device-card-body">
-        <h3>Slideshow Settings</h3>
-        <label>
-          Display Duration (ms)
-          <input
-            type="number"
-            value={slideInterval}
-            onChange={(e) => { setSlideInterval(Number(e.target.value)); setSaveSuccess(false); }}
-            min={1000}
-            step={1000}
-          />
-        </label>
-        <label>
-          Transition Effect
-          <select value={transition} onChange={(e) => { setTransition(e.target.value); setSaveSuccess(false); }}>
-            <option value="fade">Fade</option>
-            <option value="crossfade">Crossfade</option>
-            <option value="cut">Cut</option>
-          </select>
-        </label>
-        <label>
-          Transition Duration (ms)
-          <input
-            type="number"
-            value={transitionDuration}
-            onChange={(e) => { setTransitionDuration(Number(e.target.value)); setSaveSuccess(false); }}
-            min={100}
-            step={100}
-          />
-        </label>
-        <label className="label-checkbox">
-          <input type="checkbox" checked={blur} onChange={(e) => { setBlur(e.target.checked); setSaveSuccess(false); }} />
-          Background Blur
-        </label>
-        <label className="label-checkbox">
-          <input type="checkbox" checked={shuffle} onChange={(e) => { setShuffle(e.target.checked); setSaveSuccess(false); }} />
-          Shuffle Playlist
-        </label>
-        <label className="label-checkbox">
-          <input type="checkbox" checked={showClock} onChange={(e) => { setShowClock(e.target.checked); setSaveSuccess(false); }} />
-          Clock
-        </label>
-        {saveSuccess && <p className="save-success-msg">Settings saved — viewer will restart shortly.</p>}
-        <button onClick={saveConfig} className="btn" disabled={!isDirty}>Save Settings</button>
-      </div>
-
-      <div className="device-card-footer">
-        <button onClick={() => setShowRegenModal(true)} className="btn btn-warning btn-sm">
-          Regenerate Key
-        </button>
-        <button onClick={() => setShowDeleteModal(true)} className="btn btn-danger btn-sm">
-          Delete
-        </button>
-      </div>
-    </div>
+        {/* Footer actions */}
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <Button kind="tertiary" size="sm" renderIcon={Renew} onClick={() => setShowRegenModal(true)}>
+            Regenerate Key
+          </Button>
+          <Button kind="danger" size="sm" renderIcon={TrashCan} onClick={() => setShowDeleteModal(true)}>
+            Delete
+          </Button>
+        </div>
+      </Stack>
+    </Tile>
   );
 }
 
@@ -232,12 +335,13 @@ export function SettingsPage() {
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [showAddDeviceModal, setShowAddDeviceModal] = useState(false);
   const [newDeviceName, setNewDeviceName] = useState("");
-
   const [pendingDevices, setPendingDevices] = useState<PendingDevice[]>([]);
   const [registeringSession, setRegisteringSession] = useState<PendingDevice | null>(null);
   const [registerName, setRegisterName] = useState("");
   const [registerPin, setRegisterPin] = useState("");
   const [registerError, setRegisterError] = useState<string | null>(null);
+
+  void user;
 
   useEffect(() => {
     loadDevices();
@@ -320,126 +424,124 @@ export function SettingsPage() {
     }
   };
 
-  void user;
-
-  if (loading) {
-    return (
-      <section>
-        <h1>Settings</h1>
-        <LoadingSpinner label="Loading devices..." />
-      </section>
-    );
-  }
-
   return (
-    <section>
-      <div className="section-header">
-        <h1>Settings</h1>
-        <button onClick={() => setShowAddDeviceModal(true)}>
-          Add Device Manually
-        </button>
-      </div>
+    <Grid>
+      <Column sm={4} md={8} lg={16}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.5rem" }}>
+          <Heading>Settings</Heading>
+          <Button kind="primary" onClick={() => setShowAddDeviceModal(true)}>
+            Add Device Manually
+          </Button>
+        </div>
 
-      <Notification error={error} message={message} />
-      {newApiKey && (
-        <SecureApiKeyDisplay apiKey={newApiKey} onClose={() => setNewApiKey(null)} />
-      )}
+        <Notification error={error} message={message} />
 
-      {registeringSession && (
-        <Modal
-          title={`Connect "${registeringSession.hostname}" (${registeringSession.ip})`}
-          onConfirm={registerPendingDevice}
-          onCancel={() => setRegisteringSession(null)}
-          confirmLabel="Connect"
-        >
-          <p style={{ marginBottom: "1rem" }}>Enter the 6-digit PIN shown on the viewer screen.</p>
-          {registerError && <p className="error" style={{ marginBottom: "0.75rem" }}>{registerError}</p>}
-          <label style={{ display: "block", marginBottom: "0.75rem" }}>
-            Device Name
-            <input
-              type="text"
-              value={registerName}
-              onChange={(e) => setRegisterName(e.target.value)}
-              placeholder="e.g., Living Room Frame"
-              autoFocus
-            />
-          </label>
-          <label style={{ display: "block" }}>
-            PIN (shown on viewer screen)
-            <input
-              type="text"
-              inputMode="numeric"
-              maxLength={6}
-              value={registerPin}
-              onChange={(e) => setRegisterPin(e.target.value.replace(/\D/g, "").substring(0, 6))}
-              placeholder="123456"
-              style={{ fontFamily: "monospace", fontSize: "1.5rem", letterSpacing: "0.25em", maxWidth: "160px" }}
-            />
-          </label>
-        </Modal>
-      )}
+        {newApiKey && (
+          <SecureApiKeyDisplay apiKey={newApiKey} onClose={() => setNewApiKey(null)} />
+        )}
 
-      {showAddDeviceModal && (
-        <Modal
-          title="Add Device"
-          onConfirm={createDevice}
-          onCancel={() => { setShowAddDeviceModal(false); setNewDeviceName(""); setError(null); }}
-          confirmLabel="Add Device"
-        >
-          <label>
-            Device Name
-            <input
-              type="text"
+        {registeringSession && (
+          <Modal
+            title={`Connect "${registeringSession.hostname}" (${registeringSession.ip})`}
+            onConfirm={registerPendingDevice}
+            onCancel={() => setRegisteringSession(null)}
+            confirmLabel="Connect"
+          >
+            <Stack gap={5}>
+              <p>Enter the 6-digit PIN shown on the viewer screen.</p>
+              {registerError && (
+                <InlineNotification kind="error" title={registerError} lowContrast hideCloseButton />
+              )}
+              <TextInput
+                id="register-name"
+                labelText="Device Name"
+                value={registerName}
+                onChange={(e) => setRegisterName(e.target.value)}
+                placeholder="e.g., Living Room Frame"
+                autoFocus
+              />
+              <TextInput
+                id="register-pin"
+                labelText="PIN (shown on viewer screen)"
+                value={registerPin}
+                onChange={(e) => setRegisterPin(e.target.value.replace(/\D/g, "").substring(0, 6))}
+                placeholder="123456"
+                inputMode="numeric"
+                maxLength={6}
+              />
+            </Stack>
+          </Modal>
+        )}
+
+        {showAddDeviceModal && (
+          <Modal
+            title="Add Device"
+            onConfirm={createDevice}
+            onCancel={() => { setShowAddDeviceModal(false); setNewDeviceName(""); setError(null); }}
+            confirmLabel="Add Device"
+          >
+            <TextInput
+              id="new-device-name"
+              labelText="Device Name"
               value={newDeviceName}
               onChange={(e) => setNewDeviceName(e.target.value)}
               placeholder="e.g., Bedroom Frame"
               autoFocus
             />
-          </label>
-        </Modal>
-      )}
+          </Modal>
+        )}
 
-      {pendingDevices.length > 0 && (
-        <div className="discovered-viewers">
-          <h2>Discovered Viewers</h2>
-          <p style={{ color: "var(--color-text-muted)", fontSize: "0.875rem", marginBottom: "0.75rem" }}>
-            These viewers are waiting to be connected. Enter the PIN shown on each screen.
-          </p>
-          <ul>
-            {pendingDevices.map((p) => (
-              <li key={p.session_id}>
-                <div style={{ flex: 1 }}>
-                  <strong>{p.hostname}</strong>
-                  <span style={{ color: "var(--color-text-muted)", marginLeft: "0.5rem", fontSize: "0.875rem" }}>{p.ip}</span>
-                </div>
-                <div>
-                  <button onClick={() => openRegisterModal(p)} className="btn btn-sm">Connect</button>
-                </div>
-              </li>
+        {pendingDevices.length > 0 && (
+          <div style={{ marginBottom: "2rem" }}>
+            <p className="cds--productive-heading-02" style={{ marginBottom: "0.5rem" }}>Discovered Viewers</p>
+            <p className="cds--helper-text-01" style={{ marginBottom: "1rem" }}>
+              These viewers are waiting to be connected. Enter the PIN shown on each screen.
+            </p>
+            <StructuredListWrapper>
+              <StructuredListBody>
+                {pendingDevices.map((p) => (
+                  <StructuredListRow key={p.session_id}>
+                    <StructuredListCell>
+                      <strong>{p.hostname}</strong>
+                      <span className="cds--helper-text-01" style={{ marginLeft: "0.5rem" }}>{p.ip}</span>
+                    </StructuredListCell>
+                    <StructuredListCell>
+                      <Button kind="primary" size="sm" renderIcon={LinkIcon} onClick={() => openRegisterModal(p)}>
+                        Connect
+                      </Button>
+                    </StructuredListCell>
+                  </StructuredListRow>
+                ))}
+              </StructuredListBody>
+            </StructuredListWrapper>
+          </div>
+        )}
+
+        {loading ? (
+          <InlineLoading description="Loading devices..." />
+        ) : devices.length === 0 ? (
+          <div style={{ padding: "2rem 0" }}>
+            <p className="cds--productive-heading-02" style={{ marginBottom: "0.5rem" }}>No Devices Found</p>
+            <p className="cds--body-01">
+              Run the viewer app to discover it automatically, then connect it from the Discovered Viewers area.
+            </p>
+          </div>
+        ) : (
+          <Grid narrow>
+            {devices.map((device) => (
+              <Column key={device.id} sm={4} md={4} lg={8} style={{ marginBottom: "1rem" }}>
+                <DeviceCard
+                  device={device}
+                  onRefresh={loadDevices}
+                  showMessage={showMessage}
+                  showError={showError}
+                  onNewApiKey={setNewApiKey}
+                />
+              </Column>
             ))}
-          </ul>
-        </div>
-      )}
-
-      {devices.length === 0 ? (
-        <div className="create-device">
-          <h2>No Devices Found</h2>
-          <p>Run the viewer app to discover it automatically, then connect it from the Discovered Viewers area.</p>
-        </div>
-      ) : (
-        <div className="device-grid">
-          {devices.map((device) => (
-            <DeviceCard
-              key={device.id}
-              device={device}
-              onRefresh={loadDevices}
-              showMessage={showMessage}
-              showError={showError}
-              onNewApiKey={setNewApiKey}
-            />
-          ))}
-        </div>
-      )}
-    </section>
+          </Grid>
+        )}
+      </Column>
+    </Grid>
   );
 }
