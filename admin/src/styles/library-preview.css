@@ -21,6 +21,69 @@ a.cds--header__menu-item.cds--header__menu-item--current:focus {
 }
 
 
+/* Prevent Carbon internals from expanding the table beyond the container */
+.library-table-stacked .cds--data-table-content {
+  overflow-x: hidden !important;
+  min-width: 0 !important;
+}
+
+.library-table-stacked table.cds--data-table {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+.library-table-stacked .cds--data-table-container {
+  min-width: 0 !important;
+}
+
+.library-table-stacked .cds--toolbar-content,
+.library-table-stacked .cds--toolbar-search-container-expandable,
+.library-table-stacked .cds--search {
+  min-width: 0 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+.library-table-stacked .cds--search-input {
+  min-width: 0 !important;
+}
+
+/* Prevent text from spilling past cell bounds */
+.library-table-stacked td.cds--table-column-checkbox,
+.library-table-stacked th.cds--table-column-checkbox {
+  padding-left: 0.5rem !important;
+  padding-right: 0.5rem !important;
+  min-width: 0 !important;
+  width: 2rem !important;
+}
+
+.library-table-stacked .cds--data-table td,
+.library-table-stacked .cds--data-table th {
+  overflow-wrap: break-word !important;
+  word-break: break-word !important;
+  overflow: hidden !important;
+}
+
+/* Tighter thumbnail cell — fixed narrow width so title gets remaining space */
+.library-table-stacked .cds--data-table td:nth-child(2),
+.library-table-stacked .cds--data-table th:nth-child(2) {
+  width: 56px !important;
+  min-width: 56px !important;
+  max-width: 56px !important;
+  padding: 0.25rem !important;
+}
+
+.library-table-stacked .cds--data-table td:nth-child(2) img {
+  width: 48px !important;
+  height: 36px !important;
+}
+
+/* Title column takes all remaining width */
+.library-table-stacked .cds--data-table td:nth-child(3),
+.library-table-stacked .cds--data-table th:nth-child(3) {
+  width: auto !important;
+}
+
 .library-hover-preview {
   position: fixed;
   z-index: 9999;
@@ -31,6 +94,7 @@ a.cds--header__menu-item.cds--header__menu-item--current:focus {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
   background: var(--cds-background);
 }
+
 
 .library-hover-preview img {
   display: block;

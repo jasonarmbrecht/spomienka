@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { pb } from "../pb/client";
 import { Modal } from "../components/Modal";
 import { Pagination } from "../components/Pagination";
@@ -125,6 +125,11 @@ export function LibraryPage() {
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalItems, setTotalItems] = useState(0);
+  const [stackedLayout, setStackedLayout] = useState(false);
+  const [iconOnlyActions, setIconOnlyActions] = useState(false);
+  const [narrowLayout, setNarrowLayout] = useState(false);
+  const [veryNarrowLayout, setVeryNarrowLayout] = useState(false);
+  const tableContainerRef = useRef<HTMLDivElement>(null);
 
   const bulkDelete = async (selectedIds: string[]) => {
     setBulkDeleting(true);
@@ -283,6 +288,20 @@ export function LibraryPage() {
     setPage(1);
   }, [filter, searchQuery, typeFilter, dateFrom, dateTo, tagFilter, sortField]);
 
+  useEffect(() => {
+    const el = tableContainerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const w = entries[0].contentRect.width;
+      setIconOnlyActions(w < 1300);
+      setStackedLayout(w < 900);
+      setNarrowLayout(w < 770);
+      setVeryNarrowLayout(w < 705);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loading]);
+
   const rows = items.map((m) => {
     const isHeic = /\.heic$/i.test(m.file);
     const derivedUrl =
@@ -408,148 +427,200 @@ export function LibraryPage() {
         {loading ? (
           <DataTableSkeleton headers={headers.map((h) => h.header)} rowCount={8} showHeader={false} showToolbar={false} />
         ) : (
-          <div style={{ overflowX: "auto" }}>
-          <DataTable rows={rows} headers={headers}>
-            {({
-              rows: tableRows,
-              headers: tableHeaders,
-              getTableProps,
-              getHeaderProps,
-              getRowProps,
-              getToolbarProps,
-              getBatchActionProps,
-              getSelectionProps,
-              selectedRows,
-            }) => {
-              const batchActionProps = getBatchActionProps();
-              return (
-                <>
-                  <TableToolbar {...getToolbarProps()}>
-                    <TableBatchActions {...batchActionProps}>
-                      <TableBatchAction
-                        renderIcon={TrashCan}
-                        onClick={() => {
-                          setPendingBulkIds(selectedRows.map((r) => r.id));
-                          setShowBulkDeleteModal(true);
-                        }}
-                        disabled={bulkDeleting}
-                      >
-                        Delete
-                      </TableBatchAction>
-                    </TableBatchActions>
-                    <TableToolbarContent>
-                      <TableToolbarSearch
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery((e.target as HTMLInputElement).value)}
-                        placeholder="Search title or filename..."
-                        persistent
-                      />
-                    </TableToolbarContent>
-                  </TableToolbar>
-                  <Table {...getTableProps()} size="md">
-                    <TableHead>
-                      <TableRow>
-                        <TableSelectAll {...getSelectionProps()} />
-                        {tableHeaders.map((header) => (
-                          <TableHeader {...getHeaderProps({ header })} key={header.key}>
-                            {header.header}
-                          </TableHeader>
-                        ))}
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {tableRows.map((row) => {
-                        const m = items.find((item) => item.id === row.id)!;
-                        if (!m) return null;
-                        const thumbSrc = row.cells.find((c) => c.info.header === "thumb")?.value as string | null;
-                        const titleRaw = row.cells.find((c) => c.info.header === "title")?.value as string;
-                        const [titleText, metaText] = titleRaw?.split("||") ?? ["", ""];
-                        return (
-                          <TableRow {...getRowProps({ row })} key={row.id}>
-                            <TableSelectRow {...getSelectionProps({ row })} />
-                            <TableCell style={{ padding: "0.5rem" }}>
-                              {thumbSrc && (
-                                <img
-                                  src={thumbSrc}
-                                  alt=""
-                                  style={{ width: "64px", height: "48px", objectFit: "cover", display: "block", borderRadius: "2px" }}
-                                  onMouseEnter={() => setHoveredItem(m)}
-                                  onMouseLeave={() => setHoveredItem(null)}
-                                  onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
-                                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                                />
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              <p style={{ fontWeight: 500 }}>{titleText}</p>
-                              {metaText && (
-                                <p className="cds--label" style={{ color: "var(--cds-text-secondary)" }}>
-                                  {metaText}
-                                </p>
-                              )}
-                            </TableCell>
-                            <TableCell style={{ minWidth: "160px" }}>
-                              <Tag type={statusTagType(m.status)} size="sm">
-                                {m.status}
-                              </Tag>
-                              {m.processingStatus && m.processingStatus !== "completed" && (
-                                <Tag type={m.processingStatus === "failed" ? "red" : "outline"} size="sm" style={{ marginLeft: "0.25rem" }}>
-                                  {m.processingStatus}
+          <div ref={tableContainerRef} className={stackedLayout ? "library-table-stacked" : undefined} style={{ overflowX: stackedLayout ? "hidden" : "auto", width: "100%" }}>
+            <DataTable rows={rows} headers={headers}>
+              {({
+                rows: tableRows,
+                headers: tableHeaders,
+                getTableProps,
+                getHeaderProps,
+                getRowProps,
+                getToolbarProps,
+                getBatchActionProps,
+                getSelectionProps,
+                selectedRows,
+              }) => {
+                const batchActionProps = getBatchActionProps();
+                return (
+                  <>
+                    <TableToolbar {...getToolbarProps()}>
+                      <TableBatchActions {...batchActionProps}>
+                        <TableBatchAction
+                          renderIcon={TrashCan}
+                          onClick={() => {
+                            setPendingBulkIds(selectedRows.map((r) => r.id));
+                            setShowBulkDeleteModal(true);
+                          }}
+                          disabled={bulkDeleting}
+                        >
+                          Delete
+                        </TableBatchAction>
+                      </TableBatchActions>
+                      <TableToolbarContent>
+                        <TableToolbarSearch
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery((e.target as HTMLInputElement).value)}
+                          placeholder="Search title or filename..."
+                          persistent
+                        />
+                      </TableToolbarContent>
+                    </TableToolbar>
+                    <Table {...getTableProps()} size="md" className="library-table">
+                      <TableHead>
+                        <TableRow>
+                          <TableSelectAll {...getSelectionProps()} />
+                          {tableHeaders.map((header) => (
+                            <TableHeader
+                              {...getHeaderProps({ header })}
+                              key={header.key}
+                              style={(header.key === "status" || header.key === "actions") && stackedLayout ? { display: "none" } : undefined}
+                            >
+                              {header.header}
+                            </TableHeader>
+                          ))}
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {tableRows.map((row) => {
+                          const m = items.find((item) => item.id === row.id)!;
+                          if (!m) return null;
+                          const thumbSrc = row.cells.find((c) => c.info.header === "thumb")?.value as string | null;
+                          const titleRaw = row.cells.find((c) => c.info.header === "title")?.value as string;
+                          const [titleText, metaText] = titleRaw?.split("||") ?? ["", ""];
+                          return (
+                            <TableRow {...getRowProps({ row })} key={row.id}>
+                              <TableSelectRow {...getSelectionProps({ row })} />
+                              <TableCell style={{ padding: "0.5rem" }}>
+                                {thumbSrc && (
+                                  <img
+                                    src={thumbSrc}
+                                    alt=""
+                                    style={{ width: "64px", height: "48px", objectFit: "cover", display: "block", borderRadius: "2px" }}
+                                    onMouseEnter={() => setHoveredItem(m)}
+                                    onMouseLeave={() => setHoveredItem(null)}
+                                    onMouseMove={(e) => setHoverPos({ x: e.clientX, y: e.clientY })}
+                                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                                  />
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <p style={{ fontWeight: 500 }}>{titleText}</p>
+                                {metaText && (
+                                  <p className="cds--label" style={{ color: "var(--cds-text-secondary)" }}>
+                                    {metaText}
+                                  </p>
+                                )}
+                                {stackedLayout && (
+                                  <div style={{ marginTop: "0.5rem" }}>
+                                    <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", alignItems: "center" }}>
+                                      <Tag type={statusTagType(m.status)} size="sm">{m.status}</Tag>
+                                      {m.processingStatus && m.processingStatus !== "completed" && (
+                                        <Tag type={m.processingStatus === "failed" ? "red" : "outline"} size="sm">{m.processingStatus}</Tag>
+                                      )}
+                                      {!narrowLayout && (
+                                        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", marginLeft: "-1rem" }}>
+                                          <Button kind="ghost" size="sm" renderIcon={m.status === "published" ? ViewOff : View} onClick={() => togglePublish(m.id, m.status)} disabled={togglingPublish.has(m.id)} iconDescription={m.status === "published" ? "Unpublish" : "Publish"}>
+                                            {togglingPublish.has(m.id) ? "…" : m.status === "published" ? "Unpublish" : "Publish"}
+                                          </Button>
+                                          <Button kind="ghost" size="sm" renderIcon={Renew} onClick={() => reprocessMedia(m.id)} disabled={reprocessing.has(m.id)} iconDescription="Reprocess">
+                                            {reprocessing.has(m.id) ? "…" : "Reprocess"}
+                                          </Button>
+                                          <Button kind="ghost" size="sm" renderIcon={Edit} iconDescription="Edit" onClick={() => openEditModal(m)}>Edit</Button>
+                                          <Button kind="danger--ghost" size="sm" renderIcon={TrashCan} onClick={() => setMediaToDelete(m)} iconDescription="Delete">Delete</Button>
+                                        </div>
+                                      )}
+                                    </div>
+                                    {narrowLayout && !veryNarrowLayout && (
+                                      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", marginTop: "0.25rem", marginLeft: "-1rem" }}>
+                                        <Button kind="ghost" size="sm" renderIcon={m.status === "published" ? ViewOff : View} onClick={() => togglePublish(m.id, m.status)} disabled={togglingPublish.has(m.id)} iconDescription={m.status === "published" ? "Unpublish" : "Publish"}>
+                                          {togglingPublish.has(m.id) ? "…" : m.status === "published" ? "Unpublish" : "Publish"}
+                                        </Button>
+                                        <Button kind="ghost" size="sm" renderIcon={Renew} onClick={() => reprocessMedia(m.id)} disabled={reprocessing.has(m.id)} iconDescription="Reprocess">
+                                          {reprocessing.has(m.id) ? "…" : "Reprocess"}
+                                        </Button>
+                                        <Button kind="ghost" size="sm" renderIcon={Edit} iconDescription="Edit" onClick={() => openEditModal(m)}>Edit</Button>
+                                        <Button kind="danger--ghost" size="sm" renderIcon={TrashCan} onClick={() => setMediaToDelete(m)} iconDescription="Delete">Delete</Button>
+                                      </div>
+                                    )}
+                                    {veryNarrowLayout && (
+                                      <>
+                                        <div style={{ display: "flex", gap: "0.25rem", marginTop: "0.25rem", marginLeft: "-1rem" }}>
+                                          <Button kind="ghost" size="sm" hasIconOnly renderIcon={m.status === "published" ? ViewOff : View} onClick={() => togglePublish(m.id, m.status)} disabled={togglingPublish.has(m.id)} iconDescription={m.status === "published" ? "Unpublish" : "Publish"} />
+                                          <Button kind="ghost" size="sm" hasIconOnly renderIcon={Renew} onClick={() => reprocessMedia(m.id)} disabled={reprocessing.has(m.id)} iconDescription="Reprocess" />
+                                          <Button kind="ghost" size="sm" hasIconOnly renderIcon={Edit} iconDescription="Edit" onClick={() => openEditModal(m)} />
+                                          <Button kind="danger--ghost" size="sm" hasIconOnly renderIcon={TrashCan} onClick={() => setMediaToDelete(m)} iconDescription="Delete" />
+                                        </div>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                              </TableCell>
+                              <TableCell style={stackedLayout ? { display: "none" } : undefined}>
+                                <Tag type={statusTagType(m.status)} size="sm">
+                                  {m.status}
                                 </Tag>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              <div style={{ display: "flex", gap: "0.25rem", flexWrap: "wrap" }}>
-                                <Button
-                                  kind="ghost"
-                                  size="sm"
-                                  renderIcon={m.status === "published" ? ViewOff : View}
-                                  onClick={() => togglePublish(m.id, m.status)}
-                                  disabled={togglingPublish.has(m.id)}
-                                  iconDescription={m.status === "published" ? "Unpublish" : "Publish"}
-                                >
-                                  {togglingPublish.has(m.id) ? "…" : m.status === "published" ? "Unpublish" : "Publish"}
-                                </Button>
-                                <Button
-                                  kind="ghost"
-                                  size="sm"
-                                  renderIcon={Renew}
-                                  onClick={() => reprocessMedia(m.id)}
-                                  disabled={reprocessing.has(m.id)}
-                                  iconDescription="Reprocess"
-                                  title="Regenerate processed assets using the current output format"
-                                >
-                                  {reprocessing.has(m.id) ? "…" : "Reprocess"}
-                                </Button>
-                                <Button
-                                  kind="ghost"
-                                  size="sm"
-                                  renderIcon={Edit}
-                                  iconDescription="Edit"
-                                  onClick={() => openEditModal(m)}
-                                >
-                                  Edit
-                                </Button>
-                                <Button
-                                  kind="danger--ghost"
-                                  size="sm"
-                                  renderIcon={TrashCan}
-                                  onClick={() => setMediaToDelete(m)}
-                                  iconDescription="Delete"
-                                >
-                                  Delete
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </>
-              );
-            }}
-          </DataTable>
+                                {m.processingStatus && m.processingStatus !== "completed" && (
+                                  <Tag type={m.processingStatus === "failed" ? "red" : "outline"} size="sm" style={{ marginLeft: "0.25rem" }}>
+                                    {m.processingStatus}
+                                  </Tag>
+                                )}
+                              </TableCell>
+                              <TableCell style={stackedLayout ? { display: "none" } : undefined}>
+                                <div style={{ display: "flex", gap: "0.25rem", flexWrap: "wrap" }}>
+                                  <Button
+                                    kind="ghost"
+                                    size="sm"
+                                    renderIcon={m.status === "published" ? ViewOff : View}
+                                    onClick={() => togglePublish(m.id, m.status)}
+                                    disabled={togglingPublish.has(m.id)}
+                                    iconDescription={m.status === "published" ? "Unpublish" : "Publish"}
+                                    hasIconOnly={iconOnlyActions}
+                                  >
+                                    {togglingPublish.has(m.id) ? "…" : m.status === "published" ? "Unpublish" : "Publish"}
+                                  </Button>
+                                  <Button
+                                    kind="ghost"
+                                    size="sm"
+                                    renderIcon={Renew}
+                                    onClick={() => reprocessMedia(m.id)}
+                                    disabled={reprocessing.has(m.id)}
+                                    iconDescription="Reprocess"
+                                    title="Regenerate processed assets using the current output format"
+                                    hasIconOnly={iconOnlyActions}
+                                  >
+                                    {reprocessing.has(m.id) ? "…" : "Reprocess"}
+                                  </Button>
+                                  <Button
+                                    kind="ghost"
+                                    size="sm"
+                                    renderIcon={Edit}
+                                    iconDescription="Edit"
+                                    onClick={() => openEditModal(m)}
+                                    hasIconOnly={iconOnlyActions}
+                                  >
+                                    Edit
+                                  </Button>
+                                  <Button
+                                    kind="danger--ghost"
+                                    size="sm"
+                                    renderIcon={TrashCan}
+                                    onClick={() => setMediaToDelete(m)}
+                                    iconDescription="Delete"
+                                    hasIconOnly={iconOnlyActions}
+                                  >
+                                    Delete
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </>
+                );
+              }}
+            </DataTable>
           </div>
         )}
 
@@ -628,8 +699,8 @@ export function LibraryPage() {
           const previewSrc = derivedPreview
             ? `${pbUrl}${derivedPreview}`
             : hoveredItem.type === "image" && !isHeic
-            ? pb.files.getURL(hoveredItem, hoveredItem.file, { thumb: "840x0" })
-            : null;
+              ? pb.files.getURL(hoveredItem, hoveredItem.file, { thumb: "840x0" })
+              : null;
           if (!previewSrc) return null;
           const PREVIEW_W = 420;
           const OFFSET_X = 18;
