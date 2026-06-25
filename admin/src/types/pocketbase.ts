@@ -88,6 +88,8 @@ export interface DeviceConfig {
   blur?: boolean;
   shuffle?: boolean;
   showClock?: boolean;
+  showInfo?: boolean;
+  showLocationInfo?: boolean;
 }
 
 /**

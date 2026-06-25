@@ -104,6 +104,14 @@ struct AppConfig {
     /// Show a subtle clock in the bottom-right corner (default: true).
     #[serde(default = "default_show_clock")]
     pub show_clock: bool,
+
+    /// Start with the full media info overlay visible (default: false).
+    #[serde(default)]
+    pub show_info: bool,
+
+    /// Start with the location & date overlay visible (default: false).
+    #[serde(default)]
+    pub show_location_info: bool,
 }
 
 fn default_pb_url() -> String {
@@ -557,6 +565,12 @@ async fn main() -> Result<()> {
                 if let Some(v) = cfg.get("showClock").and_then(|v| v.as_bool()) {
                     config.show_clock = v;
                 }
+                if let Some(v) = cfg.get("showInfo").and_then(|v| v.as_bool()) {
+                    config.show_info = v;
+                }
+                if let Some(v) = cfg.get("showLocationInfo").and_then(|v| v.as_bool()) {
+                    config.show_location_info = v;
+                }
                 tracing::info!("Device authenticated — applied config from PocketBase");
                 Some(resp.token)
             }
@@ -824,8 +838,8 @@ async fn run_render_loop(
 
     // Overlay state
     let mut overlay_visible = false;
-    let mut info_overlay_visible = false;
-    let mut location_overlay_visible = false;
+    let mut info_overlay_visible = state.config.show_info;
+    let mut location_overlay_visible = state.config.show_location_info;
     let mut is_paused = false;
     let mut pause_until: Option<Instant> = None;
     let mut is_realtime_connected = false;

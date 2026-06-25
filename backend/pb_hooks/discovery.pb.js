@@ -134,6 +134,8 @@ routerAdd("POST", "/api/spomienka/device-auth", (e) => {
                 blur: cfg.blur ?? true,
                 shuffle: cfg.shuffle ?? false,
                 showClock: cfg.showClock ?? true,
+                showInfo: cfg.showInfo ?? false,
+                showLocationInfo: cfg.showLocationInfo ?? false,
             },
         });
     } catch (err) {

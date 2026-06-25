@@ -115,6 +115,8 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
   const [blur, setBlur] = useState(cfg.blur ?? true);
   const [shuffle, setShuffle] = useState(cfg.shuffle ?? false);
   const [showClock, setShowClock] = useState(cfg.showClock ?? true);
+  const [showInfo, setShowInfo] = useState(cfg.showInfo ?? false);
+  const [showLocationInfo, setShowLocationInfo] = useState(cfg.showLocationInfo ?? false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(device.name);
@@ -127,11 +129,13 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
     (cfg.transitionDuration ?? 1000) !== transitionDuration ||
     (cfg.blur ?? true) !== blur ||
     (cfg.shuffle ?? false) !== shuffle ||
-    (cfg.showClock ?? true) !== showClock;
+    (cfg.showClock ?? true) !== showClock ||
+    (cfg.showInfo ?? false) !== showInfo ||
+    (cfg.showLocationInfo ?? false) !== showLocationInfo;
 
   const saveConfig = async () => {
     try {
-      const newConfig = { interval: slideInterval, transition, transitionDuration, blur, shuffle, showClock };
+      const newConfig = { interval: slideInterval, transition, transitionDuration, blur, shuffle, showClock, showInfo, showLocationInfo };
       await pb.collection("devices").update(device.id, { config: newConfig });
       try {
         await pb.collection("device_inbox").create({ device_id: device.id, type: "config_reload" });
@@ -292,6 +296,20 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
               onToggle={(val) => { setShowClock(val); setSaveSuccess(false); }}
               size="sm"
             />
+            <Toggle
+              id={`show-info-${device.id}`}
+              labelText="Show All Details"
+              toggled={showInfo}
+              onToggle={(val) => { setShowInfo(val); if (val) setShowLocationInfo(false); setSaveSuccess(false); }}
+              size="sm"
+            />
+            <Toggle
+              id={`show-location-info-${device.id}`}
+              labelText="Show Location & Date"
+              toggled={showLocationInfo}
+              onToggle={(val) => { setShowLocationInfo(val); if (val) setShowInfo(false); setSaveSuccess(false); }}
+              size="sm"
+            />
           </Stack>
           {saveSuccess && (
             <InlineNotification
@@ -412,7 +430,7 @@ export function SettingsPage() {
       const device = await pb.collection("devices").create<Device>({
         name: newDeviceName.trim(),
         apiKey,
-        config: { interval: 8000, transition: "fade", transitionDuration: 1000, blur: true, shuffle: false, showClock: true },
+        config: { interval: 8000, transition: "fade", transitionDuration: 1000, blur: true, shuffle: false, showClock: true, showInfo: false, showLocationInfo: false },
       });
       setDevices((prev) => [...prev, device]);
       setNewDeviceName("");
