@@ -55,6 +55,8 @@ export interface MediaRecord extends BaseRecord {
   type: MediaType;
   status: MediaStatus;
   title?: string;
+  description?: string;
+  location?: string;
   owner: string; // relation to users
   approvedBy?: string; // relation to users
   takenAt?: string;
@@ -96,4 +98,13 @@ export interface DeviceRecord extends BaseRecord {
   apiKey: string;
   lastSeen?: string;
   config?: DeviceConfig;
+}
+
+/**
+ * Device inbox record — ephemeral command signals sent to viewer devices.
+ */
+export interface DeviceInboxRecord extends BaseRecord {
+  device_id: string;
+  type?: string;
+  payload?: Record<string, unknown>;
 }

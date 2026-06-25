@@ -14,7 +14,7 @@ use assets::{AssetManager, AssetType, Media, Preloader};
 use cache::Cache;
 use config::{Config, Environment, File};
 use realtime::{spawn_realtime, RealtimeEvent};
-use renderer::{MediaTextures, OverlayInfo, Renderer, Transition, UserAction};
+use renderer::{MediaInfoOverlay, MediaTextures, OverlayInfo, Renderer, Transition, UserAction};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use std::env;
@@ -239,6 +239,8 @@ struct AppState {
     cache: Arc<RwLock<Cache>>,
     asset_manager: Arc<AssetManager>,
     is_offline: RwLock<bool>,
+    /// Active tag filter: (tags, mode) where mode is "whitelist" or "blacklist".
+    tag_filter: RwLock<Option<(Vec<String>, String)>>,
 }
 
 impl AppState {
@@ -262,6 +264,7 @@ impl AppState {
             cache,
             asset_manager,
             is_offline: RwLock::new(false),
+            tag_filter: RwLock::new(None),
         })
     }
 
@@ -282,8 +285,8 @@ impl AppState {
         let creds = self.config.to_auth_creds();
         let mut token = self.auth_token.write().await;
 
-        // Build filter with device scope if configured
-        let filter = self.build_filter();
+        // Build filter with device scope and optional tag filter
+        let filter = self.build_filter().await;
         let url = format!(
             "{}/api/collections/media/records?filter={}&perPage=500&sort=-created",
             self.config.pb_url,
@@ -315,7 +318,7 @@ impl AppState {
     }
 
     /// Build the filter string for media queries.
-    fn build_filter(&self) -> String {
+    async fn build_filter(&self) -> String {
         let mut filter = "status='published'".to_string();
 
         if let Some(ref device_id) = self.config.device_id {
@@ -326,6 +329,21 @@ impl AppState {
                 device_id
             );
             filter = format!("({}) && {}", filter, device_filter);
+        }
+
+        if let Some((tags, mode)) = &*self.tag_filter.read().await {
+            if !tags.is_empty() {
+                let tag_conditions: Vec<String> = tags
+                    .iter()
+                    .map(|t| format!("tags~'\"{}\"'", t.replace('\'', "\\'")))
+                    .collect();
+                let tag_filter = if mode == "whitelist" {
+                    format!("({})", tag_conditions.join(" || "))
+                } else {
+                    format!("!({})", tag_conditions.join(" || "))
+                };
+                filter = format!("({}) && {}", filter, tag_filter);
+            }
         }
 
         filter
@@ -806,7 +824,10 @@ async fn run_render_loop(
 
     // Overlay state
     let mut overlay_visible = false;
+    let mut info_overlay_visible = false;
+    let mut location_overlay_visible = false;
     let mut is_paused = false;
+    let mut pause_until: Option<Instant> = None;
     let mut is_realtime_connected = false;
 
     // Load first item
@@ -893,15 +914,141 @@ async fn run_render_loop(
             UserAction::None => {}
         }
 
+        // Auto-resume after timed pause expires
+        if let Some(until) = pause_until {
+            if Instant::now() >= until {
+                is_paused = false;
+                pause_until = None;
+                if is_video_playing {
+                    video_manager.resume();
+                }
+                tracing::debug!("Timed pause expired, resuming");
+            }
+        }
+
         // Process realtime events
         if let Some(ref mut rx) = realtime_rx {
             while let Ok(event) = rx.try_recv() {
-                match &event {
+                match event {
                     RealtimeEvent::Connected => is_realtime_connected = true,
                     RealtimeEvent::Disconnected => is_realtime_connected = false,
-                    _ => {}
+                    RealtimeEvent::RemoteNext => {
+                        tracing::debug!("Remote: next");
+                        advance_to_next(
+                            &state,
+                            &mut renderer,
+                            &texture_creator,
+                            &mut current_textures,
+                            &mut next_textures,
+                            &mut video_manager,
+                            &mut is_video_playing,
+                        )
+                        .await?;
+                        last_advance = Instant::now();
+                        is_paused = false;
+                        pause_until = None;
+                    }
+                    RealtimeEvent::RemotePrev => {
+                        tracing::debug!("Remote: prev");
+                        go_to_previous(
+                            &state,
+                            &mut renderer,
+                            &texture_creator,
+                            &mut current_textures,
+                            &mut next_textures,
+                            &mut video_manager,
+                            &mut is_video_playing,
+                        )
+                        .await?;
+                        last_advance = Instant::now();
+                        is_paused = false;
+                        pause_until = None;
+                    }
+                    RealtimeEvent::RemoteRandom => {
+                        tracing::debug!("Remote: random");
+                        {
+                            use rand::Rng;
+                            let playlist = state.playlist.read().await;
+                            if !playlist.is_empty() {
+                                let idx = rand::thread_rng().gen_range(0..playlist.len());
+                                *state.current_index.write().await = idx;
+                            }
+                        }
+                        load_current_item(
+                            &state,
+                            &mut renderer,
+                            &texture_creator,
+                            &mut current_textures,
+                            &mut video_manager,
+                            &mut is_video_playing,
+                        )
+                        .await?;
+                        last_advance = Instant::now();
+                        is_paused = false;
+                        pause_until = None;
+                    }
+                    RealtimeEvent::RemotePause { secs } => {
+                        tracing::debug!("Remote: pause {}s", secs);
+                        is_paused = true;
+                        pause_until = Some(Instant::now() + Duration::from_secs(secs));
+                        if is_video_playing {
+                            video_manager.pause();
+                        }
+                    }
+                    RealtimeEvent::RemoteResume => {
+                        tracing::debug!("Remote: resume");
+                        is_paused = false;
+                        pause_until = None;
+                        if is_video_playing {
+                            video_manager.resume();
+                        }
+                    }
+                    RealtimeEvent::RemoteToggleInfo => {
+                        info_overlay_visible = !info_overlay_visible;
+                        if info_overlay_visible {
+                            location_overlay_visible = false;
+                        }
+                        tracing::debug!("Remote: info overlay {}", info_overlay_visible);
+                    }
+                    RealtimeEvent::RemoteToggleLocationInfo => {
+                        location_overlay_visible = !location_overlay_visible;
+                        if location_overlay_visible {
+                            info_overlay_visible = false;
+                        }
+                        tracing::debug!("Remote: location overlay {}", location_overlay_visible);
+                    }
+                    RealtimeEvent::RemoteTagFilter { tags, mode } => {
+                        tracing::info!("Remote: tag filter {:?} ({})", tags, mode);
+                        *state.tag_filter.write().await = Some((tags, mode));
+                        match state.fetch_playlist().await {
+                            Ok(playlist) => {
+                                let cache = state.cache.read().await;
+                                let _ = cache.save_playlist(&playlist);
+                                drop(cache);
+                                *state.playlist.write().await = playlist;
+                                tracing::info!("Playlist refreshed with tag filter");
+                            }
+                            Err(e) => tracing::error!("Failed to refresh playlist: {}", e),
+                        }
+                    }
+                    RealtimeEvent::RemoteTagFilterClear => {
+                        tracing::info!("Remote: tag filter cleared");
+                        *state.tag_filter.write().await = None;
+                        match state.fetch_playlist().await {
+                            Ok(playlist) => {
+                                let cache = state.cache.read().await;
+                                let _ = cache.save_playlist(&playlist);
+                                drop(cache);
+                                *state.playlist.write().await = playlist;
+                                tracing::info!("Playlist refreshed, tag filter removed");
+                            }
+                            Err(e) => tracing::error!("Failed to refresh playlist: {}", e),
+                        }
+                    }
+                    other => {
+                        handle_realtime_event(&state, other).await;
+                    }
                 }
-                handle_realtime_event(&state, event).await;
             }
         }
 
@@ -968,20 +1115,21 @@ async fn run_render_loop(
             last_advance = Instant::now();
         }
 
-        // Render
+        // Render image + clock (no present yet)
         renderer.render(
             &texture_creator,
             &mut current_textures,
             next_textures.as_mut(),
         )?;
 
-        // Render overlay if visible
+        // Render debug overlay on top
         if overlay_visible {
             let overlay_info = build_overlay_info(
                 &state,
                 &video_manager,
                 is_video_playing,
                 is_paused,
+                pause_until,
                 is_realtime_connected,
             )
             .await;
@@ -989,6 +1137,22 @@ async fn run_render_loop(
                 tracing::warn!("Failed to render overlay: {}", e);
             }
         }
+
+        // Render media info overlay on top
+        if info_overlay_visible {
+            let media_info = build_media_info_overlay(&state).await;
+            if let Err(e) = renderer.render_info_overlay(&media_info) {
+                tracing::warn!("Failed to render info overlay: {}", e);
+            }
+        } else if location_overlay_visible {
+            let loc_info = build_location_info_overlay(&state).await;
+            if let Err(e) = renderer.render_info_overlay(&loc_info) {
+                tracing::warn!("Failed to render location overlay: {}", e);
+            }
+        }
+
+        // Present everything (image + clock + any overlays) in one call
+        renderer.present();
 
         // Frame delay
         renderer.frame_delay();
@@ -1006,6 +1170,7 @@ async fn build_overlay_info(
     video_manager: &VideoManager,
     is_video_playing: bool,
     is_paused: bool,
+    pause_until: Option<Instant>,
     is_realtime_connected: bool,
 ) -> OverlayInfo {
     let playlist = state.playlist.read().await;
@@ -1025,6 +1190,15 @@ async fn build_overlay_info(
     let cache = state.cache.read().await;
     let cache_stats = cache.stats();
 
+    let pause_secs_remaining = pause_until.and_then(|until| {
+        let now = Instant::now();
+        if until > now {
+            Some(until.duration_since(now).as_secs())
+        } else {
+            None
+        }
+    });
+
     OverlayInfo {
         is_connected: is_realtime_connected,
         is_offline,
@@ -1036,6 +1210,7 @@ async fn build_overlay_info(
         cache_items: cache_stats.item_count,
         is_video,
         is_paused,
+        pause_secs_remaining,
         video_duration: if is_video_playing {
             video_manager.duration()
         } else {
@@ -1046,6 +1221,54 @@ async fn build_overlay_info(
         } else {
             None
         },
+    }
+}
+
+/// Build media info overlay from the current playlist item.
+async fn build_media_info_overlay(state: &AppState) -> MediaInfoOverlay {
+    let playlist = state.playlist.read().await;
+    let index = *state.current_index.read().await;
+    let Some(media) = playlist.get(index) else {
+        return MediaInfoOverlay::default();
+    };
+
+    let tags = media
+        .tags
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    MediaInfoOverlay {
+        title: media.title.clone(),
+        description: media.description.clone(),
+        location: media.location.clone(),
+        tags,
+        taken_at: media.taken_at.as_deref().map(format_taken_at),
+        dimensions: media.width.zip(media.height),
+        camera_make: media.camera_make.clone(),
+        camera_model: media.camera_model.clone(),
+        focal_length: media.focal_length.clone(),
+        f_number: media.f_number.clone(),
+        exposure_time: media.exposure_time.clone(),
+        iso: media.iso.clone(),
+    }
+}
+
+async fn build_location_info_overlay(state: &AppState) -> MediaInfoOverlay {
+    let playlist = state.playlist.read().await;
+    let index = *state.current_index.read().await;
+    let Some(media) = playlist.get(index) else {
+        return MediaInfoOverlay::default();
+    };
+    MediaInfoOverlay {
+        location: media.location.clone(),
+        taken_at: media.taken_at.as_deref().map(format_taken_at),
+        ..Default::default()
     }
 }
 
@@ -1305,6 +1528,16 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
             }
             std::process::exit(0);
         }
+        // Remote control events are handled inline in the render loop, not here.
+        RealtimeEvent::RemoteNext
+        | RealtimeEvent::RemotePrev
+        | RealtimeEvent::RemoteRandom
+        | RealtimeEvent::RemotePause { .. }
+        | RealtimeEvent::RemoteResume
+        | RealtimeEvent::RemoteToggleInfo
+        | RealtimeEvent::RemoteToggleLocationInfo
+        | RealtimeEvent::RemoteTagFilter { .. }
+        | RealtimeEvent::RemoteTagFilterClear => {}
     }
 }
 
@@ -1329,4 +1562,64 @@ fn start_video_if_applicable(
             }
         }
     }
+}
+
+/// Format an ISO date-time string ("2026-04-24T13:45:00") as "1:45 PM, 04 April 2026".
+/// If there is no time component, returns "04 April 2026".
+fn format_taken_at(s: &str) -> String {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+
+    // Handle both "2026-04-24T13:45:00" and "2026-04-24 13:45:29.000Z"
+    let (date_part, time_part) = if let Some(idx) = s.find(['T', ' ']) {
+        let time_raw = &s[idx + 1..];
+        // Strip trailing milliseconds and timezone suffix (e.g. ".000Z")
+        let time_clean = time_raw
+            .find('.')
+            .map(|i| &time_raw[..i])
+            .unwrap_or(time_raw);
+        (&s[..idx], Some(time_clean))
+    } else {
+        (s, None)
+    };
+
+    let parts: Vec<&str> = date_part.split('-').collect();
+    if parts.len() < 3 {
+        return s.to_string();
+    }
+    let year = parts[0];
+    let month: usize = parts[1].parse().unwrap_or(0);
+    let day: u32 = parts[2].parse().unwrap_or(0);
+    if month == 0 || month > 12 || day == 0 {
+        return s.to_string();
+    }
+    let date_str = format!("{:02} {} {}", day, MONTHS[month - 1], year);
+
+    if let Some(t) = time_part {
+        let tparts: Vec<&str> = t.split(':').collect();
+        if let (Some(hh), Some(mm)) = (tparts.first(), tparts.get(1)) {
+            if let (Ok(h), Ok(m)) = (hh.parse::<u32>(), mm.parse::<u32>()) {
+                let period = if h < 12 { "AM" } else { "PM" };
+                let h12 = match h % 12 {
+                    0 => 12,
+                    v => v,
+                };
+                return format!("{}:{:02} {}, {}", h12, m, period, date_str);
+            }
+        }
+    }
+
+    date_str
 }

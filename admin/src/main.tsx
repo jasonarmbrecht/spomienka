@@ -9,6 +9,7 @@ import { ApprovalsPage } from "./pages/ApprovalsPage";
 import { LibraryPage } from "./pages/LibraryPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsersPage } from "./pages/UsersPage";
+import { ViewerControlPage } from "./pages/ViewerControlPage";
 import { AuthProvider, RequireAuth, RequireAdmin } from "./pb/auth";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
@@ -22,7 +23,8 @@ const router = createBrowserRouter([
       { path: "/approvals", element: <RequireAdmin redirect="/login"><ApprovalsPage /></RequireAdmin> },
       { path: "/library", element: <RequireAuth redirect="/login"><LibraryPage /></RequireAuth> },
       { path: "/settings", element: <RequireAdmin redirect="/login"><SettingsPage /></RequireAdmin> },
-      { path: "/users", element: <RequireAdmin redirect="/login"><UsersPage /></RequireAdmin> }
+      { path: "/users", element: <RequireAdmin redirect="/login"><UsersPage /></RequireAdmin> },
+      { path: "/viewer-control", element: <RequireAdmin redirect="/login"><ViewerControlPage /></RequireAdmin> }
     ]
   },
   { path: "/login", element: <LoginPage /> }

@@ -30,6 +30,7 @@ import {
   DatePicker,
   DatePickerInput,
   TextInput,
+  TextArea,
 } from "@carbon/react";
 import { TrashCan, View, ViewOff, Renew, Edit } from "@carbon/icons-react";
 
@@ -43,6 +44,8 @@ type Media = {
   processingStatus?: string;
   type: "image" | "video";
   title?: string;
+  description?: string;
+  location?: string;
   tags?: string[];
   takenAt?: string;
   created: string;
@@ -105,6 +108,11 @@ export function LibraryPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
   const [pendingBulkIds, setPendingBulkIds] = useState<string[]>([]);
+  const [mediaToEdit, setMediaToEdit] = useState<Media | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editLocation, setEditLocation] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | "image" | "video">("all");
@@ -142,6 +150,37 @@ export function LibraryPage() {
       console.error("Failed to delete media:", err);
     } finally {
       setMediaToDelete(null);
+    }
+  };
+
+  const openEditModal = (m: Media) => {
+    setMediaToEdit(m);
+    setEditTitle(m.title ?? "");
+    setEditDescription(m.description ?? "");
+    setEditLocation(m.location ?? "");
+  };
+
+  const saveEdit = async () => {
+    if (!mediaToEdit) return;
+    setSaving(true);
+    try {
+      const updated = await pb.collection("media").update(mediaToEdit.id, {
+        title: editTitle,
+        description: editDescription,
+        location: editLocation,
+      });
+      setItems((prev) =>
+        prev.map((m) =>
+          m.id === mediaToEdit.id
+            ? { ...m, title: updated.title, description: updated.description, location: updated.location }
+            : m
+        )
+      );
+      setMediaToEdit(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -487,6 +526,7 @@ export function LibraryPage() {
                                   size="sm"
                                   renderIcon={Edit}
                                   iconDescription="Edit"
+                                  onClick={() => openEditModal(m)}
                                 >
                                   Edit
                                 </Button>
@@ -547,6 +587,38 @@ export function LibraryPage() {
             <p>
               Delete <strong>{mediaToDelete.title || mediaToDelete.file}</strong>? This cannot be undone.
             </p>
+          </Modal>
+        )}
+
+        {mediaToEdit && (
+          <Modal
+            title="Edit Media"
+            onConfirm={saveEdit}
+            onCancel={() => setMediaToEdit(null)}
+            confirmLabel={saving ? "Saving…" : "Save"}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: "1rem", paddingTop: "0.5rem" }}>
+              <TextInput
+                id="edit-title"
+                labelText="Title"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+              />
+              <TextArea
+                id="edit-description"
+                labelText="Description"
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                rows={3}
+              />
+              <TextInput
+                id="edit-location"
+                labelText="Location"
+                value={editLocation}
+                onChange={(e) => setEditLocation(e.target.value)}
+                placeholder="e.g. Paris, France"
+              />
+            </div>
           </Modal>
         )}
 

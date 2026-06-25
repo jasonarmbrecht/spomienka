@@ -23,6 +23,15 @@ pub enum RealtimeEvent {
     MediaDeleted(String),
     RefreshNeeded,
     ConfigChanged,
+    RemoteNext,
+    RemotePrev,
+    RemoteRandom,
+    RemotePause { secs: u64 },
+    RemoteResume,
+    RemoteToggleInfo,
+    RemoteToggleLocationInfo,
+    RemoteTagFilter { tags: Vec<String>, mode: String },
+    RemoteTagFilterClear,
 }
 
 #[derive(Debug, Default)]
@@ -186,14 +195,56 @@ impl RealtimeManager {
         Ok(())
     }
 
+    fn parse_inbox_event(&self, data: &str) -> RealtimeEvent {
+        let msg: serde_json::Value = serde_json::from_str(data).unwrap_or_default();
+        let record = msg.get("record").cloned().unwrap_or_default();
+        let cmd_type = record.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let payload = record.get("payload").cloned().unwrap_or_default();
+
+        match cmd_type {
+            "next" => RealtimeEvent::RemoteNext,
+            "prev" => RealtimeEvent::RemotePrev,
+            "random" => RealtimeEvent::RemoteRandom,
+            "pause" => RealtimeEvent::RemotePause {
+                secs: payload
+                    .get("secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(300)
+                    .min(300),
+            },
+            "resume" => RealtimeEvent::RemoteResume,
+            "toggle-info" => RealtimeEvent::RemoteToggleInfo,
+            "toggle-location-info" => RealtimeEvent::RemoteToggleLocationInfo,
+            "tag-filter" => {
+                let tags = payload
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mode = payload
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("whitelist")
+                    .to_string();
+                RealtimeEvent::RemoteTagFilter { tags, mode }
+            }
+            "tag-filter-clear" => RealtimeEvent::RemoteTagFilterClear,
+            _ => RealtimeEvent::ConfigChanged,
+        }
+    }
+
     async fn handle_sse_event(&self, ev: &SseEvent) {
         if ev.data.is_empty() {
             return;
         }
 
-        // device_inbox create → config changed, restart to apply.
         if ev.event_type.starts_with("device_inbox") {
-            let _ = self.event_tx.send(RealtimeEvent::ConfigChanged).await;
+            let event = self.parse_inbox_event(&ev.data);
+            let _ = self.event_tx.send(event).await;
             return;
         }
 
