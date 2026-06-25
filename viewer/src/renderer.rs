@@ -107,10 +107,29 @@ pub struct OverlayInfo {
     pub is_video: bool,
     /// Whether video is paused.
     pub is_paused: bool,
+    /// Remaining seconds on a timed pause (None = not paused or manual pause).
+    pub pause_secs_remaining: Option<u64>,
     /// Video duration in seconds.
     pub video_duration: Option<f32>,
     /// Video position in seconds.
     pub video_position: Option<f32>,
+}
+
+/// Information shown in the media info overlay (title, description, tags, etc.).
+#[derive(Debug, Clone, Default)]
+pub struct MediaInfoOverlay {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    pub tags: Vec<String>,
+    pub taken_at: Option<String>,
+    pub dimensions: Option<(u32, u32)>,
+    pub camera_make: Option<String>,
+    pub camera_model: Option<String>,
+    pub focal_length: Option<String>,
+    pub f_number: Option<String>,
+    pub exposure_time: Option<String>,
+    pub iso: Option<String>,
 }
 
 /// The main renderer struct.
@@ -126,6 +145,7 @@ pub struct Renderer<'ttf> {
     pub blur_background: bool,
     show_clock: bool,
     font_overlay: Option<sdl2::ttf::Font<'ttf, 'static>>,
+    font_info: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_clock: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_discovery_small: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_discovery_label: Option<sdl2::ttf::Font<'ttf, 'static>>,
@@ -236,6 +256,10 @@ impl<'ttf> Renderer<'ttf> {
         let font_clock = sdl2::rwops::RWops::from_bytes(CLOCK_FONT_BYTES)
             .ok()
             .and_then(|rwops| ttf_context.load_font_from_rwops(rwops, 76).ok());
+        let font_info = sdl2::rwops::RWops::from_bytes(CLOCK_FONT_BYTES)
+            .ok()
+            .and_then(|rwops| ttf_context.load_font_from_rwops(rwops, 22).ok());
+
         let (font_overlay, font_discovery_small, font_discovery_label, font_discovery_pin) =
             if let Some(path) = font_path {
                 (
@@ -260,6 +284,7 @@ impl<'ttf> Renderer<'ttf> {
             blur_background,
             show_clock,
             font_overlay,
+            font_info,
             font_clock,
             font_discovery_small,
             font_discovery_label,
@@ -553,8 +578,13 @@ impl<'ttf> Renderer<'ttf> {
             self.render_clock(texture_creator)?;
         }
 
-        self.canvas.present();
         Ok(())
+    }
+
+    /// Present the rendered frame to the screen.
+    /// Must be called after all overlays have been drawn.
+    pub fn present(&mut self) {
+        self.canvas.present();
     }
 
     fn render_clock(&mut self, texture_creator: &TextureCreator<WindowContext>) -> Result<()> {
@@ -728,7 +758,15 @@ impl<'ttf> Renderer<'ttf> {
             let texture_creator = self.canvas.texture_creator();
 
             // Media info text
-            let status_text = if info.is_paused { " [PAUSED]" } else { "" };
+            let status_text = if info.is_paused {
+                if let Some(secs) = info.pause_secs_remaining {
+                    format!(" [PAUSED {}:{:02}]", secs / 60, secs % 60)
+                } else {
+                    " [PAUSED]".to_string()
+                }
+            } else {
+                String::new()
+            };
             let media_text = format!(
                 "{}/{} - {}{}",
                 info.current_index,
@@ -809,6 +847,104 @@ impl<'ttf> Renderer<'ttf> {
                         .map_err(|e| anyhow::anyhow!("Failed to draw progress: {}", e))?;
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    /// Render a media info overlay at the bottom-left of the screen.
+    /// Uses shadow text styled like the clock — no opaque background panel.
+    pub fn render_info_overlay(&mut self, info: &MediaInfoOverlay) -> Result<()> {
+        let Some(font) = &self.font_info else {
+            return Ok(());
+        };
+
+        let line_h = 30i32;
+        let margin = (self.screen_width.min(self.screen_height) as f32 * 0.035).round() as i32;
+        let mut lines: Vec<String> = Vec::new();
+
+        if let Some(t) = &info.title {
+            if !t.is_empty() {
+                lines.push(t.clone());
+            }
+        }
+        if let Some(d) = &info.description {
+            if !d.is_empty() {
+                lines.push(d.clone());
+            }
+        }
+        if let Some(l) = &info.location {
+            if !l.is_empty() {
+                lines.push(l.clone());
+            }
+        }
+        if !info.tags.is_empty() {
+            lines.push(info.tags.join("  ·  "));
+        }
+        if let Some(ta) = &info.taken_at {
+            if !ta.is_empty() {
+                lines.push(ta.clone());
+            }
+        }
+
+        // Camera make + model line
+        let camera = match (&info.camera_make, &info.camera_model) {
+            (Some(make), Some(model)) if !make.is_empty() && !model.is_empty() => {
+                if model.to_lowercase().starts_with(&make.to_lowercase()) {
+                    Some(model.clone())
+                } else {
+                    Some(format!("{} {}", make, model))
+                }
+            }
+            (Some(make), None) if !make.is_empty() => Some(make.clone()),
+            (None, Some(model)) if !model.is_empty() => Some(model.clone()),
+            _ => None,
+        };
+        if let Some(c) = camera {
+            lines.push(c);
+        }
+
+        // Technical line: focal length · f-number · exposure · ISO
+        let mut tech_parts: Vec<String> = Vec::new();
+        if let Some(fl) = &info.focal_length {
+            tech_parts.push(fl.clone());
+        }
+        if let Some(fn_) = &info.f_number {
+            tech_parts.push(fn_.clone());
+        }
+        if let Some(et) = &info.exposure_time {
+            tech_parts.push(et.clone());
+        }
+        if let Some(iso) = &info.iso {
+            tech_parts.push(format!("ISO {}", iso));
+        }
+        if !tech_parts.is_empty() {
+            lines.push(tech_parts.join("  ·  "));
+        }
+
+        if let Some((w, h)) = info.dimensions {
+            lines.push(format!("{}×{}", w, h));
+        }
+
+        if lines.is_empty() {
+            return Ok(());
+        }
+
+        let texture_creator = self.canvas.texture_creator();
+        let total_h = lines.len() as i32 * line_h;
+        let start_y = self.screen_height as i32 - total_h - margin;
+
+        for (i, line) in lines.iter().enumerate() {
+            let y = start_y + i as i32 * line_h;
+            Self::render_text(
+                &mut self.canvas,
+                font,
+                &texture_creator,
+                line,
+                margin,
+                y,
+                Color::RGBA(255, 255, 255, 210),
+            )?;
         }
 
         Ok(())

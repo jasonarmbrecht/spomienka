@@ -29,6 +29,19 @@ pub struct Media {
     pub duration: Option<f32>,
     pub tags: Option<serde_json::Value>,
     pub device_scopes: Option<serde_json::Value>,
+    pub title: Option<String>,
+    pub taken_at: Option<String>,
+    pub description: Option<String>,
+    pub location: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub orientation: Option<serde_json::Value>,
+    pub camera_make: Option<String>,
+    pub camera_model: Option<String>,
+    pub focal_length: Option<String>,
+    pub f_number: Option<String>,
+    pub exposure_time: Option<String>,
+    pub iso: Option<String>,
 }
 
 impl Media {

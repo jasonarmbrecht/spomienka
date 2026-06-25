@@ -115,11 +115,21 @@ function buildFileUrl(collectionId, recordId, fileName) {
 }
 
 function extractExif(filePath) {
-    const result = { width: null, height: null, orientation: null, takenAt: null, duration: null };
+    const result = {
+        width: null, height: null, orientation: null, takenAt: null, duration: null,
+        gpsLat: null, gpsLng: null,
+        cameraMake: null, cameraModel: null,
+        focalLength: null, fNumber: null, exposureTime: null, iso: null,
+    };
     try {
         const output = execCommand(EXIFTOOL, [
-            "-json", "-ImageWidth", "-ImageHeight", "-Orientation",
-            "-DateTimeOriginal", "-Duration", filePath,
+            "-json", "-n",
+            "-ImageWidth", "-ImageHeight", "-Orientation",
+            "-DateTimeOriginal", "-Duration",
+            "-GPSLatitude", "-GPSLongitude",
+            "-Make", "-Model",
+            "-FocalLength", "-FNumber", "-ExposureTime", "-ISO",
+            filePath,
         ]);
         if (output) {
             const data = JSON.parse(output);
@@ -129,9 +139,11 @@ function extractExif(filePath) {
                 result.height = exif.ImageHeight || null;
                 result.orientation = exif.Orientation || null;
                 if (exif.DateTimeOriginal) {
-                    result.takenAt = exif.DateTimeOriginal.replace(/:/g, "-").replace(" ", "T");
+                    result.takenAt = String(exif.DateTimeOriginal)
+                        .replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3")
+                        .replace(" ", "T");
                 }
-                if (exif.Duration) {
+                if (exif.Duration != null) {
                     const dur = exif.Duration;
                     if (typeof dur === "string" && dur.includes(":")) {
                         const parts = dur.split(":");
@@ -144,12 +156,57 @@ function extractExif(filePath) {
                         if (Number.isFinite(parsedDuration)) result.duration = parsedDuration;
                     }
                 }
+                if (typeof exif.GPSLatitude === "number") result.gpsLat = exif.GPSLatitude;
+                if (typeof exif.GPSLongitude === "number") result.gpsLng = exif.GPSLongitude;
+                if (exif.Make) result.cameraMake = String(exif.Make).trim();
+                if (exif.Model) result.cameraModel = String(exif.Model).trim();
+                if (typeof exif.FocalLength === "number") {
+                    result.focalLength = exif.FocalLength.toFixed(1) + " mm";
+                }
+                if (typeof exif.FNumber === "number") {
+                    result.fNumber = "f/" + exif.FNumber.toFixed(1);
+                }
+                if (typeof exif.ExposureTime === "number" && exif.ExposureTime > 0) {
+                    if (exif.ExposureTime < 1) {
+                        result.exposureTime = "1/" + Math.round(1 / exif.ExposureTime) + "s";
+                    } else {
+                        result.exposureTime = exif.ExposureTime.toFixed(1) + "s";
+                    }
+                }
+                if (exif.ISO != null) result.iso = String(Math.round(exif.ISO));
             }
         }
     } catch (err) {
         console.error("EXIF extraction failed:", err);
     }
     return result;
+}
+
+function geocodeGps(lat, lng) {
+    try {
+        const url = "https://nominatim.openstreetmap.org/reverse?format=json&lat=" + lat + "&lon=" + lng + "&zoom=10&addressdetails=1";
+        const res = $http.send({
+            url: url,
+            method: "GET",
+            headers: {
+                "User-Agent": "Spomienka/1.0 (photo-frame-app)",
+                "Accept": "application/json",
+            },
+        });
+        if (res.statusCode === 200) {
+            const data = JSON.parse(res.raw);
+            const addr = (data && data.address) || {};
+            const parts = [
+                addr.suburb || addr.neighbourhood || addr.city_district,
+                addr.city || addr.town || addr.village || addr.municipality,
+                addr.country,
+            ].filter(function(p) { return p && p.length > 0; });
+            if (parts.length > 0) return parts.join(", ");
+        }
+    } catch (err) {
+        console.error("GPS geocoding failed:", err);
+    }
+    return null;
 }
 
 function generateChecksum(filePath) {
@@ -287,6 +344,21 @@ function processMediaRecord(record) {
         if (exifData.height) record.set("height", exifData.height);
         if (exifData.orientation) record.set("orientation", exifData.orientation);
         if (exifData.takenAt) record.set("takenAt", exifData.takenAt);
+        if (exifData.cameraMake) record.set("cameraMake", exifData.cameraMake);
+        if (exifData.cameraModel) record.set("cameraModel", exifData.cameraModel);
+        if (exifData.focalLength) record.set("focalLength", exifData.focalLength);
+        if (exifData.fNumber) record.set("fNumber", exifData.fNumber);
+        if (exifData.exposureTime) record.set("exposureTime", exifData.exposureTime);
+        if (exifData.iso) record.set("iso", exifData.iso);
+
+        // Reverse-geocode GPS to suburb/city/country if location not already set
+        const existingLocation = record.get("location");
+        if (!existingLocation && exifData.gpsLat !== null && exifData.gpsLng !== null) {
+            try {
+                const geocoded = geocodeGps(exifData.gpsLat, exifData.gpsLng);
+                if (geocoded) record.set("location", geocoded);
+            } catch (_) {}
+        }
 
         const checksum = generateChecksum(originalPath);
         if (checksum) {
@@ -409,6 +481,7 @@ module.exports = {
     execCommand,
     buildFileUrl,
     extractExif,
+    geocodeGps,
     generateChecksum,
     processImage,
     processVideo,

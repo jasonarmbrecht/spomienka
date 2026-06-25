@@ -55,6 +55,7 @@ export default function App() {
     { to: "/settings", label: "Settings", adminOnly: true },
     { to: "/users", label: "Users", adminOnly: true },
     { to: "/library", label: "Library", always: true },
+    { to: "/viewer-control", label: "Viewer Control", adminOnly: true },
   ].filter((l) => l.always || (l.adminOnly && user?.role === "admin"));
 
   return (
