@@ -206,7 +206,11 @@ impl RealtimeManager {
             "prev" => RealtimeEvent::RemotePrev,
             "random" => RealtimeEvent::RemoteRandom,
             "pause" => RealtimeEvent::RemotePause {
-                secs: payload.get("secs").and_then(|v| v.as_u64()).unwrap_or(300).min(300),
+                secs: payload
+                    .get("secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(300)
+                    .min(300),
             },
             "resume" => RealtimeEvent::RemoteResume,
             "toggle-info" => RealtimeEvent::RemoteToggleInfo,

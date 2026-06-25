@@ -28,6 +28,8 @@ jobs:
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: viewer
 
       - name: Check formatting
         run: cargo fmt --check

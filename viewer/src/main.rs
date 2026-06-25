@@ -1005,12 +1005,16 @@ async fn run_render_loop(
                     }
                     RealtimeEvent::RemoteToggleInfo => {
                         info_overlay_visible = !info_overlay_visible;
-                        if info_overlay_visible { location_overlay_visible = false; }
+                        if info_overlay_visible {
+                            location_overlay_visible = false;
+                        }
                         tracing::debug!("Remote: info overlay {}", info_overlay_visible);
                     }
                     RealtimeEvent::RemoteToggleLocationInfo => {
                         location_overlay_visible = !location_overlay_visible;
-                        if location_overlay_visible { info_overlay_visible = false; }
+                        if location_overlay_visible {
+                            info_overlay_visible = false;
+                        }
                         tracing::debug!("Remote: location overlay {}", location_overlay_visible);
                     }
                     RealtimeEvent::RemoteTagFilter { tags, mode } => {
@@ -1564,15 +1568,28 @@ fn start_video_if_applicable(
 /// If there is no time component, returns "04 April 2026".
 fn format_taken_at(s: &str) -> String {
     const MONTHS: [&str; 12] = [
-        "January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ];
 
     // Handle both "2026-04-24T13:45:00" and "2026-04-24 13:45:29.000Z"
-    let (date_part, time_part) = if let Some(idx) = s.find(|c| c == 'T' || c == ' ') {
+    let (date_part, time_part) = if let Some(idx) = s.find(['T', ' ']) {
         let time_raw = &s[idx + 1..];
         // Strip trailing milliseconds and timezone suffix (e.g. ".000Z")
-        let time_clean = time_raw.find('.').map(|i| &time_raw[..i]).unwrap_or(time_raw);
+        let time_clean = time_raw
+            .find('.')
+            .map(|i| &time_raw[..i])
+            .unwrap_or(time_raw);
         (&s[..idx], Some(time_clean))
     } else {
         (s, None)
@@ -1595,7 +1612,10 @@ fn format_taken_at(s: &str) -> String {
         if let (Some(hh), Some(mm)) = (tparts.first(), tparts.get(1)) {
             if let (Ok(h), Ok(m)) = (hh.parse::<u32>(), mm.parse::<u32>()) {
                 let period = if h < 12 { "AM" } else { "PM" };
-                let h12 = match h % 12 { 0 => 12, v => v };
+                let h12 = match h % 12 {
+                    0 => 12,
+                    v => v,
+                };
                 return format!("{}:{:02} {}, {}", h12, m, period, date_str);
             }
         }
@@ -1603,4 +1623,3 @@ fn format_taken_at(s: &str) -> String {
 
     date_str
 }
-
