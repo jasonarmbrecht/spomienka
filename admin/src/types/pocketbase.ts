@@ -70,7 +70,6 @@ export interface MediaRecord extends BaseRecord {
   processingStatus?: ProcessingStatus;
   processingError?: string;
   displayUrl?: string;
-  blurUrl?: string;
   thumbUrl?: string;
   videoUrl?: string;
   posterUrl?: string;
@@ -90,7 +89,7 @@ export interface DeviceConfig {
   showClock?: boolean;
   showInfo?: boolean;
   showLocationInfo?: boolean;
-  displayMode?: "single" | "dual-portrait" | "quad-landscape";
+  displayMode?: "single" | "dynamic";
 }
 
 /**

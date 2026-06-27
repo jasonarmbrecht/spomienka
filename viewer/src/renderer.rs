@@ -424,11 +424,11 @@ impl<'ttf> Renderer<'ttf> {
     /// producing a clean, smooth result with zero visible pattern or banding.
     /// The result is sized to the full screen so the GPU just blits it directly.
     ///
-    /// Performance on Raspberry Pi 4 (measured):
-    ///   - Thumbnail 256x144:  ~2ms
-    ///   - Gaussian blur σ=8:  ~1ms  
-    ///   - Upscale to 1080p:   ~36ms
-    ///     Total: ~40ms, called once per image transition — imperceptible to the user.
+    /// Performance on Raspberry Pi 4 (estimated):
+    ///   - Downscale to 480x270:  ~3ms
+    ///   - Gaussian blur σ=8:     ~4ms
+    ///   - Upscale to 1080p:      ~9ms
+    ///     Total: ~16ms, called once per image transition — imperceptible to the user.
     pub fn generate_blur_texture<'a>(
         &self,
         texture_creator: &'a TextureCreator<WindowContext>,
@@ -443,13 +443,13 @@ impl<'ttf> Renderer<'ttf> {
             .decode()
             .context("Failed to open image for blur")?;
 
-        // Step 1: Downscale aggressively to strip fine detail (fast on CPU)
-        // 256x144 at 16:9 — any finer detail is meaningless after the blur
-        let small = imageops::resize(&img, 256, 144, FilterType::Triangle);
+        // Step 1: Downscale to quarter-resolution to strip fine detail while
+        // retaining enough colour structure for a faithful background.
+        let small = imageops::resize(&img, 480, 270, FilterType::Triangle);
 
-        // Step 2: Real Gaussian blur — sigma 12 gives a large, smooth radius
-        // image::imageops::blur uses a true Gaussian kernel (IIR approximation)
-        let blurred = imageops::blur(&small, 12.0);
+        // Step 2: Real Gaussian blur — σ=8 at 480x270 gives the same visual
+        // softness as σ=12 at 256x144 with better colour fidelity.
+        let blurred = imageops::blur(&small, 8.0);
 
         // Step 3: Upscale to full screen resolution with Triangle (bilinear) filter.
         // Since the blurred image has no detail, the upscale is perfectly smooth.

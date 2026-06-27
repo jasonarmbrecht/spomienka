@@ -392,7 +392,7 @@ routerAdd("POST", "/api/spomienka/reprocess", (e) => {
     // Delete old processed derivatives so the hook regenerates them cleanly.
     const collectionId = record.collection().id;
     const storagePath = $app.dataDir() + "/storage/" + collectionId + "/" + id;
-    const derived = ["display_", "blur_", "thumb_", "poster_"];
+    const derived = ["display_", "thumb_", "poster_"];
     try {
         const files = $os.readdir(storagePath);
         for (const file of files) {
