@@ -89,6 +89,7 @@ type Device = {
     blur?: boolean;
     shuffle?: boolean;
     showClock?: boolean;
+    displayMode?: string;
   };
 };
 
@@ -117,6 +118,7 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
   const [showClock, setShowClock] = useState(cfg.showClock ?? true);
   const [showInfo, setShowInfo] = useState(cfg.showInfo ?? false);
   const [showLocationInfo, setShowLocationInfo] = useState(cfg.showLocationInfo ?? false);
+  const [displayMode, setDisplayMode] = useState(cfg.displayMode ?? "single");
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(device.name);
@@ -131,11 +133,12 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
     (cfg.shuffle ?? false) !== shuffle ||
     (cfg.showClock ?? true) !== showClock ||
     (cfg.showInfo ?? false) !== showInfo ||
-    (cfg.showLocationInfo ?? false) !== showLocationInfo;
+    (cfg.showLocationInfo ?? false) !== showLocationInfo ||
+    (cfg.displayMode ?? "single") !== displayMode;
 
   const saveConfig = async () => {
     try {
-      const newConfig = { interval: slideInterval, transition, transitionDuration, blur, shuffle, showClock, showInfo, showLocationInfo };
+      const newConfig = { interval: slideInterval, transition, transitionDuration, blur, shuffle, showClock, showInfo, showLocationInfo, displayMode };
       await pb.collection("devices").update(device.id, { config: newConfig });
       try {
         await pb.collection("device_inbox").create({ device_id: device.id, type: "config_reload" });
@@ -310,6 +313,17 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
               onToggle={(val) => { setShowLocationInfo(val); if (val) setShowInfo(false); setSaveSuccess(false); }}
               size="sm"
             />
+            <Select
+              id={`display-mode-${device.id}`}
+              labelText="Display Layout"
+              value={displayMode}
+              onChange={(e) => { setDisplayMode(e.target.value); setSaveSuccess(false); }}
+              size="sm"
+            >
+              <SelectItem value="single" text="Single image" />
+              <SelectItem value="dual-portrait" text="2 portrait images" />
+              <SelectItem value="quad-landscape" text="4 landscape images (coming soon)" disabled />
+            </Select>
           </Stack>
           {saveSuccess && (
             <InlineNotification

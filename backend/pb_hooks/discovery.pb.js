@@ -136,6 +136,7 @@ routerAdd("POST", "/api/spomienka/device-auth", (e) => {
                 showClock: cfg.showClock ?? true,
                 showInfo: cfg.showInfo ?? false,
                 showLocationInfo: cfg.showLocationInfo ?? false,
+                displayMode: cfg.displayMode ?? "single",
             },
         });
     } catch (err) {

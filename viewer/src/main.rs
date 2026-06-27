@@ -14,9 +14,13 @@ use assets::{AssetManager, AssetType, Media, Preloader};
 use cache::Cache;
 use config::{Config, Environment, File};
 use realtime::{spawn_realtime, RealtimeEvent};
-use renderer::{MediaInfoOverlay, MediaTextures, OverlayInfo, Renderer, Transition, UserAction};
+use renderer::{
+    MediaInfoOverlay, MediaTextures, OverlayInfo, Renderer, SlideLayout, SlideLayoutKind,
+    Transition, UserAction,
+};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::env;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -112,6 +116,10 @@ struct AppConfig {
     /// Start with the location & date overlay visible (default: false).
     #[serde(default)]
     pub show_location_info: bool,
+
+    /// Display layout mode: "single" or "dynamic" (default: "single").
+    #[serde(default = "default_display_mode")]
+    pub display_mode: String,
 }
 
 fn default_pb_url() -> String {
@@ -156,6 +164,10 @@ fn default_blur_background() -> bool {
 
 fn default_show_clock() -> bool {
     true
+}
+
+fn default_display_mode() -> String {
+    "single".to_string()
 }
 
 impl AppConfig {
@@ -571,6 +583,9 @@ async fn main() -> Result<()> {
                 if let Some(v) = cfg.get("showLocationInfo").and_then(|v| v.as_bool()) {
                     config.show_location_info = v;
                 }
+                if let Some(v) = cfg.get("displayMode").and_then(|v| v.as_str()) {
+                    config.display_mode = v.to_string();
+                }
                 tracing::info!("Device authenticated — applied config from PocketBase");
                 Some(resp.token)
             }
@@ -615,11 +630,17 @@ async fn main() -> Result<()> {
 
     *state.playlist.write().await = playlist.clone();
 
-    // Shuffle if configured
-    if state.config.shuffle {
-        use rand::seq::SliceRandom;
+    // Shuffle / reorder the playlist
+    {
         let mut playlist = state.playlist.write().await;
-        playlist.shuffle(&mut rand::thread_rng());
+        if state.config.display_mode == "dynamic" {
+            // In dynamic mode always reorder into layout-compatible groups so that
+            // multi-image layouts (quad-landscape, portrait+2-landscape, etc.) fire reliably.
+            reorder_for_dynamic_layouts(&mut playlist);
+        } else if state.config.shuffle {
+            use rand::seq::SliceRandom;
+            playlist.shuffle(&mut rand::thread_rng());
+        }
     }
 
     // Start preloader for initial assets
@@ -765,6 +786,7 @@ async fn run_discovery_mode(config: &AppConfig) -> Result<()> {
         config.fullscreen,
         false,
         false,
+        SlideLayout::Single,
     )?;
 
     loop {
@@ -817,6 +839,7 @@ async fn run_render_loop(
         state.config.fullscreen,
         state.config.blur_background,
         state.config.show_clock,
+        SlideLayout::Single, // initial layout; dynamic mode picks per-slide
     )?;
 
     // Initialize video manager
@@ -825,9 +848,20 @@ async fn run_render_loop(
     // Create texture creator
     let texture_creator = renderer.texture_creator();
 
-    // Current and next textures
+    // Panel textures (up to 4 for dynamic layouts)
     let mut current_textures = MediaTextures::new();
     let mut next_textures: Option<MediaTextures> = None;
+    let mut right_textures = MediaTextures::new();
+    let mut next_right_textures: Option<MediaTextures> = None;
+    let mut panel2_textures = MediaTextures::new();
+    let mut next_panel2_textures: Option<MediaTextures> = None;
+    let mut panel3_textures = MediaTextures::new();
+    let mut next_panel3_textures: Option<MediaTextures> = None;
+
+    // Dynamic layout state
+    let session_start = Instant::now();
+    let mut layout_history: VecDeque<SlideLayoutKind> = VecDeque::new();
+    let is_dynamic = state.config.display_mode == "dynamic";
 
     // Timing
     let mut last_advance = Instant::now();
@@ -854,6 +888,54 @@ async fn run_render_loop(
         &mut is_video_playing,
     )
     .await?;
+
+    if is_dynamic {
+        let peek_start = *state.current_index.read().await;
+        let (layout, actual_start) = pick_dynamic_layout(
+            &state,
+            &layout_history,
+            session_start.elapsed().as_secs() < 120,
+            peek_start,
+        )
+        .await;
+        renderer.current_layout = layout;
+        *state.current_index.write().await = actual_start;
+        layout_history.push_back(layout.kind());
+        if layout_history.len() > 20 {
+            layout_history.pop_front();
+        }
+        let n = layout.image_count();
+        if n >= 2 {
+            load_panel_item(
+                &state,
+                &mut renderer,
+                &texture_creator,
+                &mut right_textures,
+                1,
+            )
+            .await?;
+        }
+        if n >= 3 {
+            load_panel_item(
+                &state,
+                &mut renderer,
+                &texture_creator,
+                &mut panel2_textures,
+                2,
+            )
+            .await?;
+        }
+        if n >= 4 {
+            load_panel_item(
+                &state,
+                &mut renderer,
+                &texture_creator,
+                &mut panel3_textures,
+                3,
+            )
+            .await?;
+        }
+    }
 
     loop {
         // Process SDL events with extended actions
@@ -886,8 +968,16 @@ async fn run_render_loop(
                     &texture_creator,
                     &mut current_textures,
                     &mut next_textures,
+                    &mut right_textures,
+                    &mut next_right_textures,
+                    &mut panel2_textures,
+                    &mut next_panel2_textures,
+                    &mut panel3_textures,
+                    &mut next_panel3_textures,
                     &mut video_manager,
                     &mut is_video_playing,
+                    &mut layout_history,
+                    session_start,
                 )
                 .await?;
                 last_advance = Instant::now();
@@ -901,6 +991,9 @@ async fn run_render_loop(
                     &texture_creator,
                     &mut current_textures,
                     &mut next_textures,
+                    &mut right_textures,
+                    &mut panel2_textures,
+                    &mut panel3_textures,
                     &mut video_manager,
                     &mut is_video_playing,
                 )
@@ -954,8 +1047,16 @@ async fn run_render_loop(
                             &texture_creator,
                             &mut current_textures,
                             &mut next_textures,
+                            &mut right_textures,
+                            &mut next_right_textures,
+                            &mut panel2_textures,
+                            &mut next_panel2_textures,
+                            &mut panel3_textures,
+                            &mut next_panel3_textures,
                             &mut video_manager,
                             &mut is_video_playing,
+                            &mut layout_history,
+                            session_start,
                         )
                         .await?;
                         last_advance = Instant::now();
@@ -970,6 +1071,9 @@ async fn run_render_loop(
                             &texture_creator,
                             &mut current_textures,
                             &mut next_textures,
+                            &mut right_textures,
+                            &mut panel2_textures,
+                            &mut panel3_textures,
                             &mut video_manager,
                             &mut is_video_playing,
                         )
@@ -997,6 +1101,39 @@ async fn run_render_loop(
                             &mut is_video_playing,
                         )
                         .await?;
+                        if is_dynamic {
+                            let n = renderer.current_layout.image_count();
+                            if n >= 2 {
+                                load_panel_item(
+                                    &state,
+                                    &mut renderer,
+                                    &texture_creator,
+                                    &mut right_textures,
+                                    1,
+                                )
+                                .await?;
+                            }
+                            if n >= 3 {
+                                load_panel_item(
+                                    &state,
+                                    &mut renderer,
+                                    &texture_creator,
+                                    &mut panel2_textures,
+                                    2,
+                                )
+                                .await?;
+                            }
+                            if n >= 4 {
+                                load_panel_item(
+                                    &state,
+                                    &mut renderer,
+                                    &texture_creator,
+                                    &mut panel3_textures,
+                                    3,
+                                )
+                                .await?;
+                            }
+                        }
                         last_advance = Instant::now();
                         is_paused = false;
                         pause_until = None;
@@ -1091,8 +1228,16 @@ async fn run_render_loop(
                     &texture_creator,
                     &mut current_textures,
                     &mut next_textures,
+                    &mut right_textures,
+                    &mut next_right_textures,
+                    &mut panel2_textures,
+                    &mut next_panel2_textures,
+                    &mut panel3_textures,
+                    &mut next_panel3_textures,
                     &mut video_manager,
                     &mut is_video_playing,
+                    &mut layout_history,
+                    session_start,
                 )
                 .await?;
                 last_advance = Instant::now();
@@ -1102,9 +1247,17 @@ async fn run_render_loop(
         // Update transition
         let should_swap = renderer.update_transition();
         if should_swap {
-            // Swap current and next textures
             if let Some(next) = next_textures.take() {
                 current_textures = next;
+            }
+            if let Some(next) = next_right_textures.take() {
+                right_textures = next;
+            }
+            if let Some(next) = next_panel2_textures.take() {
+                panel2_textures = next;
+            }
+            if let Some(next) = next_panel3_textures.take() {
+                panel3_textures = next;
             }
         }
 
@@ -1122,19 +1275,66 @@ async fn run_render_loop(
                 &texture_creator,
                 &mut current_textures,
                 &mut next_textures,
+                &mut right_textures,
+                &mut next_right_textures,
+                &mut panel2_textures,
+                &mut next_panel2_textures,
+                &mut panel3_textures,
+                &mut next_panel3_textures,
                 &mut video_manager,
                 &mut is_video_playing,
+                &mut layout_history,
+                session_start,
             )
             .await?;
             last_advance = Instant::now();
         }
 
         // Render image + clock (no present yet)
-        renderer.render(
-            &texture_creator,
-            &mut current_textures,
-            next_textures.as_mut(),
-        )?;
+        if renderer.current_layout.is_multi() {
+            let n = renderer.current_layout.image_count();
+            let mut p: Vec<&mut MediaTextures> = vec![&mut current_textures];
+            if n >= 2 {
+                p.push(&mut right_textures);
+            }
+            if n >= 3 {
+                p.push(&mut panel2_textures);
+            }
+            if n >= 4 {
+                p.push(&mut panel3_textures);
+            }
+            let mut np: Vec<&mut MediaTextures> = Vec::new();
+            if let Some(ref mut t) = next_textures {
+                np.push(t);
+            }
+            if n >= 2 {
+                if let Some(ref mut t) = next_right_textures {
+                    np.push(t);
+                }
+            }
+            if n >= 3 {
+                if let Some(ref mut t) = next_panel2_textures {
+                    np.push(t);
+                }
+            }
+            if n >= 4 {
+                if let Some(ref mut t) = next_panel3_textures {
+                    np.push(t);
+                }
+            }
+            let has_next = !np.is_empty();
+            if has_next {
+                renderer.render_layout(&texture_creator, &mut p, Some(&mut np))?;
+            } else {
+                renderer.render_layout(&texture_creator, &mut p, None)?;
+            }
+        } else {
+            renderer.render(
+                &texture_creator,
+                &mut current_textures,
+                next_textures.as_mut(),
+            )?;
+        }
 
         // Render debug overlay on top
         if overlay_visible {
@@ -1154,14 +1354,36 @@ async fn run_render_loop(
 
         // Render media info overlay on top
         if info_overlay_visible {
-            let media_info = build_media_info_overlay(&state).await;
-            if let Err(e) = renderer.render_info_overlay(&media_info) {
-                tracing::warn!("Failed to render info overlay: {}", e);
+            let n = renderer.current_layout.image_count();
+            if n > 1 {
+                let mut infos = Vec::new();
+                for i in 0..n {
+                    infos.push(build_media_info_overlay(&state, i).await);
+                }
+                if let Err(e) = renderer.render_info_overlay_multi(&infos) {
+                    tracing::warn!("Failed to render multi info overlay: {}", e);
+                }
+            } else {
+                let media_info = build_media_info_overlay(&state, 0).await;
+                if let Err(e) = renderer.render_info_overlay(&media_info) {
+                    tracing::warn!("Failed to render info overlay: {}", e);
+                }
             }
         } else if location_overlay_visible {
-            let loc_info = build_location_info_overlay(&state).await;
-            if let Err(e) = renderer.render_info_overlay(&loc_info) {
-                tracing::warn!("Failed to render location overlay: {}", e);
+            let n = renderer.current_layout.image_count();
+            if n > 1 {
+                let mut infos = Vec::new();
+                for i in 0..n {
+                    infos.push(build_location_info_overlay(&state, i).await);
+                }
+                if let Err(e) = renderer.render_info_overlay_multi(&infos) {
+                    tracing::warn!("Failed to render multi location overlay: {}", e);
+                }
+            } else {
+                let loc_info = build_location_info_overlay(&state, 0).await;
+                if let Err(e) = renderer.render_info_overlay(&loc_info) {
+                    tracing::warn!("Failed to render location overlay: {}", e);
+                }
             }
         }
 
@@ -1238,10 +1460,15 @@ async fn build_overlay_info(
     }
 }
 
-/// Build media info overlay from the current playlist item.
-async fn build_media_info_overlay(state: &AppState) -> MediaInfoOverlay {
+/// Build media info overlay from the playlist item at `current_index + offset`.
+async fn build_media_info_overlay(state: &AppState, offset: usize) -> MediaInfoOverlay {
     let playlist = state.playlist.read().await;
-    let index = *state.current_index.read().await;
+    let base = *state.current_index.read().await;
+    let index = if playlist.is_empty() {
+        0
+    } else {
+        (base + offset) % playlist.len()
+    };
     let Some(media) = playlist.get(index) else {
         return MediaInfoOverlay::default();
     };
@@ -1273,9 +1500,14 @@ async fn build_media_info_overlay(state: &AppState) -> MediaInfoOverlay {
     }
 }
 
-async fn build_location_info_overlay(state: &AppState) -> MediaInfoOverlay {
+async fn build_location_info_overlay(state: &AppState, offset: usize) -> MediaInfoOverlay {
     let playlist = state.playlist.read().await;
-    let index = *state.current_index.read().await;
+    let base = *state.current_index.read().await;
+    let index = if playlist.is_empty() {
+        0
+    } else {
+        (base + offset) % playlist.len()
+    };
     let Some(media) = playlist.get(index) else {
         return MediaInfoOverlay::default();
     };
@@ -1326,50 +1558,465 @@ async fn load_current_item<'a>(
     Ok(())
 }
 
+/// Load a panel item at `current_index + offset` (wrapping) into textures.
+/// Used to load the right panel in dual-portrait mode.
+async fn load_panel_item<'a>(
+    state: &AppState,
+    renderer: &mut Renderer<'_>,
+    texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+    textures: &mut MediaTextures<'a>,
+    offset: usize,
+) -> Result<()> {
+    let playlist = state.playlist.read().await;
+    if playlist.is_empty() {
+        return Ok(());
+    }
+    let current_index = *state.current_index.read().await;
+    let panel_index = (current_index + offset) % playlist.len();
+    let media = &playlist[panel_index];
+
+    state.preload_media_safe(media).await?;
+
+    let cache = state.cache.read().await;
+    *textures = state
+        .asset_manager
+        .load_textures(renderer, texture_creator, media, &cache)?;
+    drop(cache);
+
+    let mut cache = state.cache.write().await;
+    cache.touch(&media.id, AssetType::Display);
+    cache.touch(&media.id, AssetType::Blur);
+
+    Ok(())
+}
+
+/// Image orientation bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImageOrientation {
+    Portrait,
+    Landscape,
+    Square,
+}
+
+fn classify_orientation(w: u32, h: u32) -> ImageOrientation {
+    if w == 0 || h == 0 {
+        return ImageOrientation::Square;
+    }
+    let ratio = w as f32 / h as f32;
+    if ratio > 1.2 {
+        ImageOrientation::Landscape
+    } else if ratio < 0.83 {
+        ImageOrientation::Portrait
+    } else {
+        ImageOrientation::Square
+    }
+}
+
+/// Return the visual (post-EXIF-rotation) orientation of a media item.
+fn media_visual_orientation(m: &assets::Media) -> ImageOrientation {
+    match (m.width, m.height) {
+        (Some(w), Some(h)) => {
+            let needs_swap = m
+                .orientation
+                .as_ref()
+                .map(|v| {
+                    if let Some(n) = v.as_u64() {
+                        matches!(n, 5..=8)
+                    } else if let Some(f) = v.as_f64() {
+                        matches!(f as u64, 5..=8)
+                    } else if let Some(s) = v.as_str() {
+                        if let Ok(n) = s.trim().parse::<u64>() {
+                            matches!(n, 5..=8)
+                        } else {
+                            s.contains("90") || s.contains("270")
+                        }
+                    } else {
+                        false
+                    }
+                })
+                .unwrap_or(false);
+            let (vw, vh) = if needs_swap { (h, w) } else { (w, h) };
+            classify_orientation(vw, vh)
+        }
+        _ => ImageOrientation::Landscape,
+    }
+}
+
+/// Reorder a playlist into layout-compatible groups so that the sequential layout picker
+/// reliably finds valid multi-image combinations (quad-landscape, portrait+2-landscape, etc.).
+///
+/// Images are separated by orientation, each bucket is independently shuffled, then groups
+/// are drawn greedily in random weighted order until all images are placed. This guarantees
+/// that consecutive runs of the same orientation always exist, enabling every layout type.
+fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>) {
+    use rand::seq::SliceRandom;
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+
+    // Drain into orientation buckets
+    let mut landscapes: std::collections::VecDeque<assets::Media> = Default::default();
+    let mut portraits: std::collections::VecDeque<assets::Media> = Default::default();
+    let mut squares: std::collections::VecDeque<assets::Media> = Default::default();
+    for img in images.drain(..) {
+        match media_visual_orientation(&img) {
+            ImageOrientation::Landscape => landscapes.push_back(img),
+            ImageOrientation::Portrait => portraits.push_back(img),
+            ImageOrientation::Square => squares.push_back(img),
+        }
+    }
+    // Shuffle each bucket so order is random within orientation groups
+    let (mut lv, mut pv, mut sv): (Vec<_>, Vec<_>, Vec<_>) = (
+        landscapes.into_iter().collect(),
+        portraits.into_iter().collect(),
+        squares.into_iter().collect(),
+    );
+    lv.shuffle(&mut rng);
+    pv.shuffle(&mut rng);
+    sv.shuffle(&mut rng);
+    let mut l = std::collections::VecDeque::from(lv);
+    let mut p = std::collections::VecDeque::from(pv);
+    let mut s = std::collections::VecDeque::from(sv);
+
+    // Greedily form layout groups until all buckets are empty
+    loop {
+        let (lc, pc, sc) = (l.len(), p.len(), s.len());
+        if lc == 0 && pc == 0 && sc == 0 {
+            break;
+        }
+
+        // Build weighted option list based on what's available
+        // 0=QuadLandscape(4L), 1=PortraitDualLandscape(1P+2L), 2=DualPortrait(2P),
+        // 3=SingleLandscape(1L), 4=DualSquare(2S), 5=SquarePortrait(1S+1P)
+        let opts: &[(u8, f32)] = &[(0, 2.0), (1, 2.0), (2, 2.0), (3, 3.0), (4, 2.0), (5, 2.0)];
+        let available: Vec<(u8, f32)> = opts
+            .iter()
+            .filter_map(|&(id, w)| {
+                let ok = match id {
+                    0 => lc >= 4,
+                    1 => pc >= 1 && lc >= 2,
+                    2 => pc >= 2,
+                    3 => lc >= 1,
+                    4 => sc >= 2,
+                    5 => sc >= 1 && pc >= 1,
+                    _ => false,
+                };
+                if ok {
+                    Some((id, w))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if available.is_empty() {
+            // Flush any leftover images that can't form a valid group
+            images.extend(p.drain(..));
+            images.extend(l.drain(..));
+            images.extend(s.drain(..));
+            break;
+        }
+
+        let total: f32 = available.iter().map(|(_, w)| *w).sum();
+        let mut pick = rng.gen::<f32>() * total;
+        let choice = available
+            .iter()
+            .find(|(_, w)| {
+                pick -= *w;
+                pick <= 0.0
+            })
+            .or_else(|| available.last())
+            .map(|(id, _)| *id)
+            .unwrap_or(3);
+
+        match choice {
+            0 => {
+                for _ in 0..4 {
+                    images.push(l.pop_front().unwrap());
+                }
+            }
+            1 => {
+                images.push(p.pop_front().unwrap());
+                images.push(l.pop_front().unwrap());
+                images.push(l.pop_front().unwrap());
+            }
+            2 => {
+                images.push(p.pop_front().unwrap());
+                images.push(p.pop_front().unwrap());
+            }
+            3 => {
+                images.push(l.pop_front().unwrap());
+            }
+            4 => {
+                images.push(s.pop_front().unwrap());
+                images.push(s.pop_front().unwrap());
+            }
+            5 => {
+                images.push(s.pop_front().unwrap());
+                images.push(p.pop_front().unwrap());
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Pick a dynamic layout for the upcoming slide.
+///
+/// Returns `(layout, actual_start)` where `actual_start` is the playlist index the
+/// caller should use for loading — normally equal to `peek_start`, but may be advanced
+/// if a portrait image at `peek_start` has no valid multi-image partner and we need to
+/// scan forward to avoid showing a portrait alone.
+///
+/// Rules:
+/// - Only landscape images may be shown alone.
+/// - Portrait images are NEVER shown alone; we scan forward until a valid layout exists.
+/// - The 3-image layout is strictly [portrait, landscape, landscape].
+/// - The 4-image layout requires 4 consecutive landscapes.
+async fn pick_dynamic_layout(
+    state: &AppState,
+    history: &VecDeque<SlideLayoutKind>,
+    warmup: bool,
+    peek_start: usize,
+) -> (SlideLayout, usize) {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+
+    let playlist = state.playlist.read().await;
+    let n = playlist.len();
+    if n == 0 {
+        return (SlideLayout::Single, peek_start);
+    }
+
+    let orient_of =
+        |idx: usize| -> ImageOrientation { media_visual_orientation(&playlist[idx % n]) };
+
+    // Helper: build valid layout candidates for a given start index.
+    let candidates_at =
+        |start: usize, rng: &mut rand::rngs::ThreadRng| -> Vec<(SlideLayout, f32)> {
+            let o0 = orient_of(start);
+            let o1 = orient_of(start + 1);
+            let o2 = orient_of(start + 2);
+            let o3 = orient_of(start + 3);
+            let mut c: Vec<(SlideLayout, f32)> = Vec::new();
+            if o0 == ImageOrientation::Landscape {
+                c.push((SlideLayout::Single, 3.0));
+            }
+            if o0 == ImageOrientation::Portrait && o1 == ImageOrientation::Portrait {
+                c.push((SlideLayout::DualPortrait { flipped: rng.gen() }, 2.0));
+            }
+            if o0 == ImageOrientation::Portrait
+                && o1 == ImageOrientation::Landscape
+                && o2 == ImageOrientation::Landscape
+            {
+                c.push((
+                    SlideLayout::PortraitDualLandscape {
+                        portrait_right: rng.gen(),
+                    },
+                    2.0,
+                ));
+            }
+            if o0 == ImageOrientation::Landscape
+                && o1 == ImageOrientation::Landscape
+                && o2 == ImageOrientation::Landscape
+                && o3 == ImageOrientation::Landscape
+            {
+                c.push((SlideLayout::QuadLandscape { flipped: rng.gen() }, 2.0));
+            }
+            if o0 == ImageOrientation::Square && o1 == ImageOrientation::Square {
+                c.push((SlideLayout::DualSquare { flipped: rng.gen() }, 2.0));
+            }
+            if o0 == ImageOrientation::Square && o1 == ImageOrientation::Portrait {
+                c.push((
+                    SlideLayout::SquarePortrait {
+                        square_right: rng.gen(),
+                    },
+                    2.0,
+                ));
+            }
+            c
+        };
+
+    // Try peek_start first; if no valid layout (portrait with no valid partner),
+    // scan forward until we find a valid starting position. Cap scan at n steps.
+    let (candidates, actual_start) = {
+        let c = candidates_at(peek_start, &mut rng);
+        if !c.is_empty() {
+            (c, peek_start)
+        } else {
+            let mut found = (Vec::new(), peek_start);
+            for offset in 1..=n {
+                let try_start = (peek_start + offset) % n;
+                let c = candidates_at(try_start, &mut rng);
+                if !c.is_empty() {
+                    tracing::debug!(
+                        "pick_dynamic_layout: skipped {} images to find valid layout at {}",
+                        offset,
+                        try_start
+                    );
+                    found = (c, try_start);
+                    break;
+                }
+            }
+            found
+        }
+    };
+
+    if candidates.is_empty() {
+        return (SlideLayout::Single, actual_start);
+    }
+
+    let select =
+        |candidates: &[(SlideLayout, f32)], rng: &mut rand::rngs::ThreadRng| -> SlideLayout {
+            let idx = rng.gen_range(0..candidates.len());
+            candidates[idx].0
+        };
+
+    if warmup {
+        return (select(&candidates, &mut rng), actual_start);
+    }
+
+    // Bias Single to ~50% of weight; halve weight of recently shown layouts.
+    let recent: Vec<SlideLayoutKind> = history.iter().rev().take(3).copied().collect();
+    let single_w: f32 = candidates
+        .iter()
+        .find(|(l, _)| l.kind() == SlideLayoutKind::Single)
+        .map(|(_, w)| *w)
+        .unwrap_or(0.0);
+    let other_total: f32 = candidates
+        .iter()
+        .filter(|(l, _)| l.kind() != SlideLayoutKind::Single)
+        .map(|(_, w)| *w)
+        .sum();
+    let scale = if other_total > 0.0 && single_w > 0.0 {
+        single_w / other_total
+    } else {
+        1.0
+    };
+
+    let weighted: Vec<(SlideLayout, f32)> = candidates
+        .iter()
+        .map(|(layout, w)| {
+            let mut weight = if layout.kind() == SlideLayoutKind::Single {
+                *w
+            } else {
+                w * scale
+            };
+            if recent.contains(&layout.kind()) {
+                weight *= 0.5;
+            }
+            (*layout, weight)
+        })
+        .collect();
+
+    let total: f32 = weighted.iter().map(|(_, w)| *w).sum();
+    if total <= 0.0 {
+        return (SlideLayout::Single, actual_start);
+    }
+
+    let mut pick = rng.gen::<f32>() * total;
+    for (layout, weight) in &weighted {
+        pick -= weight;
+        if pick <= 0.0 {
+            return (*layout, actual_start);
+        }
+    }
+    (
+        weighted
+            .last()
+            .map(|(l, _)| *l)
+            .unwrap_or(SlideLayout::Single),
+        actual_start,
+    )
+}
+
 /// Advance to the next item in the playlist.
+#[allow(clippy::too_many_arguments)]
 async fn advance_to_next<'a>(
     state: &AppState,
     renderer: &mut Renderer<'_>,
     texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
     current_textures: &mut MediaTextures<'a>,
     next_textures: &mut Option<MediaTextures<'a>>,
+    right_textures: &mut MediaTextures<'a>,
+    next_right_textures: &mut Option<MediaTextures<'a>>,
+    panel2_textures: &mut MediaTextures<'a>,
+    next_panel2_textures: &mut Option<MediaTextures<'a>>,
+    panel3_textures: &mut MediaTextures<'a>,
+    next_panel3_textures: &mut Option<MediaTextures<'a>>,
     video_manager: &mut VideoManager,
     is_video_playing: &mut bool,
+    layout_history: &mut VecDeque<SlideLayoutKind>,
+    session_start: Instant,
 ) -> Result<()> {
     // Stop current video
     video_manager.stop();
     *is_video_playing = false;
+
+    {
+        let playlist = state.playlist.read().await;
+        if playlist.is_empty() {
+            return Ok(());
+        }
+    }
+
+    let is_dynamic = state.config.display_mode == "dynamic";
+    let warmup = session_start.elapsed().as_secs() < 120;
+
+    // Compute where the next slide starts (after current slide's images).
+    let current_step = renderer.current_layout.image_count();
+    let n = state.playlist.read().await.len();
+    let current_index_val = *state.current_index.read().await;
+    let next_start_raw = current_index_val + current_step;
+
+    // In dynamic mode, regroup the playlist whenever we complete a full cycle so that
+    // each new pass shows images in a freshly randomised layout-compatible order.
+    if is_dynamic && next_start_raw >= n {
+        let mut playlist = state.playlist.write().await;
+        reorder_for_dynamic_layouts(&mut playlist);
+        tracing::debug!("Dynamic mode: reordered playlist for new cycle");
+    }
+
+    let next_start = next_start_raw % n;
+
+    // Pick layout for the next slide, peeking from next_start.
+    // pick_dynamic_layout acquires the playlist lock internally — don't hold it here.
+    let next_index = if is_dynamic {
+        let (layout, actual_start) =
+            pick_dynamic_layout(state, layout_history, warmup, next_start).await;
+        renderer.current_layout = layout;
+        layout_history.push_back(layout.kind());
+        if layout_history.len() > 20 {
+            layout_history.pop_front();
+        }
+        actual_start
+    } else {
+        next_start
+    };
+
+    let step = renderer.current_layout.image_count();
+    *state.current_index.write().await = next_index;
 
     let playlist = state.playlist.read().await;
     if playlist.is_empty() {
         return Ok(());
     }
 
-    // Advance index
-    let mut index = state.current_index.write().await;
-    *index = (*index + 1) % playlist.len();
-    let next_index = *index;
-    drop(index);
-
     let media = &playlist[next_index];
     tracing::debug!("Advancing to: {} ({})", media.id, media.media_type);
 
-    // Preload in background
+    // Preload ahead in background
     let preloader = Preloader::new(state.asset_manager.clone(), state.client.clone());
     let token = state.token().await;
     let playlist_clone = playlist.clone();
-    let next_idx = next_index;
+    let preload_ahead = (step * 2).max(4);
 
     tokio::spawn(async move {
         preloader
-            .preload_next(&playlist_clone, next_idx, 2, token.as_deref())
+            .preload_next(&playlist_clone, next_index, preload_ahead, token.as_deref())
             .await;
     });
 
-    // Ensure current item is cached
+    // Ensure current item is cached and load textures
     state.preload_media_safe(media).await?;
-
-    // Load next textures
     let cache = state.cache.read().await;
     let new_textures =
         state
@@ -1377,13 +2024,100 @@ async fn advance_to_next<'a>(
             .load_textures(renderer, texture_creator, media, &cache)?;
     drop(cache);
 
-    // Prepare next frame and kick off transition if needed
     *next_textures = Some(new_textures);
+
+    // Load extra panels for multi-image layouts
+    if step >= 2 {
+        let idx = (next_index + 1) % playlist.len();
+        let m = playlist[idx].clone();
+        state.preload_media_safe(&m).await?;
+        let cache = state.cache.read().await;
+        let t = state
+            .asset_manager
+            .load_textures(renderer, texture_creator, &m, &cache)?;
+        drop(cache);
+        *next_right_textures = Some(t);
+        let mut cache = state.cache.write().await;
+        cache.touch(&m.id, AssetType::Display);
+        cache.touch(&m.id, AssetType::Blur);
+    }
+    if step >= 3 {
+        let idx = (next_index + 2) % playlist.len();
+        let m = playlist[idx].clone();
+        state.preload_media_safe(&m).await?;
+        let cache = state.cache.read().await;
+        let t = state
+            .asset_manager
+            .load_textures(renderer, texture_creator, &m, &cache)?;
+        drop(cache);
+        *next_panel2_textures = Some(t);
+        let mut cache = state.cache.write().await;
+        cache.touch(&m.id, AssetType::Display);
+        cache.touch(&m.id, AssetType::Blur);
+    }
+    if step >= 4 {
+        let idx = (next_index + 3) % playlist.len();
+        let m = playlist[idx].clone();
+        drop(playlist);
+        state.preload_media_safe(&m).await?;
+        let cache = state.cache.read().await;
+        let t = state
+            .asset_manager
+            .load_textures(renderer, texture_creator, &m, &cache)?;
+        drop(cache);
+        *next_panel3_textures = Some(t);
+        let mut cache = state.cache.write().await;
+        cache.touch(&m.id, AssetType::Display);
+        cache.touch(&m.id, AssetType::Blur);
+    } else {
+        drop(playlist);
+    }
+
+    // Minimum-size guard: after loading actual textures, verify that every image in the
+    // chosen layout renders at least 20% of the screen's width and height. If any image
+    // would be too small (e.g. a landscape image incorrectly placed in a portrait slot
+    // making the sibling column only a few pixels wide), fall back to Single so the first
+    // image is shown full-screen and the others are deferred to subsequent slides.
+    if renderer.current_layout.is_multi() {
+        let (sw, sh) = renderer.screen_size();
+        let min_w = sw / 5;
+        let min_h = sh / 5;
+        let sizes: [Option<(u32, u32)>; 4] = [
+            next_textures.as_ref().and_then(|t| t.display_size),
+            next_right_textures.as_ref().and_then(|t| t.display_size),
+            next_panel2_textures.as_ref().and_then(|t| t.display_size),
+            next_panel3_textures.as_ref().and_then(|t| t.display_size),
+        ];
+        let rects = Renderer::compute_panel_rects(renderer.current_layout, sw, sh, &sizes);
+        let too_small = rects
+            .iter()
+            .any(|r| r.width() < min_w || r.height() < min_h);
+        if too_small {
+            tracing::warn!(
+                "Layout {:?} produced image smaller than 20% of screen — falling back to Single",
+                renderer.current_layout.kind()
+            );
+            renderer.current_layout = SlideLayout::Single;
+            // Clear the extra-panel textures; they will be shown on subsequent slides.
+            *next_right_textures = None;
+            *next_panel2_textures = None;
+            *next_panel3_textures = None;
+        }
+    }
 
     match Transition::from_str(&state.config.transition) {
         Transition::Cut => {
             if let Some(next) = next_textures.take() {
                 *current_textures = next;
+            }
+            if let Some(next) = next_right_textures.take() {
+                *right_textures = next;
+            }
+            if let Some(next) = next_panel2_textures.take() {
+                *panel2_textures = next;
+            }
+            if let Some(next) = next_panel3_textures.take() {
+                *panel3_textures = next;
             }
         }
         _ => {
@@ -1391,24 +2125,29 @@ async fn advance_to_next<'a>(
         }
     }
 
-    // Touch cache
+    // Touch cache for primary panel
+    let playlist = state.playlist.read().await;
+    let media = &playlist[next_index % playlist.len()];
     let mut cache = state.cache.write().await;
     cache.touch(&media.id, AssetType::Display);
     cache.touch(&media.id, AssetType::Blur);
 
-    // Start video if applicable
     start_video_if_applicable(media, &cache, video_manager, is_video_playing);
 
     Ok(())
 }
 
 /// Go to the previous item in the playlist.
+#[allow(clippy::too_many_arguments)]
 async fn go_to_previous<'a>(
     state: &AppState,
     renderer: &mut Renderer<'_>,
     texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
     current_textures: &mut MediaTextures<'a>,
     next_textures: &mut Option<MediaTextures<'a>>,
+    right_textures: &mut MediaTextures<'a>,
+    panel2_textures: &mut MediaTextures<'a>,
+    panel3_textures: &mut MediaTextures<'a>,
     video_manager: &mut VideoManager,
     is_video_playing: &mut bool,
 ) -> Result<()> {
@@ -1421,12 +2160,14 @@ async fn go_to_previous<'a>(
         return Ok(());
     }
 
+    let step = renderer.current_layout.image_count();
+
     // Go to previous index (wrap around)
     let mut index = state.current_index.write().await;
-    *index = if *index == 0 {
-        playlist.len() - 1
+    *index = if *index < step {
+        playlist.len().saturating_sub(step)
     } else {
-        *index - 1
+        *index - step
     };
     let prev_index = *index;
     drop(index);
@@ -1434,10 +2175,7 @@ async fn go_to_previous<'a>(
     let media = &playlist[prev_index];
     tracing::debug!("Going to previous: {} ({})", media.id, media.media_type);
 
-    // Ensure current item is cached
     state.preload_media_safe(media).await?;
-
-    // Load textures
     let cache = state.cache.read().await;
     let new_textures =
         state
@@ -1445,11 +2183,50 @@ async fn go_to_previous<'a>(
             .load_textures(renderer, texture_creator, media, &cache)?;
     drop(cache);
 
-    // Use cut transition for manual navigation
     *next_textures = None;
     *current_textures = new_textures;
 
-    // Touch cache
+    // Load extra panels for multi-image layouts (cut transition for previous)
+    if step >= 2 {
+        let idx = (prev_index + 1) % playlist.len();
+        let m = playlist[idx].clone();
+        state.preload_media_safe(&m).await?;
+        let cache = state.cache.read().await;
+        *right_textures =
+            state
+                .asset_manager
+                .load_textures(renderer, texture_creator, &m, &cache)?;
+        drop(cache);
+    }
+    if step >= 3 {
+        let idx = (prev_index + 2) % playlist.len();
+        let m = playlist[idx].clone();
+        state.preload_media_safe(&m).await?;
+        let cache = state.cache.read().await;
+        *panel2_textures =
+            state
+                .asset_manager
+                .load_textures(renderer, texture_creator, &m, &cache)?;
+        drop(cache);
+    }
+    if step >= 4 {
+        let idx = (prev_index + 3) % playlist.len();
+        let m = playlist[idx].clone();
+        drop(playlist);
+        state.preload_media_safe(&m).await?;
+        let cache = state.cache.read().await;
+        *panel3_textures =
+            state
+                .asset_manager
+                .load_textures(renderer, texture_creator, &m, &cache)?;
+        drop(cache);
+    } else {
+        drop(playlist);
+    }
+
+    // Touch cache for left panel
+    let playlist = state.playlist.read().await;
+    let media = &playlist[prev_index % playlist.len()];
     let mut cache = state.cache.write().await;
     cache.touch(&media.id, AssetType::Display);
     cache.touch(&media.id, AssetType::Blur);

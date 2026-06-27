@@ -34,6 +34,63 @@ impl Transition {
     }
 }
 
+/// Layout kind discriminant — used for history tracking (no positional info).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlideLayoutKind {
+    Single,
+    DualPortrait,
+    PortraitDualLandscape,
+    QuadLandscape,
+    DualSquare,
+    SquarePortrait,
+}
+
+/// Active slide layout — captures kind and which slot goes on which side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlideLayout {
+    /// One image, full-screen (any orientation in single mode, landscape in dynamic).
+    Single,
+    /// Two portrait (or square) images side by side.
+    DualPortrait { flipped: bool },
+    /// One portrait image + two stacked landscape images. `portrait_right`: portrait on right.
+    PortraitDualLandscape { portrait_right: bool },
+    /// Four landscape images: two stacked left, two stacked right. `flipped`: right pair is slots 0&1.
+    QuadLandscape { flipped: bool },
+    /// Two square images side by side.
+    DualSquare { flipped: bool },
+    /// One square image + one portrait image. `square_right`: square on the right.
+    SquarePortrait { square_right: bool },
+}
+
+impl SlideLayout {
+    pub fn kind(&self) -> SlideLayoutKind {
+        match self {
+            SlideLayout::Single => SlideLayoutKind::Single,
+            SlideLayout::DualPortrait { .. } => SlideLayoutKind::DualPortrait,
+            SlideLayout::PortraitDualLandscape { .. } => SlideLayoutKind::PortraitDualLandscape,
+            SlideLayout::QuadLandscape { .. } => SlideLayoutKind::QuadLandscape,
+            SlideLayout::DualSquare { .. } => SlideLayoutKind::DualSquare,
+            SlideLayout::SquarePortrait { .. } => SlideLayoutKind::SquarePortrait,
+        }
+    }
+
+    /// Number of images consumed by this layout.
+    pub fn image_count(&self) -> usize {
+        match self {
+            SlideLayout::Single => 1,
+            SlideLayout::DualPortrait { .. } => 2,
+            SlideLayout::DualSquare { .. } => 2,
+            SlideLayout::SquarePortrait { .. } => 2,
+            SlideLayout::PortraitDualLandscape { .. } => 3,
+            SlideLayout::QuadLandscape { .. } => 4,
+        }
+    }
+
+    pub fn is_multi(&self) -> bool {
+        self.image_count() > 1
+    }
+}
+
 /// State of the current transition animation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TransitionState {
@@ -143,6 +200,7 @@ pub struct Renderer<'ttf> {
     transition_state: TransitionState,
     transition_start: Option<Instant>,
     pub blur_background: bool,
+    pub current_layout: SlideLayout,
     show_clock: bool,
     font_overlay: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_info: Option<sdl2::ttf::Font<'ttf, 'static>>,
@@ -150,6 +208,8 @@ pub struct Renderer<'ttf> {
     font_discovery_small: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_discovery_label: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_discovery_pin: Option<sdl2::ttf::Font<'ttf, 'static>>,
+    /// Rects of the last rendered image(s), used to align info overlays.
+    last_image_rects: [Option<Rect>; 4],
 }
 
 const CLOCK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/BodoniModa-Regular.ttf");
@@ -173,6 +233,7 @@ impl<'ttf> Renderer<'ttf> {
         fullscreen: bool,
         blur_background: bool,
         show_clock: bool,
+        initial_layout: SlideLayout,
     ) -> Result<Self> {
         let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL init failed: {}", e))?;
 
@@ -251,26 +312,30 @@ impl<'ttf> Renderer<'ttf> {
             .event_pump()
             .map_err(|e| anyhow::anyhow!("Failed to get event pump: {}", e))?;
 
-        // Load utility fonts from the system. The clock uses bundled Bodoni Moda.
+        // Clock uses bundled Bodoni Moda (serif). Info and utility text use a system
+        // sans-serif so overlay metadata is clean and easy to read.
         let font_path = Self::find_font_path();
         let font_clock = sdl2::rwops::RWops::from_bytes(CLOCK_FONT_BYTES)
             .ok()
             .and_then(|rwops| ttf_context.load_font_from_rwops(rwops, 76).ok());
-        let font_info = sdl2::rwops::RWops::from_bytes(CLOCK_FONT_BYTES)
-            .ok()
-            .and_then(|rwops| ttf_context.load_font_from_rwops(rwops, 22).ok());
 
-        let (font_overlay, font_discovery_small, font_discovery_label, font_discovery_pin) =
-            if let Some(path) = font_path {
-                (
-                    ttf_context.load_font(&path, 24).ok(),
-                    ttf_context.load_font(&path, 28).ok(),
-                    ttf_context.load_font(&path, 36).ok(),
-                    ttf_context.load_font(&path, 96).ok(),
-                )
-            } else {
-                (None, None, None, None)
-            };
+        let (
+            font_info,
+            font_overlay,
+            font_discovery_small,
+            font_discovery_label,
+            font_discovery_pin,
+        ) = if let Some(path) = font_path {
+            (
+                ttf_context.load_font(&path, 18).ok(),
+                ttf_context.load_font(&path, 24).ok(),
+                ttf_context.load_font(&path, 28).ok(),
+                ttf_context.load_font(&path, 36).ok(),
+                ttf_context.load_font(&path, 96).ok(),
+            )
+        } else {
+            (None, None, None, None, None)
+        };
 
         Ok(Self {
             canvas,
@@ -282,6 +347,7 @@ impl<'ttf> Renderer<'ttf> {
             transition_state: TransitionState::Idle,
             transition_start: None,
             blur_background,
+            current_layout: initial_layout,
             show_clock,
             font_overlay,
             font_info,
@@ -289,6 +355,7 @@ impl<'ttf> Renderer<'ttf> {
             font_discovery_small,
             font_discovery_label,
             font_discovery_pin,
+            last_image_rects: [None; 4],
         })
     }
 
@@ -454,28 +521,730 @@ impl<'ttf> Renderer<'ttf> {
         Ok(texture)
     }
 
-    /// Calculate aspect-fit rectangle for displaying an image.
+    /// Calculate aspect-fit rectangle for displaying an image on the full screen.
     fn calculate_aspect_fit(&self, img_width: u32, img_height: u32) -> Rect {
-        let screen_ratio = self.screen_width as f32 / self.screen_height as f32;
-        let img_ratio = img_width as f32 / img_height as f32;
+        Self::fit_in_box(
+            img_width,
+            img_height,
+            0,
+            0,
+            self.screen_width,
+            self.screen_height,
+        )
+    }
 
-        let (fit_width, fit_height) = if img_ratio > screen_ratio {
-            // Image is wider than screen, fit to width
-            let fit_width = self.screen_width;
-            let fit_height = (self.screen_width as f32 / img_ratio) as u32;
-            (fit_width, fit_height)
+    /// Aspect-fit an image within an arbitrary bounding box, centered.
+    fn fit_in_box(img_w: u32, img_h: u32, bx: i32, by: i32, bw: u32, bh: u32) -> Rect {
+        if img_w == 0 || img_h == 0 || bw == 0 || bh == 0 {
+            return Rect::new(bx, by, bw, bh);
+        }
+        let img_ratio = img_w as f32 / img_h as f32;
+        let box_ratio = bw as f32 / bh as f32;
+        let (fw, fh) = if img_ratio > box_ratio {
+            let fw = bw;
+            let fh = (bw as f32 / img_ratio).round() as u32;
+            (fw, fh)
         } else {
-            // Image is taller than screen, fit to height
-            let fit_height = self.screen_height;
-            let fit_width = (self.screen_height as f32 * img_ratio) as u32;
-            (fit_width, fit_height)
+            let fh = bh;
+            let fw = (bh as f32 * img_ratio).round() as u32;
+            (fw, fh)
+        };
+        let x = bx + ((bw as i32 - fw as i32) / 2);
+        let y = by + ((bh as i32 - fh as i32) / 2);
+        Rect::new(x, y, fw.max(1), fh.max(1))
+    }
+
+    /// Like fit_in_box but snaps to the inner edge of the cell rather than centering.
+    ///
+    /// `snap_right`  — align image to the right  side of the cell (faces an adjacent image)
+    /// `snap_bottom` — align image to the bottom side of the cell (faces an adjacent image)
+    /// The opposite (outer) edge is left floating so the gap between adjacent images is always
+    /// exactly the cell boundary, not inflated by letterbox padding.
+    #[allow(clippy::too_many_arguments)]
+    fn fit_snap(
+        img_w: u32,
+        img_h: u32,
+        bx: i32,
+        by: i32,
+        bw: u32,
+        bh: u32,
+        snap_right: bool,
+        snap_bottom: bool,
+    ) -> Rect {
+        if img_w == 0 || img_h == 0 || bw == 0 || bh == 0 {
+            return Rect::new(bx, by, bw.max(1), bh.max(1));
+        }
+        let img_ratio = img_w as f32 / img_h as f32;
+        let box_ratio = bw as f32 / bh as f32;
+        let (fw, fh) = if img_ratio > box_ratio {
+            let fw = bw;
+            (fw, (bw as f32 / img_ratio).round() as u32)
+        } else {
+            let fh = bh;
+            ((bh as f32 * img_ratio).round() as u32, fh)
+        };
+        let x = if snap_right {
+            bx + bw as i32 - fw as i32
+        } else {
+            bx
+        };
+        let y = if snap_bottom {
+            by + bh as i32 - fh as i32
+        } else {
+            by
+        };
+        Rect::new(x, y, fw.max(1), fh.max(1))
+    }
+
+    /// Compute display rects for all panels in the given layout.
+    ///
+    /// Returns up to 4 Rects corresponding to slots 0–(image_count-1).
+    /// For layouts with a side option (portrait_right, flipped, etc.) the slots
+    /// are always ordered by playlist position; the side flag only controls which
+    /// screen column they land in.
+    pub(crate) fn compute_panel_rects(
+        layout: SlideLayout,
+        sw: u32,
+        sh: u32,
+        sizes: &[Option<(u32, u32)>; 4],
+    ) -> Vec<Rect> {
+        const GAP: u32 = 8;
+        let natural_w_at_h = |size: Option<(u32, u32)>, h: u32| -> u32 {
+            let (w, ih) = size.unwrap_or((h, h));
+            if ih == 0 {
+                h
+            } else {
+                ((h as f64 * w as f64 / ih as f64).round() as u32).max(1)
+            }
         };
 
-        // Center the image
-        let x = ((self.screen_width - fit_width) / 2) as i32;
-        let y = ((self.screen_height - fit_height) / 2) as i32;
+        match layout {
+            SlideLayout::Single => {
+                let r = Self::fit_in_box(
+                    sizes[0].map(|s| s.0).unwrap_or(sw),
+                    sizes[0].map(|s| s.1).unwrap_or(sh),
+                    0,
+                    0,
+                    sw,
+                    sh,
+                );
+                vec![r]
+            }
 
-        Rect::new(x, y, fit_width, fit_height)
+            SlideLayout::DualPortrait { flipped } | SlideLayout::DualSquare { flipped } => {
+                // Two images side by side, both at full screen height
+                let nw0 = natural_w_at_h(sizes[0], sh);
+                let nw1 = natural_w_at_h(sizes[1], sh);
+                let total_natural = nw0 + GAP + nw1;
+                let (dw0, dw1, dh) = if total_natural <= sw {
+                    (nw0, nw1, sh)
+                } else {
+                    let scale = sw as f64 / total_natural as f64;
+                    let dh = (sh as f64 * scale).round() as u32;
+                    (
+                        (nw0 as f64 * scale).round() as u32,
+                        (nw1 as f64 * scale).round() as u32,
+                        dh,
+                    )
+                };
+                let pair_w = dw0 + GAP + dw1;
+                let x0 = ((sw.saturating_sub(pair_w)) / 2) as i32;
+                let y0 = ((sh.saturating_sub(dh)) / 2) as i32;
+                if flipped {
+                    vec![
+                        Rect::new(x0 + dw1 as i32 + GAP as i32, y0, dw0, dh),
+                        Rect::new(x0, y0, dw1, dh),
+                    ]
+                } else {
+                    vec![
+                        Rect::new(x0, y0, dw0, dh),
+                        Rect::new(x0 + dw0 as i32 + GAP as i32, y0, dw1, dh),
+                    ]
+                }
+            }
+
+            SlideLayout::SquarePortrait { square_right } => {
+                // Square + portrait side by side (same sizing as DualPortrait)
+                let nw0 = natural_w_at_h(sizes[0], sh);
+                let nw1 = natural_w_at_h(sizes[1], sh);
+                let total_natural = nw0 + GAP + nw1;
+                let (dw0, dw1, dh) = if total_natural <= sw {
+                    (nw0, nw1, sh)
+                } else {
+                    let scale = sw as f64 / total_natural as f64;
+                    let dh = (sh as f64 * scale).round() as u32;
+                    (
+                        (nw0 as f64 * scale).round() as u32,
+                        (nw1 as f64 * scale).round() as u32,
+                        dh,
+                    )
+                };
+                let pair_w = dw0 + GAP + dw1;
+                let x0 = ((sw.saturating_sub(pair_w)) / 2) as i32;
+                let y0 = ((sh.saturating_sub(dh)) / 2) as i32;
+                // slot 0 = square, slot 1 = portrait
+                if square_right {
+                    vec![
+                        Rect::new(x0 + dw1 as i32 + GAP as i32, y0, dw0, dh),
+                        Rect::new(x0, y0, dw1, dh),
+                    ]
+                } else {
+                    vec![
+                        Rect::new(x0, y0, dw0, dh),
+                        Rect::new(x0 + dw0 as i32 + GAP as i32, y0, dw1, dh),
+                    ]
+                }
+            }
+
+            SlideLayout::PortraitDualLandscape { portrait_right } => {
+                // Slot 0 = portrait (full screen height, snapped to screen edge).
+                // Slots 1+2 = two landscape images stacked in the remaining column,
+                // each snapped to the portrait-adjacent edge so the gap is exactly GAP.
+                let p_w = natural_w_at_h(sizes[0], sh).max(1);
+
+                // Column spans the remaining screen width beside the portrait.
+                let (portrait_x, col_x, col_w) = if portrait_right {
+                    let px = sw as i32 - p_w as i32;
+                    (px, 0_i32, (px - GAP as i32).max(1) as u32)
+                } else {
+                    let cx = p_w as i32 + GAP as i32;
+                    (0_i32, cx, (sw as i32 - cx).max(1) as u32)
+                };
+
+                // Each landscape gets half the screen height; they snap to the center seam.
+                let cy = (sh / 2) as i32;
+                let gap_half = (GAP / 2) as i32;
+                let cell_th = (cy - gap_half) as u32;
+                let cell_bh = (sh as i32 - cy - gap_half) as u32;
+                let by_ = cy + gap_half;
+
+                // Landscapes snap horizontally toward the portrait (inner edge of column).
+                let snap_r = portrait_right; // right-snap when portrait is on the right
+                let land1 = Self::fit_snap(
+                    sizes[1].map(|s| s.0).unwrap_or(col_w),
+                    sizes[1].map(|s| s.1).unwrap_or(cell_th),
+                    col_x,
+                    0,
+                    col_w,
+                    cell_th,
+                    snap_r,
+                    true,
+                );
+                let land2 = Self::fit_snap(
+                    sizes[2].map(|s| s.0).unwrap_or(col_w),
+                    sizes[2].map(|s| s.1).unwrap_or(cell_bh),
+                    col_x,
+                    by_,
+                    col_w,
+                    cell_bh,
+                    snap_r,
+                    false,
+                );
+                let portrait_rect = Rect::new(portrait_x, 0, p_w, sh);
+                vec![portrait_rect, land1, land2]
+            }
+
+            SlideLayout::QuadLandscape { flipped } => {
+                // 2×2 grid. Each image snaps its inner edges to the centre seam so that
+                // the gap between any two adjacent images is exactly GAP — not inflated by
+                // letterbox padding when images differ in aspect ratio from the cell.
+                let cx = (sw / 2) as i32;
+                let cy = (sh / 2) as i32;
+                let gh = (GAP / 2) as i32; // half-gap offset from centre
+
+                let lw = (cx - gh) as u32; // left-column  cell width
+                let rw = (sw as i32 - cx - gh) as u32; // right-column cell width
+                let th = (cy - gh) as u32; // top-row      cell height
+                let bh = (sh as i32 - cy - gh) as u32; // bottom-row   cell height
+                let rx = cx + gh; // right-column x origin
+                let by_ = cy + gh; // bottom-row   y origin
+
+                let s = |i: usize| sizes[i].unwrap_or((1, 1));
+
+                // snap_right=true  → image right-aligns  to inner (centre) edge
+                // snap_bottom=true → image bottom-aligns to inner (centre) edge
+                let place = |i: usize, bx: i32, by: i32, bw: u32, bh: u32, sr: bool, sb: bool| {
+                    Self::fit_snap(s(i).0, s(i).1, bx, by, bw, bh, sr, sb)
+                };
+
+                let (r0, r1, r2, r3) = if flipped {
+                    // slots 0,1 → right column; 2,3 → left column
+                    (
+                        place(0, rx, 0, rw, th, false, true),
+                        place(1, rx, by_, rw, bh, false, false),
+                        place(2, 0, 0, lw, th, true, true),
+                        place(3, 0, by_, lw, bh, true, false),
+                    )
+                } else {
+                    // slots 0,1 → left column; 2,3 → right column
+                    (
+                        place(0, 0, 0, lw, th, true, true),
+                        place(1, 0, by_, lw, bh, true, false),
+                        place(2, rx, 0, rw, th, false, true),
+                        place(3, rx, by_, rw, bh, false, false),
+                    )
+                };
+                vec![r0, r1, r2, r3]
+            }
+        }
+    }
+
+    /// Render all panels for the current layout — backgrounds, images, and gap lines.
+    fn render_layout_panels<'a>(
+        &mut self,
+        _tc: &'a TextureCreator<WindowContext>,
+        panels: &mut [&mut MediaTextures<'a>],
+        alpha: u8,
+    ) -> Result<()> {
+        const GAP: u32 = 8;
+        const BG_BLEND_HALF: i32 = 150; // half-width of the background blend zone
+        let sw = self.screen_width;
+        let sh = self.screen_height;
+
+        let mut sizes: [Option<(u32, u32)>; 4] = [None; 4];
+        for (i, p) in panels.iter().enumerate() {
+            sizes[i] = p.display_size;
+        }
+
+        let rects = Self::compute_panel_rects(self.current_layout, sw, sh, &sizes);
+        let n = rects.len();
+
+        // Record rects for info overlay
+        self.last_image_rects = [None; 4];
+        for (i, r) in rects.iter().enumerate() {
+            if i < 4 {
+                self.last_image_rects[i] = Some(*r);
+            }
+        }
+
+        if n == 1 {
+            // Single image — use the standard single-panel background render
+            if self.blur_background {
+                if let Some(ref mut blur) = panels[0].blur {
+                    blur.set_alpha_mod(alpha);
+                    self.canvas
+                        .copy(blur, None, None)
+                        .map_err(|e| anyhow::anyhow!("blur: {}", e))?;
+                }
+            }
+            if let Some(ref mut display) = panels[0].display {
+                display.set_alpha_mod(alpha);
+                self.canvas
+                    .copy(display, None, rects[0])
+                    .map_err(|e| anyhow::anyhow!("display: {}", e))?;
+            }
+            return Ok(());
+        }
+
+        // Multi-panel: render backgrounds with wide blending, then images, then gap lines
+
+        // Step 1: For each panel, draw its blur texture on its half of the screen,
+        //         then blend neighbours across a wide zone centered on the gap.
+        if self.blur_background {
+            // Collect background dividing lines (x or y boundaries between panels).
+            // We find vertical gaps (between left and right columns) and horizontal gaps
+            // (between top and bottom rows) and do a wide gradient blend across each.
+            //
+            // Simple approach: draw each blur full-screen at full alpha first, then
+            // overdraw with adjacent panels' blurs, fading in/out across blend_half px
+            // centered on the gap center.
+
+            // Draw panel 0's blur as base
+            if let Some(ref mut blur) = panels[0].blur {
+                blur.set_alpha_mod(alpha);
+                self.canvas
+                    .copy(blur, None, None)
+                    .map_err(|e| anyhow::anyhow!("bg blur 0: {}", e))?;
+            }
+
+            // For each subsequent panel, overdraw its blur with wide gradient blending
+            // at each spatial seam. Seams are detected by comparing against ALL already-drawn
+            // panels (not just the previous index), so diagonal neighbours (QuadLandscape BR)
+            // correctly receive both vertical and horizontal gradients.
+            //
+            // seam direction encoding: positive = this panel is to the RIGHT of / BELOW the seam
+            //                          negative = this panel is to the LEFT of / ABOVE the seam
+            for i in 1..n {
+                let p = &mut panels[i];
+                if p.blur.is_none() {
+                    continue;
+                }
+
+                let this_r = rects[i];
+
+                // Find seams against any already-drawn panel (j < i).
+                // Track both the seam position and whether this panel is to the right/below it.
+                let mut seam_x: Option<(i32, bool)> = None; // (seam_x_coord, this_is_right_of_seam)
+                let mut seam_y: Option<(i32, bool)> = None; // (seam_y_coord, this_is_below_seam)
+                for other in rects.iter().take(i) {
+                    let other = *other;
+                    // Panels are in different columns if their x-centres differ more than a gap width
+                    if (other.x() - this_r.x()).abs() > GAP as i32 {
+                        if other.x() < this_r.x() {
+                            // other is to the left → seam at this panel's left edge, this is right-of
+                            seam_x = Some((this_r.x(), true));
+                        } else {
+                            // other is to the right → seam at other's left edge, this is left-of
+                            seam_x = Some((other.x(), false));
+                        }
+                    }
+                    // Panels are in different rows
+                    if (other.y() - this_r.y()).abs() > GAP as i32 {
+                        if other.y() < this_r.y() {
+                            seam_y = Some((this_r.y(), true));
+                        } else {
+                            seam_y = Some((other.y(), false));
+                        }
+                    }
+                }
+
+                let blur = p.blur.as_mut().unwrap();
+
+                // Helper: compute the alpha for a column x given a vertical seam.
+                // this_is_right_of_seam=true  → panel lives to the right: alpha ramps 0→full rightward
+                // this_is_right_of_seam=false → panel lives to the left:  alpha ramps full→0 rightward
+                let v_alpha = |x: i32, seam: i32, this_is_right: bool| -> u8 {
+                    let bs = (seam - BG_BLEND_HALF).max(0);
+                    let be = (seam + BG_BLEND_HALF).min(sw as i32);
+                    if be == bs {
+                        return if this_is_right { alpha } else { 0 };
+                    }
+                    let t = ((x - bs) as f32 / (be - bs) as f32).clamp(0.0, 1.0);
+                    let t = if this_is_right { t } else { 1.0 - t };
+                    (t * alpha as f32).round() as u8
+                };
+                // Helper: compute alpha for a row y given a horizontal seam.
+                let h_alpha = |y: i32, seam: i32, this_is_below: bool| -> u8 {
+                    let bs = (seam - BG_BLEND_HALF).max(0);
+                    let be = (seam + BG_BLEND_HALF).min(sh as i32);
+                    if be == bs {
+                        return if this_is_below { alpha } else { 0 };
+                    }
+                    let t = ((y - bs) as f32 / (be - bs) as f32).clamp(0.0, 1.0);
+                    let t = if this_is_below { t } else { 1.0 - t };
+                    (t * alpha as f32).round() as u8
+                };
+
+                match (seam_x, seam_y) {
+                    (None, None) => {
+                        // No spatial seam found – full overdraw fallback
+                        blur.set_alpha_mod(alpha);
+                        self.canvas
+                            .copy(blur, None, None)
+                            .map_err(|e| anyhow::anyhow!("bg full: {}", e))?;
+                    }
+                    (Some((vx, vright)), None) => {
+                        // Only vertical seam — draw column by column across the blend zone,
+                        // then fill the "own side" solid region.
+                        let blend_start = (vx - BG_BLEND_HALF).max(0);
+                        let blend_end = (vx + BG_BLEND_HALF).min(sw as i32);
+                        // Solid region on the "own" side
+                        let (solid_x, solid_w) = if vright {
+                            (blend_end, sw as i32 - blend_end)
+                        } else {
+                            (0, blend_start)
+                        };
+                        if solid_w > 0 {
+                            self.canvas
+                                .set_clip_rect(Rect::new(solid_x, 0, solid_w as u32, sh));
+                            blur.set_alpha_mod(alpha);
+                            self.canvas
+                                .copy(blur, None, None)
+                                .map_err(|e| anyhow::anyhow!("bg v solid: {}", e))?;
+                            self.canvas.set_clip_rect(None::<Rect>);
+                        }
+                        // Gradient blend zone
+                        for x in blend_start..blend_end {
+                            let a = v_alpha(x, vx, vright);
+                            if a == 0 {
+                                continue;
+                            }
+                            let src_x = ((x as f64 / sw as f64) * (sw as f64 - 1.0)).round() as i32;
+                            blur.set_alpha_mod(a);
+                            self.canvas
+                                .copy(
+                                    blur,
+                                    Rect::new(src_x.max(0), 0, 1, sh),
+                                    Rect::new(x, 0, 1, sh),
+                                )
+                                .map_err(|e| anyhow::anyhow!("bg blend col: {}", e))?;
+                        }
+                    }
+                    (None, Some((hy, hbelow))) => {
+                        // Only horizontal seam
+                        let blend_start = (hy - BG_BLEND_HALF).max(0);
+                        let blend_end = (hy + BG_BLEND_HALF).min(sh as i32);
+                        let (solid_y, solid_h) = if hbelow {
+                            (blend_end, sh as i32 - blend_end)
+                        } else {
+                            (0, blend_start)
+                        };
+                        if solid_h > 0 {
+                            self.canvas
+                                .set_clip_rect(Rect::new(0, solid_y, sw, solid_h as u32));
+                            blur.set_alpha_mod(alpha);
+                            self.canvas
+                                .copy(blur, None, None)
+                                .map_err(|e| anyhow::anyhow!("bg h solid: {}", e))?;
+                            self.canvas.set_clip_rect(None::<Rect>);
+                        }
+                        for y in blend_start..blend_end {
+                            let a = h_alpha(y, hy, hbelow);
+                            if a == 0 {
+                                continue;
+                            }
+                            let src_y = ((y as f64 / sh as f64) * (sh as f64 - 1.0)).round() as i32;
+                            blur.set_alpha_mod(a);
+                            self.canvas
+                                .copy(
+                                    blur,
+                                    Rect::new(0, src_y.max(0), sw, 1),
+                                    Rect::new(0, y, sw, 1),
+                                )
+                                .map_err(|e| anyhow::anyhow!("bg blend row: {}", e))?;
+                        }
+                    }
+                    (Some((vx, vright)), Some((hy, hbelow))) => {
+                        // Both seams (e.g. BR panel in QuadLandscape, or BL in flipped layout).
+                        // Combine vertical and horizontal gradients: alpha = v_alpha * h_alpha / 255.
+                        // Solid quadrant (own corner)
+                        let (solid_x, solid_w) = if vright {
+                            (vx + BG_BLEND_HALF, sw as i32 - vx - BG_BLEND_HALF)
+                        } else {
+                            (0, vx - BG_BLEND_HALF)
+                        };
+                        let (solid_y, solid_h) = if hbelow {
+                            (hy + BG_BLEND_HALF, sh as i32 - hy - BG_BLEND_HALF)
+                        } else {
+                            (0, hy - BG_BLEND_HALF)
+                        };
+                        let solid_x = solid_x.max(0);
+                        let solid_w = solid_w.max(0);
+                        let solid_y = solid_y.max(0);
+                        let solid_h = solid_h.max(0);
+                        if solid_w > 0 && solid_h > 0 {
+                            self.canvas.set_clip_rect(Rect::new(
+                                solid_x,
+                                solid_y,
+                                solid_w as u32,
+                                solid_h as u32,
+                            ));
+                            blur.set_alpha_mod(alpha);
+                            self.canvas
+                                .copy(blur, None, None)
+                                .map_err(|e| anyhow::anyhow!("bg 2d solid: {}", e))?;
+                            self.canvas.set_clip_rect(None::<Rect>);
+                        }
+                        // Per-pixel blend across seam regions (column-by-column for efficiency)
+                        let vbs = (vx - BG_BLEND_HALF).max(0);
+                        let vbe = (vx + BG_BLEND_HALF).min(sw as i32);
+                        let hbs = (hy - BG_BLEND_HALF).max(0);
+                        let hbe = (hy + BG_BLEND_HALF).min(sh as i32);
+                        // For rows in the h-blend zone: draw each column with combined alpha
+                        for y in hbs..hbe {
+                            let ha = h_alpha(y, hy, hbelow);
+                            if ha == 0 {
+                                continue;
+                            }
+                            let src_y = ((y as f64 / sh as f64) * (sh as f64 - 1.0)).round() as i32;
+                            // Solid side of v-seam for this row
+                            if solid_w > 0 {
+                                self.canvas
+                                    .set_clip_rect(Rect::new(solid_x, y, solid_w as u32, 1));
+                                blur.set_alpha_mod(ha);
+                                self.canvas
+                                    .copy(
+                                        blur,
+                                        Rect::new(0, src_y.max(0), sw, 1),
+                                        Rect::new(0, y, sw, 1),
+                                    )
+                                    .map_err(|e| anyhow::anyhow!("bg 2d h+vsolid: {}", e))?;
+                                self.canvas.set_clip_rect(None::<Rect>);
+                            }
+                            // V-blend zone of this row
+                            for x in vbs..vbe {
+                                let va = v_alpha(x, vx, vright);
+                                let combined = ((ha as u16 * va as u16) / 255) as u8;
+                                if combined == 0 {
+                                    continue;
+                                }
+                                let src_x =
+                                    ((x as f64 / sw as f64) * (sw as f64 - 1.0)).round() as i32;
+                                blur.set_alpha_mod(combined);
+                                self.canvas
+                                    .copy(
+                                        blur,
+                                        Rect::new(src_x.max(0), src_y.max(0), 1, 1),
+                                        Rect::new(x, y, 1, 1),
+                                    )
+                                    .map_err(|e| anyhow::anyhow!("bg 2d pixel: {}", e))?;
+                            }
+                        }
+                        // For rows outside h-blend but on the own side of h-seam: vertical gradient only
+                        for x in vbs..vbe {
+                            let va = v_alpha(x, vx, vright);
+                            if va == 0 {
+                                continue;
+                            }
+                            let src_x = ((x as f64 / sw as f64) * (sw as f64 - 1.0)).round() as i32;
+                            // Above h-blend zone
+                            let above_end = hbs.min(sh as i32);
+                            let below_start = hbe.max(0);
+                            if hbelow && above_end > 0 {
+                                // rows 0..hbs are in the "other side" of h-seam — this panel has 0 h-alpha there
+                                // nothing to draw
+                            } else if !hbelow && below_start < sh as i32 {
+                                // rows hbe..sh are in the "other side" — nothing
+                            }
+                            // Own side of h-seam
+                            let (own_y, own_h) = if hbelow {
+                                (hbe, sh as i32 - hbe)
+                            } else {
+                                (0, hbs)
+                            };
+                            let own_y = own_y.max(0);
+                            let own_h = own_h.max(0);
+                            if own_h > 0 {
+                                blur.set_alpha_mod(va);
+                                self.canvas
+                                    .copy(
+                                        blur,
+                                        Rect::new(src_x.max(0), 0, 1, sh),
+                                        Rect::new(x, own_y, 1, own_h as u32),
+                                    )
+                                    .map_err(|e| anyhow::anyhow!("bg 2d vcol: {}", e))?;
+                            }
+                        }
+                    }
+                }
+                blur.set_alpha_mod(alpha);
+            }
+        }
+
+        // Step 2: Render each image clipped to its rect
+        for (i, rect) in rects.iter().enumerate() {
+            if let Some(ref mut display) = panels[i].display {
+                self.canvas.set_clip_rect(*rect);
+                display.set_alpha_mod(alpha);
+                self.canvas
+                    .copy(display, None, *rect)
+                    .map_err(|e| anyhow::anyhow!("img {}: {}", i, e))?;
+            }
+        }
+        self.canvas.set_clip_rect(None::<Rect>);
+
+        // Step 3: Draw 8px near-black gap lines between adjacent image rects.
+        // Collect vertical (x) and horizontal (y) seam positions so we can fill
+        // intersection squares afterward (avoids the open corner at 3-/4-way junctions).
+        self.canvas.set_draw_color(Color::RGB(17, 17, 17));
+        let mut vseams: Vec<i32> = Vec::new(); // x-coords of vertical gap left edges
+        let mut hseams: Vec<i32> = Vec::new(); // y-coords of horizontal gap top edges
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let a = rects[i];
+                let b = rects[j];
+                // Vertical gap (a is left of b)
+                if (a.right() + GAP as i32) <= b.x() + 2 {
+                    let gx = a.right();
+                    let top = a.y().max(b.y());
+                    let bot = (a.y() + a.height() as i32).min(b.y() + b.height() as i32);
+                    if bot > top {
+                        self.canvas
+                            .fill_rect(Rect::new(gx, top, GAP, (bot - top) as u32))
+                            .map_err(|e| anyhow::anyhow!("gap v: {}", e))?;
+                        if !vseams.contains(&gx) {
+                            vseams.push(gx);
+                        }
+                    }
+                }
+                // Vertical gap (b is left of a)
+                if (b.right() + GAP as i32) <= a.x() + 2 {
+                    let gx = b.right();
+                    let top = a.y().max(b.y());
+                    let bot = (a.y() + a.height() as i32).min(b.y() + b.height() as i32);
+                    if bot > top {
+                        self.canvas
+                            .fill_rect(Rect::new(gx, top, GAP, (bot - top) as u32))
+                            .map_err(|e| anyhow::anyhow!("gap v2: {}", e))?;
+                        if !vseams.contains(&gx) {
+                            vseams.push(gx);
+                        }
+                    }
+                }
+                // Horizontal gap (a is above b)
+                if (a.y() + a.height() as i32 + GAP as i32) <= b.y() + 2 {
+                    let gy = a.y() + a.height() as i32;
+                    let left = a.x().max(b.x());
+                    let right = (a.x() + a.width() as i32).min(b.x() + b.width() as i32);
+                    if right > left {
+                        self.canvas
+                            .fill_rect(Rect::new(left, gy, (right - left) as u32, GAP))
+                            .map_err(|e| anyhow::anyhow!("gap h: {}", e))?;
+                        if !hseams.contains(&gy) {
+                            hseams.push(gy);
+                        }
+                    }
+                }
+                // Horizontal gap (b is above a)
+                if (b.y() + b.height() as i32 + GAP as i32) <= a.y() + 2 {
+                    let gy = b.y() + b.height() as i32;
+                    let left = a.x().max(b.x());
+                    let right = (a.x() + a.width() as i32).min(b.x() + b.width() as i32);
+                    if right > left {
+                        self.canvas
+                            .fill_rect(Rect::new(left, gy, (right - left) as u32, GAP))
+                            .map_err(|e| anyhow::anyhow!("gap h2: {}", e))?;
+                        if !hseams.contains(&gy) {
+                            hseams.push(gy);
+                        }
+                    }
+                }
+            }
+        }
+        // Fill the GAP×GAP corner squares at every vertical+horizontal seam intersection.
+        for &gx in &vseams {
+            for &gy in &hseams {
+                self.canvas
+                    .fill_rect(Rect::new(gx, gy, GAP, GAP))
+                    .map_err(|e| anyhow::anyhow!("gap corner: {}", e))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Render all panels (with transition support) for the current layout.
+    pub fn render_layout<'a>(
+        &mut self,
+        tc: &'a TextureCreator<WindowContext>,
+        panels: &mut [&mut MediaTextures<'a>],
+        next_panels: Option<&mut [&mut MediaTextures<'a>]>,
+    ) -> Result<()> {
+        self.canvas.set_draw_color(Color::RGB(0, 0, 0));
+        self.canvas.clear();
+
+        let alpha = match (self.transition_type, self.transition_state) {
+            (Transition::Cut, _) | (_, TransitionState::Idle) => 255u8,
+            (_, TransitionState::TransitioningOut { progress }) => ((1.0 - progress) * 255.0) as u8,
+            (_, TransitionState::TransitioningIn { progress }) => (progress * 255.0) as u8,
+        };
+
+        if self.transition_type == Transition::Crossfade {
+            if let TransitionState::TransitioningOut { progress } = self.transition_state {
+                let next_alpha = (progress * 255.0) as u8;
+                if let Some(np) = next_panels {
+                    self.render_layout_panels(tc, np, next_alpha)?;
+                }
+            }
+        }
+
+        self.render_layout_panels(tc, panels, alpha)?;
+
+        if self.show_clock {
+            self.render_clock(tc)?;
+        }
+
+        Ok(())
     }
 
     /// Start a transition to the next image.
@@ -594,7 +1363,7 @@ impl<'ttf> Renderer<'ttf> {
         let clock_text = Self::format_clock_time();
         let surface = font
             .render(&clock_text)
-            .blended(Color::RGBA(255, 255, 255, 118))
+            .blended(Color::RGBA(255, 255, 255, 200))
             .map_err(|e| anyhow::anyhow!("Failed to render clock: {}", e))?;
         let texture = texture_creator
             .create_texture_from_surface(&surface)
@@ -606,20 +1375,34 @@ impl<'ttf> Renderer<'ttf> {
         let y = self.screen_height as i32 - query.height as i32 - margin;
         let dest = Rect::new(x, y, query.width, query.height);
 
+        // Warm dark brown shadow — softer and less harsh than pure black
         let shadow_surface = font
             .render(&clock_text)
-            .blended(Color::RGBA(0, 0, 0, 44))
+            .blended(Color::RGBA(28, 14, 6, 200))
             .map_err(|e| anyhow::anyhow!("Failed to render clock shadow: {}", e))?;
-        let shadow = texture_creator
-            .create_texture_from_surface(&shadow_surface)
-            .map_err(|e| anyhow::anyhow!("Failed to create clock shadow texture: {}", e))?;
-        self.canvas
-            .copy(
-                &shadow,
-                None,
-                Rect::new(x + 2, y + 2, query.width, query.height),
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to copy clock shadow: {}", e))?;
+        let offsets: &[(i32, i32, u8)] = &[
+            (-2, 0, 60),
+            (2, 0, 60),
+            (0, -2, 60),
+            (0, 2, 60),
+            (-2, -2, 35),
+            (2, -2, 35),
+            (-2, 2, 35),
+            (2, 2, 35),
+        ];
+        for &(dx, dy, a) in offsets {
+            let mut shadow = texture_creator
+                .create_texture_from_surface(&shadow_surface)
+                .map_err(|e| anyhow::anyhow!("Failed to create clock shadow texture: {}", e))?;
+            shadow.set_alpha_mod(a);
+            self.canvas
+                .copy(
+                    &shadow,
+                    None,
+                    Rect::new(x + dx, y + dy, query.width, query.height),
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to copy clock shadow: {}", e))?;
+        }
         self.canvas
             .copy(&texture, None, dest)
             .map_err(|e| anyhow::anyhow!("Failed to copy clock: {}", e))?;
@@ -682,6 +1465,7 @@ impl<'ttf> Renderer<'ttf> {
         if let Some(ref mut display) = textures.display {
             if let Some((width, height)) = textures.display_size {
                 let dest_rect = self.calculate_aspect_fit(width, height);
+                self.last_image_rects = [Some(dest_rect), None, None, None];
                 display.set_alpha_mod(alpha);
                 self.canvas
                     .copy(display, None, dest_rect)
@@ -852,15 +1636,38 @@ impl<'ttf> Renderer<'ttf> {
         Ok(())
     }
 
-    /// Render a media info overlay at the bottom-left of the screen.
-    /// Uses shadow text styled like the clock — no opaque background panel.
+    /// Render info overlays for all panels in the current multi-image layout.
+    pub fn render_info_overlay_multi(&mut self, infos: &[MediaInfoOverlay]) -> Result<()> {
+        for (i, info) in infos.iter().enumerate() {
+            if i >= 4 {
+                break;
+            }
+            let rect = self.last_image_rects[i]
+                .unwrap_or_else(|| Rect::new(0, 0, self.screen_width, self.screen_height));
+            self.render_info_overlay_in_rect(info, rect)?;
+        }
+        Ok(())
+    }
+
     pub fn render_info_overlay(&mut self, info: &MediaInfoOverlay) -> Result<()> {
+        let rect = self.last_image_rects[0]
+            .unwrap_or_else(|| Rect::new(0, 0, self.screen_width, self.screen_height));
+        self.render_info_overlay_in_rect(info, rect)
+    }
+
+    /// Render info overlay text anchored to the bottom-left of the given image rect.
+    fn render_info_overlay_in_rect(
+        &mut self,
+        info: &MediaInfoOverlay,
+        image_rect: Rect,
+    ) -> Result<()> {
         let Some(font) = &self.font_info else {
             return Ok(());
         };
 
-        let line_h = 30i32;
-        let margin = (self.screen_width.min(self.screen_height) as f32 * 0.035).round() as i32;
+        let line_h = 24i32;
+        let margin = (image_rect.width().min(image_rect.height()) as f32 * 0.03).round() as i32;
+        let text_x = image_rect.x() + margin;
         let mut lines: Vec<String> = Vec::new();
 
         if let Some(t) = &info.title {
@@ -932,7 +1739,7 @@ impl<'ttf> Renderer<'ttf> {
 
         let texture_creator = self.canvas.texture_creator();
         let total_h = lines.len() as i32 * line_h;
-        let start_y = self.screen_height as i32 - total_h - margin;
+        let start_y = image_rect.y() + image_rect.height() as i32 - total_h - margin;
 
         for (i, line) in lines.iter().enumerate() {
             let y = start_y + i as i32 * line_h;
@@ -941,7 +1748,7 @@ impl<'ttf> Renderer<'ttf> {
                 font,
                 &texture_creator,
                 line,
-                margin,
+                text_x,
                 y,
                 Color::RGBA(255, 255, 255, 210),
             )?;
@@ -1087,6 +1894,9 @@ impl<'ttf> Renderer<'ttf> {
         Ok(())
     }
 
+    /// Render text with a soft multi-offset shadow for legibility on any background.
+    /// Draws a dark shadow at several small offsets (simulating a blur), then the
+    /// foreground text on top — elegant and readable without any opaque background box.
     fn render_text(
         canvas: &mut Canvas<Window>,
         font: &sdl2::ttf::Font,
@@ -1100,20 +1910,45 @@ impl<'ttf> Renderer<'ttf> {
             return Ok(());
         }
 
+        // Warm dark brown shadow — softer and less harsh than pure black
+        let shadow_surface = font
+            .render(text)
+            .blended(Color::RGBA(28, 14, 6, 200))
+            .map_err(|e| anyhow::anyhow!("Failed to render text shadow: {}", e))?;
+        let shadow_tex = texture_creator
+            .create_texture_from_surface(&shadow_surface)
+            .map_err(|e| anyhow::anyhow!("Failed to create text shadow texture: {}", e))?;
+        let q = shadow_tex.query();
+
+        let offsets: &[(i32, i32, u8)] = &[
+            (-2, 0, 60),
+            (2, 0, 60),
+            (0, -2, 60),
+            (0, 2, 60),
+            (-2, -2, 35),
+            (2, -2, 35),
+            (-2, 2, 35),
+            (2, 2, 35),
+        ];
+        for &(dx, dy, a) in offsets {
+            let mut t = texture_creator
+                .create_texture_from_surface(&shadow_surface)
+                .map_err(|e| anyhow::anyhow!("Failed to duplicate shadow texture: {}", e))?;
+            t.set_alpha_mod(a);
+            canvas
+                .copy(&t, None, Rect::new(x + dx, y + dy, q.width, q.height))
+                .map_err(|e| anyhow::anyhow!("Failed to copy shadow: {}", e))?;
+        }
+
         let surface = font
             .render(text)
             .blended(color)
             .map_err(|e| anyhow::anyhow!("Failed to render text: {}", e))?;
-
         let texture = texture_creator
             .create_texture_from_surface(&surface)
             .map_err(|e| anyhow::anyhow!("Failed to create text texture: {}", e))?;
-
-        let query = texture.query();
-        let dest = Rect::new(x, y, query.width, query.height);
-
         canvas
-            .copy(&texture, None, dest)
+            .copy(&texture, None, Rect::new(x, y, q.width, q.height))
             .map_err(|e| anyhow::anyhow!("Failed to copy text: {}", e))?;
 
         Ok(())
