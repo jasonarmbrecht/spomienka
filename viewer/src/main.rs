@@ -1624,7 +1624,19 @@ async fn advance_to_next<'a>(
     // Compute where the next slide starts (after current slide's images).
     let current_step = renderer.current_layout.image_count();
     let n = state.playlist.read().await.len();
-    let next_start = (*state.current_index.read().await + current_step) % n;
+    let current_index_val = *state.current_index.read().await;
+    let next_start_raw = current_index_val + current_step;
+
+    // In dynamic mode, re-shuffle the playlist whenever we complete a full cycle so
+    // the images appear in a different random order each time rather than repeating.
+    if is_dynamic && next_start_raw >= n {
+        use rand::seq::SliceRandom;
+        let mut playlist = state.playlist.write().await;
+        playlist.shuffle(&mut rand::thread_rng());
+        tracing::debug!("Dynamic mode: reshuffled playlist for new cycle");
+    }
+
+    let next_start = next_start_raw % n;
 
     // Pick layout for the next slide, peeking from next_start.
     // pick_dynamic_layout acquires the playlist lock internally — don't hold it here.
