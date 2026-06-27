@@ -1621,12 +1621,12 @@ fn media_visual_orientation(m: &assets::Media) -> ImageOrientation {
                 .as_ref()
                 .map(|v| {
                     if let Some(n) = v.as_u64() {
-                        matches!(n, 5 | 6 | 7 | 8)
+                        matches!(n, 5..=8)
                     } else if let Some(f) = v.as_f64() {
-                        matches!(f as u64, 5 | 6 | 7 | 8)
+                        matches!(f as u64, 5..=8)
                     } else if let Some(s) = v.as_str() {
                         if let Ok(n) = s.trim().parse::<u64>() {
-                            matches!(n, 5 | 6 | 7 | 8)
+                            matches!(n, 5..=8)
                         } else {
                             s.contains("90") || s.contains("270")
                         }
@@ -1929,6 +1929,7 @@ async fn pick_dynamic_layout(
 }
 
 /// Advance to the next item in the playlist.
+#[allow(clippy::too_many_arguments)]
 async fn advance_to_next<'a>(
     state: &AppState,
     renderer: &mut Renderer<'_>,
@@ -2137,6 +2138,7 @@ async fn advance_to_next<'a>(
 }
 
 /// Go to the previous item in the playlist.
+#[allow(clippy::too_many_arguments)]
 async fn go_to_previous<'a>(
     state: &AppState,
     renderer: &mut Renderer<'_>,

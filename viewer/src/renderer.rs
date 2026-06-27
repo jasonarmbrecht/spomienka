@@ -560,6 +560,7 @@ impl<'ttf> Renderer<'ttf> {
     /// `snap_bottom` — align image to the bottom side of the cell (faces an adjacent image)
     /// The opposite (outer) edge is left floating so the gap between adjacent images is always
     /// exactly the cell boundary, not inflated by letterbox padding.
+    #[allow(clippy::too_many_arguments)]
     fn fit_snap(
         img_w: u32,
         img_h: u32,
@@ -875,8 +876,8 @@ impl<'ttf> Renderer<'ttf> {
                 // Track both the seam position and whether this panel is to the right/below it.
                 let mut seam_x: Option<(i32, bool)> = None; // (seam_x_coord, this_is_right_of_seam)
                 let mut seam_y: Option<(i32, bool)> = None; // (seam_y_coord, this_is_below_seam)
-                for j in 0..i {
-                    let other = rects[j];
+                for other in rects.iter().take(i) {
+                    let other = *other;
                     // Panels are in different columns if their x-centres differ more than a gap width
                     if (other.x() - this_r.x()).abs() > GAP as i32 {
                         if other.x() < this_r.x() {
