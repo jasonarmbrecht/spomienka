@@ -34,21 +34,60 @@ impl Transition {
     }
 }
 
-/// Display layout mode.
+/// Layout kind discriminant — used for history tracking (no positional info).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LayoutMode {
+pub enum SlideLayoutKind {
     Single,
     DualPortrait,
-    QuadLandscape, // future
+    PortraitDualLandscape,
+    QuadLandscape,
+    DualSquare,
+    SquarePortrait,
 }
 
-impl LayoutMode {
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "dual-portrait" => LayoutMode::DualPortrait,
-            "quad-landscape" => LayoutMode::QuadLandscape,
-            _ => LayoutMode::Single,
+/// Active slide layout — captures kind and which slot goes on which side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlideLayout {
+    /// One image, full-screen (any orientation in single mode, landscape in dynamic).
+    Single,
+    /// Two portrait (or square) images side by side.
+    DualPortrait { flipped: bool },
+    /// One portrait image + two stacked landscape images. `portrait_right`: portrait on right.
+    PortraitDualLandscape { portrait_right: bool },
+    /// Four landscape images: two stacked left, two stacked right. `flipped`: right pair is slots 0&1.
+    QuadLandscape { flipped: bool },
+    /// Two square images side by side.
+    DualSquare { flipped: bool },
+    /// One square image + one portrait image. `square_right`: square on the right.
+    SquarePortrait { square_right: bool },
+}
+
+impl SlideLayout {
+    pub fn kind(&self) -> SlideLayoutKind {
+        match self {
+            SlideLayout::Single => SlideLayoutKind::Single,
+            SlideLayout::DualPortrait { .. } => SlideLayoutKind::DualPortrait,
+            SlideLayout::PortraitDualLandscape { .. } => SlideLayoutKind::PortraitDualLandscape,
+            SlideLayout::QuadLandscape { .. } => SlideLayoutKind::QuadLandscape,
+            SlideLayout::DualSquare { .. } => SlideLayoutKind::DualSquare,
+            SlideLayout::SquarePortrait { .. } => SlideLayoutKind::SquarePortrait,
         }
+    }
+
+    /// Number of images consumed by this layout.
+    pub fn image_count(&self) -> usize {
+        match self {
+            SlideLayout::Single => 1,
+            SlideLayout::DualPortrait { .. } => 2,
+            SlideLayout::DualSquare { .. } => 2,
+            SlideLayout::SquarePortrait { .. } => 2,
+            SlideLayout::PortraitDualLandscape { .. } => 3,
+            SlideLayout::QuadLandscape { .. } => 4,
+        }
+    }
+
+    pub fn is_multi(&self) -> bool {
+        self.image_count() > 1
     }
 }
 
@@ -161,7 +200,7 @@ pub struct Renderer<'ttf> {
     transition_state: TransitionState,
     transition_start: Option<Instant>,
     pub blur_background: bool,
-    pub display_mode: LayoutMode,
+    pub current_layout: SlideLayout,
     show_clock: bool,
     font_overlay: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_info: Option<sdl2::ttf::Font<'ttf, 'static>>,
@@ -170,7 +209,7 @@ pub struct Renderer<'ttf> {
     font_discovery_label: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_discovery_pin: Option<sdl2::ttf::Font<'ttf, 'static>>,
     /// Rects of the last rendered image(s), used to align info overlays.
-    last_image_rects: [Option<Rect>; 2],
+    last_image_rects: [Option<Rect>; 4],
 }
 
 const CLOCK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/BodoniModa-Regular.ttf");
@@ -194,7 +233,7 @@ impl<'ttf> Renderer<'ttf> {
         fullscreen: bool,
         blur_background: bool,
         show_clock: bool,
-        layout_mode: LayoutMode,
+        initial_layout: SlideLayout,
     ) -> Result<Self> {
         let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL init failed: {}", e))?;
 
@@ -303,7 +342,7 @@ impl<'ttf> Renderer<'ttf> {
             transition_state: TransitionState::Idle,
             transition_start: None,
             blur_background,
-            display_mode: layout_mode,
+            current_layout: initial_layout,
             show_clock,
             font_overlay,
             font_info,
@@ -311,7 +350,7 @@ impl<'ttf> Renderer<'ttf> {
             font_discovery_small,
             font_discovery_label,
             font_discovery_pin,
-            last_image_rects: [None; 2],
+            last_image_rects: [None; 4],
         })
     }
 
@@ -477,156 +516,433 @@ impl<'ttf> Renderer<'ttf> {
         Ok(texture)
     }
 
-    /// Calculate aspect-fit rectangle for displaying an image.
+    /// Calculate aspect-fit rectangle for displaying an image on the full screen.
     fn calculate_aspect_fit(&self, img_width: u32, img_height: u32) -> Rect {
-        let screen_ratio = self.screen_width as f32 / self.screen_height as f32;
-        let img_ratio = img_width as f32 / img_height as f32;
-
-        let (fit_width, fit_height) = if img_ratio > screen_ratio {
-            // Image is wider than screen, fit to width
-            let fit_width = self.screen_width;
-            let fit_height = (self.screen_width as f32 / img_ratio) as u32;
-            (fit_width, fit_height)
-        } else {
-            // Image is taller than screen, fit to height
-            let fit_height = self.screen_height;
-            let fit_width = (self.screen_height as f32 * img_ratio) as u32;
-            (fit_width, fit_height)
-        };
-
-        // Center the image
-        let x = ((self.screen_width - fit_width) / 2) as i32;
-        let y = ((self.screen_height - fit_height) / 2) as i32;
-
-        Rect::new(x, y, fit_width, fit_height)
+        Self::fit_in_box(img_width, img_height, 0, 0, self.screen_width, self.screen_height)
     }
 
-    /// Render two portrait panels side-by-side with per-panel blur backgrounds.
+    /// Aspect-fit an image within an arbitrary bounding box, centered.
+    fn fit_in_box(img_w: u32, img_h: u32, bx: i32, by: i32, bw: u32, bh: u32) -> Rect {
+        if img_w == 0 || img_h == 0 || bw == 0 || bh == 0 {
+            return Rect::new(bx, by, bw, bh);
+        }
+        let img_ratio = img_w as f32 / img_h as f32;
+        let box_ratio = bw as f32 / bh as f32;
+        let (fw, fh) = if img_ratio > box_ratio {
+            let fw = bw;
+            let fh = (bw as f32 / img_ratio).round() as u32;
+            (fw, fh)
+        } else {
+            let fh = bh;
+            let fw = (bh as f32 * img_ratio).round() as u32;
+            (fw, fh)
+        };
+        let x = bx + ((bw as i32 - fw as i32) / 2);
+        let y = by + ((bh as i32 - fh as i32) / 2);
+        Rect::new(x, y, fw.max(1), fh.max(1))
+    }
+
+    /// Like fit_in_box but snaps to the inner edge of the cell rather than centering.
     ///
-    /// The blur textures bleed into the gap by half the gap width so the gap shows
-    /// a natural color blend from both images rather than a hard black line.
-    fn render_dual_portrait_panels<'a>(
+    /// `snap_right`  — align image to the right  side of the cell (faces an adjacent image)
+    /// `snap_bottom` — align image to the bottom side of the cell (faces an adjacent image)
+    /// The opposite (outer) edge is left floating so the gap between adjacent images is always
+    /// exactly the cell boundary, not inflated by letterbox padding.
+    fn fit_snap(img_w: u32, img_h: u32, bx: i32, by: i32, bw: u32, bh: u32,
+                snap_right: bool, snap_bottom: bool) -> Rect {
+        if img_w == 0 || img_h == 0 || bw == 0 || bh == 0 {
+            return Rect::new(bx, by, bw.max(1), bh.max(1));
+        }
+        let img_ratio = img_w as f32 / img_h as f32;
+        let box_ratio = bw as f32 / bh as f32;
+        let (fw, fh) = if img_ratio > box_ratio {
+            let fw = bw;
+            (fw, (bw as f32 / img_ratio).round() as u32)
+        } else {
+            let fh = bh;
+            ((bh as f32 * img_ratio).round() as u32, fh)
+        };
+        let x = if snap_right { bx + bw as i32 - fw as i32 } else { bx };
+        let y = if snap_bottom { by + bh as i32 - fh as i32 } else { by };
+        Rect::new(x, y, fw.max(1), fh.max(1))
+    }
+
+    /// Compute display rects for all panels in the given layout.
+    ///
+    /// Returns up to 4 Rects corresponding to slots 0–(image_count-1).
+    /// For layouts with a side option (portrait_right, flipped, etc.) the slots
+    /// are always ordered by playlist position; the side flag only controls which
+    /// screen column they land in.
+    fn compute_panel_rects(layout: SlideLayout, sw: u32, sh: u32, sizes: &[Option<(u32, u32)>; 4]) -> Vec<Rect> {
+        const GAP: u32 = 8;
+        let natural_w_at_h = |size: Option<(u32, u32)>, h: u32| -> u32 {
+            let (w, ih) = size.unwrap_or((h, h));
+            if ih == 0 { h } else { ((h as f64 * w as f64 / ih as f64).round() as u32).max(1) }
+        };
+
+        match layout {
+            SlideLayout::Single => {
+                let r = Self::fit_in_box(
+                    sizes[0].map(|s| s.0).unwrap_or(sw),
+                    sizes[0].map(|s| s.1).unwrap_or(sh),
+                    0, 0, sw, sh,
+                );
+                vec![r]
+            }
+
+            SlideLayout::DualPortrait { flipped } | SlideLayout::DualSquare { flipped } => {
+                // Two images side by side, both at full screen height
+                let nw0 = natural_w_at_h(sizes[0], sh);
+                let nw1 = natural_w_at_h(sizes[1], sh);
+                let total_natural = nw0 + GAP + nw1;
+                let (dw0, dw1, dh) = if total_natural <= sw {
+                    (nw0, nw1, sh)
+                } else {
+                    let scale = sw as f64 / total_natural as f64;
+                    let dh = (sh as f64 * scale).round() as u32;
+                    ((nw0 as f64 * scale).round() as u32,
+                     (nw1 as f64 * scale).round() as u32, dh)
+                };
+                let pair_w = dw0 + GAP + dw1;
+                let x0 = ((sw.saturating_sub(pair_w)) / 2) as i32;
+                let y0 = ((sh.saturating_sub(dh)) / 2) as i32;
+                if flipped {
+                    vec![
+                        Rect::new(x0 + dw1 as i32 + GAP as i32, y0, dw0, dh),
+                        Rect::new(x0, y0, dw1, dh),
+                    ]
+                } else {
+                    vec![
+                        Rect::new(x0, y0, dw0, dh),
+                        Rect::new(x0 + dw0 as i32 + GAP as i32, y0, dw1, dh),
+                    ]
+                }
+            }
+
+            SlideLayout::SquarePortrait { square_right } => {
+                // Square + portrait side by side (same sizing as DualPortrait)
+                let nw0 = natural_w_at_h(sizes[0], sh);
+                let nw1 = natural_w_at_h(sizes[1], sh);
+                let total_natural = nw0 + GAP + nw1;
+                let (dw0, dw1, dh) = if total_natural <= sw {
+                    (nw0, nw1, sh)
+                } else {
+                    let scale = sw as f64 / total_natural as f64;
+                    let dh = (sh as f64 * scale).round() as u32;
+                    ((nw0 as f64 * scale).round() as u32,
+                     (nw1 as f64 * scale).round() as u32, dh)
+                };
+                let pair_w = dw0 + GAP + dw1;
+                let x0 = ((sw.saturating_sub(pair_w)) / 2) as i32;
+                let y0 = ((sh.saturating_sub(dh)) / 2) as i32;
+                // slot 0 = square, slot 1 = portrait
+                if square_right {
+                    vec![
+                        Rect::new(x0 + dw1 as i32 + GAP as i32, y0, dw0, dh),
+                        Rect::new(x0, y0, dw1, dh),
+                    ]
+                } else {
+                    vec![
+                        Rect::new(x0, y0, dw0, dh),
+                        Rect::new(x0 + dw0 as i32 + GAP as i32, y0, dw1, dh),
+                    ]
+                }
+            }
+
+            SlideLayout::PortraitDualLandscape { portrait_right } => {
+                // Slot 0 = portrait (full screen height, snapped to screen edge).
+                // Slots 1+2 = two landscape images stacked in the remaining column,
+                // each snapped to the portrait-adjacent edge so the gap is exactly GAP.
+                let p_w = natural_w_at_h(sizes[0], sh).max(1);
+
+                // Column spans the remaining screen width beside the portrait.
+                let (portrait_x, col_x, col_w) = if portrait_right {
+                    let px = sw as i32 - p_w as i32;
+                    (px, 0_i32, (px - GAP as i32).max(1) as u32)
+                } else {
+                    let cx = p_w as i32 + GAP as i32;
+                    (0_i32, cx, (sw as i32 - cx).max(1) as u32)
+                };
+
+                // Each landscape gets half the screen height; they snap to the center seam.
+                let cy = (sh / 2) as i32;
+                let gap_half = (GAP / 2) as i32;
+                let cell_th = (cy - gap_half) as u32;
+                let cell_bh = (sh as i32 - cy - gap_half) as u32;
+                let by_ = cy + gap_half;
+
+                // Landscapes snap horizontally toward the portrait (inner edge of column).
+                let snap_r = portrait_right; // right-snap when portrait is on the right
+                let land1 = Self::fit_snap(
+                    sizes[1].map(|s| s.0).unwrap_or(col_w),
+                    sizes[1].map(|s| s.1).unwrap_or(cell_th),
+                    col_x, 0, col_w, cell_th, snap_r, true,
+                );
+                let land2 = Self::fit_snap(
+                    sizes[2].map(|s| s.0).unwrap_or(col_w),
+                    sizes[2].map(|s| s.1).unwrap_or(cell_bh),
+                    col_x, by_, col_w, cell_bh, snap_r, false,
+                );
+                let portrait_rect = Rect::new(portrait_x, 0, p_w, sh);
+                vec![portrait_rect, land1, land2]
+            }
+
+            SlideLayout::QuadLandscape { flipped } => {
+                // 2×2 grid. Each image snaps its inner edges to the centre seam so that
+                // the gap between any two adjacent images is exactly GAP — not inflated by
+                // letterbox padding when images differ in aspect ratio from the cell.
+                let cx = (sw / 2) as i32;
+                let cy = (sh / 2) as i32;
+                let gh = (GAP / 2) as i32; // half-gap offset from centre
+
+                let lw = (cx - gh) as u32;            // left-column  cell width
+                let rw = (sw as i32 - cx - gh) as u32; // right-column cell width
+                let th = (cy - gh) as u32;             // top-row      cell height
+                let bh = (sh as i32 - cy - gh) as u32; // bottom-row   cell height
+                let rx = cx + gh;                      // right-column x origin
+                let by_ = cy + gh;                     // bottom-row   y origin
+
+                let s = |i: usize| sizes[i].unwrap_or((1, 1));
+
+                // snap_right=true  → image right-aligns  to inner (centre) edge
+                // snap_bottom=true → image bottom-aligns to inner (centre) edge
+                let place = |i: usize, bx: i32, by: i32, bw: u32, bh: u32,
+                              sr: bool, sb: bool| {
+                    Self::fit_snap(s(i).0, s(i).1, bx, by, bw, bh, sr, sb)
+                };
+
+                let (r0, r1, r2, r3) = if flipped {
+                    // slots 0,1 → right column; 2,3 → left column
+                    (place(0, rx,  0,   rw, th, false, true ),
+                     place(1, rx,  by_, rw, bh, false, false),
+                     place(2, 0,   0,   lw, th, true,  true ),
+                     place(3, 0,   by_, lw, bh, true,  false))
+                } else {
+                    // slots 0,1 → left column; 2,3 → right column
+                    (place(0, 0,   0,   lw, th, true,  true ),
+                     place(1, 0,   by_, lw, bh, true,  false),
+                     place(2, rx,  0,   rw, th, false, true ),
+                     place(3, rx,  by_, rw, bh, false, false))
+                };
+                vec![r0, r1, r2, r3]
+            }
+        }
+    }
+
+    /// Render all panels for the current layout — backgrounds, images, and gap lines.
+    fn render_layout_panels<'a>(
         &mut self,
-        _texture_creator: &'a TextureCreator<WindowContext>,
-        left: &mut MediaTextures<'a>,
-        right: &mut MediaTextures<'a>,
+        _tc: &'a TextureCreator<WindowContext>,
+        panels: &mut [&mut MediaTextures<'a>],
         alpha: u8,
     ) -> Result<()> {
-        const GAP: u32 = 10;
+        const GAP: u32 = 8;
+        const BG_BLEND_HALF: i32 = 150; // half-width of the background blend zone
         let sw = self.screen_width;
         let sh = self.screen_height;
 
-        // Compute each image's natural width when scaled to fill the full screen height.
-        let natural_w = |size: Option<(u32, u32)>| -> u32 {
-            let (w, h) = size.unwrap_or((sh, sh)); // fallback: square
-            ((sh as f64 * w as f64 / h as f64).round() as u32).max(1)
-        };
-        let nw_left = natural_w(left.display_size);
-        let nw_right = natural_w(right.display_size);
+        let mut sizes: [Option<(u32, u32)>; 4] = [None; 4];
+        for (i, p) in panels.iter().enumerate() {
+            sizes[i] = p.display_size;
+        }
 
-        // If the pair plus gap exceeds the screen width, scale both images down uniformly
-        // so the combined width fits, preserving aspect ratios.
-        let total_natural = nw_left + GAP + nw_right;
-        let (dw_left, dw_right, dh) = if total_natural <= sw {
-            (nw_left, nw_right, sh)
-        } else {
-            let scale = sw as f64 / total_natural as f64;
-            let scaled_h = (sh as f64 * scale).round() as u32;
-            let scaled_l = (nw_left as f64 * scale).round() as u32;
-            let scaled_r = (nw_right as f64 * scale).round() as u32;
-            (scaled_l, scaled_r, scaled_h)
-        };
+        let rects = Self::compute_panel_rects(self.current_layout, sw, sh, &sizes);
+        let n = rects.len();
 
-        // Place the pair centered horizontally; vertically they fill top-to-bottom.
-        let pair_w = dw_left + GAP + dw_right;
-        let x0 = ((sw.saturating_sub(pair_w)) / 2) as i32;
-        let y0 = ((sh.saturating_sub(dh)) / 2) as i32;
+        // Record rects for info overlay
+        self.last_image_rects = [None; 4];
+        for (i, r) in rects.iter().enumerate() {
+            if i < 4 { self.last_image_rects[i] = Some(*r); }
+        }
 
-        let left_rect = Rect::new(x0, y0, dw_left, dh);
-        let right_rect = Rect::new(x0 + dw_left as i32 + GAP as i32, y0, dw_right, dh);
-        let gap_x = x0 + dw_left as i32; // screen x where the gap begins
-
-        // Record for info overlay alignment
-        self.last_image_rects = [Some(left_rect), Some(right_rect)];
-
-        if self.blur_background {
-            // Left blur: covers entire left half of the screen up to the start of the gap.
-            // Using the full-screen texture clipped to [0, gap_x + GAP] so it fills behind
-            // the left image and also across the full gap (will be overdrawn by gradient).
-            let left_blur_clip = Rect::new(0, 0, (gap_x + GAP as i32) as u32, sh);
-            self.canvas.set_clip_rect(left_blur_clip);
-            if let Some(ref mut blur) = left.blur {
-                blur.set_alpha_mod(alpha);
-                self.canvas
-                    .copy(blur, None, None)
-                    .map_err(|e| anyhow::anyhow!("Failed to render left blur: {}", e))?;
-            }
-
-            // Right blur: covers screen from right edge of gap to the right screen edge.
-            let right_blur_x = gap_x + GAP as i32;
-            let right_blur_clip = Rect::new(right_blur_x, 0, sw.saturating_sub(right_blur_x as u32), sh);
-            self.canvas.set_clip_rect(right_blur_clip);
-            if let Some(ref mut blur) = right.blur {
-                blur.set_alpha_mod(alpha);
-                self.canvas
-                    .copy(blur, None, None)
-                    .map_err(|e| anyhow::anyhow!("Failed to render right blur: {}", e))?;
-            }
-
-            // Gradient crossfade across the gap: overdraw right blur column-by-column
-            // with alpha ramping 0→alpha, on top of the left blur already covering the gap.
-            self.canvas.set_clip_rect(None::<Rect>);
-            if let Some(ref mut blur) = right.blur {
-                for col in 0..GAP {
-                    let t = col as f32 / (GAP - 1) as f32; // 0.0 → 1.0
-                    let col_alpha = (t * alpha as f32).round() as u8;
-                    // src_x: the column in the full-screen blur texture that maps to this
-                    // screen position. The blur is always rendered stretched to sw×sh,
-                    // so we sample it at the proportional source position.
-                    let screen_x = gap_x + col as i32;
-                    let src_x = ((screen_x as f64 / sw as f64) * 1920.0).round() as i32;
-                    let src_rect = Rect::new(src_x.max(0).min(1919), 0, 1, 1080);
-                    let dst_rect = Rect::new(screen_x, 0, 1, sh);
-                    blur.set_alpha_mod(col_alpha);
-                    self.canvas
-                        .copy(blur, src_rect, dst_rect)
-                        .map_err(|e| anyhow::anyhow!("Failed to render gap gradient: {}", e))?;
+        if n == 1 {
+            // Single image — use the standard single-panel background render
+            if self.blur_background {
+                if let Some(ref mut blur) = panels[0].blur {
+                    blur.set_alpha_mod(alpha);
+                    self.canvas.copy(blur, None, None)
+                        .map_err(|e| anyhow::anyhow!("blur: {}", e))?;
                 }
-                blur.set_alpha_mod(alpha); // restore
+            }
+            if let Some(ref mut display) = panels[0].display {
+                display.set_alpha_mod(alpha);
+                self.canvas.copy(display, None, rects[0])
+                    .map_err(|e| anyhow::anyhow!("display: {}", e))?;
+            }
+            return Ok(());
+        }
+
+        // Multi-panel: render backgrounds with wide blending, then images, then gap lines
+
+        // Step 1: For each panel, draw its blur texture on its half of the screen,
+        //         then blend neighbours across a wide zone centered on the gap.
+        if self.blur_background {
+            // Collect background dividing lines (x or y boundaries between panels).
+            // We find vertical gaps (between left and right columns) and horizontal gaps
+            // (between top and bottom rows) and do a wide gradient blend across each.
+            //
+            // Simple approach: draw each blur full-screen at full alpha first, then
+            // overdraw with adjacent panels' blurs, fading in/out across blend_half px
+            // centered on the gap center.
+
+            // Draw panel 0's blur as base
+            if let Some(ref mut blur) = panels[0].blur {
+                blur.set_alpha_mod(alpha);
+                self.canvas.copy(blur, None, None)
+                    .map_err(|e| anyhow::anyhow!("bg blur 0: {}", e))?;
+            }
+
+            // For each subsequent panel, overdraw its blur everywhere, but use a wide
+            // gradient fade-in at the boundary rather than a hard clip.
+            // We determine the "dominant" boundary: for side-by-side panels it's a
+            // vertical line; for stacked panels it's a horizontal line.
+            for i in 1..n {
+                let p = &mut panels[i];
+                if p.blur.is_none() { continue; }
+
+                // Determine this panel's anchor point on screen relative to panel 0
+                let this_r = rects[i];
+                let prev_r = rects[i.saturating_sub(1)];
+
+                // Is this panel to the right of or below the previous?
+                let is_right = this_r.x() > prev_r.x();
+                let is_below = this_r.y() > prev_r.y() && !is_right;
+
+                let blur = p.blur.as_mut().unwrap();
+                blur.set_alpha_mod(0);
+
+                if is_right {
+                    // Vertical boundary: blend zone from (this_r.x - blend_half) to (this_r.x + blend_half)
+                    let cx = this_r.x();
+                    let blend_start = (cx - BG_BLEND_HALF).max(0);
+                    let blend_end = (cx + BG_BLEND_HALF).min(sw as i32);
+                    // Left of blend zone: don't draw
+                    // Blend zone: ramp from 0 to alpha across 2*BG_BLEND_HALF columns
+                    // Right of blend zone: full alpha
+                    for x in blend_start..blend_end {
+                        let t = (x - blend_start) as f32 / (blend_end - blend_start) as f32;
+                        let a = (t * alpha as f32).round() as u8;
+                        let src_x = ((x as f64 / sw as f64) * (sw as f64 - 1.0)).round() as i32;
+                        let src = Rect::new(src_x.max(0), 0, 1, sh);
+                        let dst = Rect::new(x, 0, 1, sh);
+                        blur.set_alpha_mod(a);
+                        self.canvas.copy(blur, src, dst)
+                            .map_err(|e| anyhow::anyhow!("bg blend col: {}", e))?;
+                    }
+                    // Right of blend zone: solid
+                    if blend_end < sw as i32 {
+                        let clip = Rect::new(blend_end, 0, (sw as i32 - blend_end) as u32, sh);
+                        self.canvas.set_clip_rect(clip);
+                        blur.set_alpha_mod(alpha);
+                        self.canvas.copy(blur, None, None)
+                            .map_err(|e| anyhow::anyhow!("bg right: {}", e))?;
+                        self.canvas.set_clip_rect(None::<Rect>);
+                    }
+                } else if is_below {
+                    // Horizontal boundary: blend zone
+                    let cy = this_r.y();
+                    let blend_start = (cy - BG_BLEND_HALF).max(0);
+                    let blend_end = (cy + BG_BLEND_HALF).min(sh as i32);
+                    for y in blend_start..blend_end {
+                        let t = (y - blend_start) as f32 / (blend_end - blend_start) as f32;
+                        let a = (t * alpha as f32).round() as u8;
+                        let src_y = ((y as f64 / sh as f64) * (sh as f64 - 1.0)).round() as i32;
+                        let src = Rect::new(0, src_y.max(0), sw, 1);
+                        let dst = Rect::new(0, y, sw, 1);
+                        blur.set_alpha_mod(a);
+                        self.canvas.copy(blur, src, dst)
+                            .map_err(|e| anyhow::anyhow!("bg blend row: {}", e))?;
+                    }
+                    if blend_end < sh as i32 {
+                        let clip = Rect::new(0, blend_end, sw, (sh as i32 - blend_end) as u32);
+                        self.canvas.set_clip_rect(clip);
+                        blur.set_alpha_mod(alpha);
+                        self.canvas.copy(blur, None, None)
+                            .map_err(|e| anyhow::anyhow!("bg below: {}", e))?;
+                        self.canvas.set_clip_rect(None::<Rect>);
+                    }
+                } else {
+                    // Fallback: full overdraw
+                    blur.set_alpha_mod(alpha);
+                    self.canvas.copy(blur, None, None)
+                        .map_err(|e| anyhow::anyhow!("bg full: {}", e))?;
+                }
+                blur.set_alpha_mod(alpha);
             }
         }
 
-        // Left image — hard-clipped to its display rect (no bleed into gap)
-        self.canvas.set_clip_rect(left_rect);
-        if let Some(ref mut display) = left.display {
-            display.set_alpha_mod(alpha);
-            self.canvas
-                .copy(display, None, left_rect)
-                .map_err(|e| anyhow::anyhow!("Failed to render left image: {}", e))?;
+        // Step 2: Render each image clipped to its rect
+        for (i, rect) in rects.iter().enumerate() {
+            if let Some(ref mut display) = panels[i].display {
+                self.canvas.set_clip_rect(*rect);
+                display.set_alpha_mod(alpha);
+                self.canvas.copy(display, None, *rect)
+                    .map_err(|e| anyhow::anyhow!("img {}: {}", i, e))?;
+            }
         }
-
-        // Right image — hard-clipped to its display rect
-        self.canvas.set_clip_rect(right_rect);
-        if let Some(ref mut display) = right.display {
-            display.set_alpha_mod(alpha);
-            self.canvas
-                .copy(display, None, right_rect)
-                .map_err(|e| anyhow::anyhow!("Failed to render right image: {}", e))?;
-        }
-
         self.canvas.set_clip_rect(None::<Rect>);
+
+        // Step 3: Draw 8px near-black gap lines between adjacent image rects
+        // Gap lines are clipped to the union of adjacent image edges only.
+        self.canvas.set_draw_color(Color::RGB(17, 17, 17));
+        let gap_half = (GAP / 2) as i32;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let a = rects[i];
+                let b = rects[j];
+                // Vertical gap (a is left of b)
+                if (a.right() + GAP as i32) <= b.x() + 2 {
+                    let gx = a.right();
+                    let top = a.y().max(b.y());
+                    let bot = (a.y() + a.height() as i32).min(b.y() + b.height() as i32);
+                    if bot > top {
+                        self.canvas.fill_rect(Rect::new(gx, top, GAP, (bot - top) as u32))
+                            .map_err(|e| anyhow::anyhow!("gap v: {}", e))?;
+                    }
+                }
+                // Vertical gap (b is left of a)
+                if (b.right() + GAP as i32) <= a.x() + 2 {
+                    let gx = b.right();
+                    let top = a.y().max(b.y());
+                    let bot = (a.y() + a.height() as i32).min(b.y() + b.height() as i32);
+                    if bot > top {
+                        self.canvas.fill_rect(Rect::new(gx, top, GAP, (bot - top) as u32))
+                            .map_err(|e| anyhow::anyhow!("gap v2: {}", e))?;
+                    }
+                }
+                // Horizontal gap (a is above b)
+                if (a.y() + a.height() as i32 + GAP as i32) <= b.y() + 2 {
+                    let gy = a.y() + a.height() as i32;
+                    let left = a.x().max(b.x());
+                    let right = (a.x() + a.width() as i32).min(b.x() + b.width() as i32);
+                    if right > left {
+                        self.canvas.fill_rect(Rect::new(left, gy, (right - left) as u32, GAP))
+                            .map_err(|e| anyhow::anyhow!("gap h: {}", e))?;
+                    }
+                }
+                // Horizontal gap (b is above a)
+                if (b.y() + b.height() as i32 + GAP as i32) <= a.y() + 2 {
+                    let gy = b.y() + b.height() as i32;
+                    let left = a.x().max(b.x());
+                    let right = (a.x() + a.width() as i32).min(b.x() + b.width() as i32);
+                    if right > left {
+                        self.canvas.fill_rect(Rect::new(left, gy, (right - left) as u32, GAP))
+                            .map_err(|e| anyhow::anyhow!("gap h2: {}", e))?;
+                    }
+                }
+            }
+        }
+        let _ = gap_half;
 
         Ok(())
     }
 
-    /// Render the dual-portrait frame with transition support.
-    pub fn render_paired<'a>(
+    /// Render all panels (with transition support) for the current layout.
+    pub fn render_layout<'a>(
         &mut self,
-        texture_creator: &'a TextureCreator<WindowContext>,
-        left: &mut MediaTextures<'a>,
-        right: &mut MediaTextures<'a>,
-        mut next_left: Option<&mut MediaTextures<'a>>,
-        mut next_right: Option<&mut MediaTextures<'a>>,
+        tc: &'a TextureCreator<WindowContext>,
+        panels: &mut [&mut MediaTextures<'a>],
+        next_panels: Option<&mut [&mut MediaTextures<'a>]>,
     ) -> Result<()> {
         self.canvas.set_draw_color(Color::RGB(0, 0, 0));
         self.canvas.clear();
@@ -637,20 +953,19 @@ impl<'ttf> Renderer<'ttf> {
             (_, TransitionState::TransitioningIn { progress }) => (progress * 255.0) as u8,
         };
 
-        // Crossfade: render the next pair underneath with increasing alpha
         if self.transition_type == Transition::Crossfade {
             if let TransitionState::TransitioningOut { progress } = self.transition_state {
                 let next_alpha = (progress * 255.0) as u8;
-                if let (Some(ref mut nl), Some(ref mut nr)) = (&mut next_left, &mut next_right) {
-                    self.render_dual_portrait_panels(texture_creator, nl, nr, next_alpha)?;
+                if let Some(np) = next_panels {
+                    self.render_layout_panels(tc, np, next_alpha)?;
                 }
             }
         }
 
-        self.render_dual_portrait_panels(texture_creator, left, right, alpha)?;
+        self.render_layout_panels(tc, panels, alpha)?;
 
         if self.show_clock {
-            self.render_clock(texture_creator)?;
+            self.render_clock(tc)?;
         }
 
         Ok(())
@@ -866,7 +1181,7 @@ impl<'ttf> Renderer<'ttf> {
         if let Some(ref mut display) = textures.display {
             if let Some((width, height)) = textures.display_size {
                 let dest_rect = self.calculate_aspect_fit(width, height);
-                self.last_image_rects = [Some(dest_rect), None];
+                self.last_image_rects = [Some(dest_rect), None, None, None];
                 display.set_alpha_mod(alpha);
                 self.canvas
                     .copy(display, None, dest_rect)
@@ -1037,20 +1352,14 @@ impl<'ttf> Renderer<'ttf> {
         Ok(())
     }
 
-    /// Render a media info overlay at the bottom-left of the screen.
-    /// Uses shadow text styled like the clock — no opaque background panel.
-    /// Render info overlay for dual-portrait mode, aligned to each image's actual rect.
-    pub fn render_info_overlay_dual(
-        &mut self,
-        left: &MediaInfoOverlay,
-        right: &MediaInfoOverlay,
-    ) -> Result<()> {
-        let left_rect = self.last_image_rects[0]
-            .unwrap_or_else(|| Rect::new(0, 0, self.screen_width / 2, self.screen_height));
-        let right_rect = self.last_image_rects[1]
-            .unwrap_or_else(|| Rect::new((self.screen_width / 2) as i32, 0, self.screen_width / 2, self.screen_height));
-        self.render_info_overlay_in_rect(left, left_rect)?;
-        self.render_info_overlay_in_rect(right, right_rect)?;
+    /// Render info overlays for all panels in the current multi-image layout.
+    pub fn render_info_overlay_multi(&mut self, infos: &[MediaInfoOverlay]) -> Result<()> {
+        for (i, info) in infos.iter().enumerate() {
+            if i >= 4 { break; }
+            let rect = self.last_image_rects[i]
+                .unwrap_or_else(|| Rect::new(0, 0, self.screen_width, self.screen_height));
+            self.render_info_overlay_in_rect(info, rect)?;
+        }
         Ok(())
     }
 
