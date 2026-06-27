@@ -573,7 +573,7 @@ impl<'ttf> Renderer<'ttf> {
     /// For layouts with a side option (portrait_right, flipped, etc.) the slots
     /// are always ordered by playlist position; the side flag only controls which
     /// screen column they land in.
-    fn compute_panel_rects(layout: SlideLayout, sw: u32, sh: u32, sizes: &[Option<(u32, u32)>; 4]) -> Vec<Rect> {
+    pub(crate) fn compute_panel_rects(layout: SlideLayout, sw: u32, sh: u32, sizes: &[Option<(u32, u32)>; 4]) -> Vec<Rect> {
         const GAP: u32 = 8;
         let natural_w_at_h = |size: Option<(u32, u32)>, h: u32| -> u32 {
             let (w, ih) = size.unwrap_or((h, h));

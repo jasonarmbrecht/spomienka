@@ -1814,6 +1814,36 @@ async fn advance_to_next<'a>(
         drop(playlist);
     }
 
+    // Minimum-size guard: after loading actual textures, verify that every image in the
+    // chosen layout renders at least 20% of the screen's width and height. If any image
+    // would be too small (e.g. a landscape image incorrectly placed in a portrait slot
+    // making the sibling column only a few pixels wide), fall back to Single so the first
+    // image is shown full-screen and the others are deferred to subsequent slides.
+    if renderer.current_layout.is_multi() {
+        let (sw, sh) = renderer.screen_size();
+        let min_w = sw / 5;
+        let min_h = sh / 5;
+        let sizes: [Option<(u32, u32)>; 4] = [
+            next_textures.as_ref().and_then(|t| t.display_size),
+            next_right_textures.as_ref().and_then(|t| t.display_size),
+            next_panel2_textures.as_ref().and_then(|t| t.display_size),
+            next_panel3_textures.as_ref().and_then(|t| t.display_size),
+        ];
+        let rects = Renderer::compute_panel_rects(renderer.current_layout, sw, sh, &sizes);
+        let too_small = rects.iter().any(|r| r.width() < min_w || r.height() < min_h);
+        if too_small {
+            tracing::warn!(
+                "Layout {:?} produced image smaller than 20% of screen — falling back to Single",
+                renderer.current_layout.kind()
+            );
+            renderer.current_layout = SlideLayout::Single;
+            // Clear the extra-panel textures; they will be shown on subsequent slides.
+            *next_right_textures = None;
+            *next_panel2_textures = None;
+            *next_panel3_textures = None;
+        }
+    }
+
     match Transition::from_str(&state.config.transition) {
         Transition::Cut => {
             if let Some(next) = next_textures.take() { *current_textures = next; }
