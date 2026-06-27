@@ -103,10 +103,10 @@ function execCommand(cmd, args) {
 }
 
 function buildFileUrl(collectionId, recordId, fileName) {
-    // Derived files (display_, blur_, thumb_, poster_, video_) are placed on disk
+    // Derived files (display_, thumb_, poster_, video_) are placed on disk
     // by the processing hook and served via a custom route because PocketBase's
     // /api/files/ endpoint only serves files registered in file-type schema fields.
-    const DERIVED_PREFIXES = ["display_", "blur_", "thumb_", "poster_", "video_"];
+    const DERIVED_PREFIXES = ["display_", "thumb_", "poster_", "video_"];
     const isDerived = DERIVED_PREFIXES.some((p) => fileName.startsWith(p));
     if (isDerived) {
         return "/api/spomienka/media/" + collectionId + "/" + recordId + "/" + fileName;
@@ -220,7 +220,6 @@ function generateChecksum(filePath) {
 }
 
 const FFMPEG_DISPLAY_SCALE = "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease";
-const FFMPEG_BLUR_FILTER   = "scale=80:-1,gblur=sigma=20,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080";
 const FFMPEG_THUMB_SCALE   = "scale=300:-1";
 
 
@@ -243,14 +242,6 @@ function processImage(record, originalPath, procDir, storagePath) {
         $os.rename(displayPath, storagePath + "/" + name);
         record.set("displayUrl", buildFileUrl(collectionId, recordId, name));
     } catch (err) { console.error("Display image failed:", err); }
-
-    try {
-        const blurPath = procDir + "/blur.png";
-        execCommand(FFMPEG, ["-y", "-i", originalPath, "-map", "0:v:0", "-vf", FFMPEG_BLUR_FILTER, blurPath]);
-        const name = "blur_" + recordId + ".png";
-        $os.rename(blurPath, storagePath + "/" + name);
-        record.set("blurUrl", buildFileUrl(collectionId, recordId, name));
-    } catch (err) { console.error("Blur image failed:", err); }
 
     try {
         const thumbPath = procDir + "/thumb.png";
@@ -296,18 +287,6 @@ function processVideo(record, originalPath, procDir, storagePath) {
         record.set("posterUrl", buildFileUrl(collectionId, recordId, name));
         posterCreated = true;
     } catch (err) { console.error("Poster extraction failed:", err); }
-
-    if (posterCreated) {
-        try {
-            const posterSource = storagePath + "/poster_" + recordId + ".png";
-            try { $os.stat(posterSource); } catch (_) { throw new Error("Poster not found in storage"); }
-            const blurPath = procDir + "/blur.png";
-            execCommand(FFMPEG, ["-y", "-i", posterSource, "-vf", FFMPEG_BLUR_FILTER, blurPath]);
-            const name = "blur_" + recordId + ".png";
-            $os.rename(blurPath, storagePath + "/" + name);
-            record.set("blurUrl", buildFileUrl(collectionId, recordId, name));
-        } catch (err) { console.error("Video blur failed:", err); }
-    }
 
     try {
         const thumbPath = procDir + "/thumb.png";
@@ -392,7 +371,7 @@ function processMediaRecord(record) {
         if (processingFailed) {
             try {
                 const files = $os.readdir(storagePath);
-                const derived = ["display_", "blur_", "thumb_", "video_", "poster_"];
+                const derived = ["display_", "thumb_", "video_", "poster_"];
                 for (const file of files) {
                     for (const prefix of derived) {
                         if (file.startsWith(prefix)) {

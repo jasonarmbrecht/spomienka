@@ -1550,7 +1550,6 @@ async fn load_current_item<'a>(
     drop(cache);
     let mut cache = state.cache.write().await;
     cache.touch(&media.id, AssetType::Display);
-    cache.touch(&media.id, AssetType::Blur);
 
     // Start video if applicable
     start_video_if_applicable(media, &cache, video_manager, is_video_playing);
@@ -1585,7 +1584,6 @@ async fn load_panel_item<'a>(
 
     let mut cache = state.cache.write().await;
     cache.touch(&media.id, AssetType::Display);
-    cache.touch(&media.id, AssetType::Blur);
 
     Ok(())
 }
@@ -2039,7 +2037,6 @@ async fn advance_to_next<'a>(
         *next_right_textures = Some(t);
         let mut cache = state.cache.write().await;
         cache.touch(&m.id, AssetType::Display);
-        cache.touch(&m.id, AssetType::Blur);
     }
     if step >= 3 {
         let idx = (next_index + 2) % playlist.len();
@@ -2053,7 +2050,6 @@ async fn advance_to_next<'a>(
         *next_panel2_textures = Some(t);
         let mut cache = state.cache.write().await;
         cache.touch(&m.id, AssetType::Display);
-        cache.touch(&m.id, AssetType::Blur);
     }
     if step >= 4 {
         let idx = (next_index + 3) % playlist.len();
@@ -2068,7 +2064,6 @@ async fn advance_to_next<'a>(
         *next_panel3_textures = Some(t);
         let mut cache = state.cache.write().await;
         cache.touch(&m.id, AssetType::Display);
-        cache.touch(&m.id, AssetType::Blur);
     } else {
         drop(playlist);
     }
@@ -2130,7 +2125,6 @@ async fn advance_to_next<'a>(
     let media = &playlist[next_index % playlist.len()];
     let mut cache = state.cache.write().await;
     cache.touch(&media.id, AssetType::Display);
-    cache.touch(&media.id, AssetType::Blur);
 
     start_video_if_applicable(media, &cache, video_manager, is_video_playing);
 
@@ -2229,7 +2223,6 @@ async fn go_to_previous<'a>(
     let media = &playlist[prev_index % playlist.len()];
     let mut cache = state.cache.write().await;
     cache.touch(&media.id, AssetType::Display);
-    cache.touch(&media.id, AssetType::Blur);
 
     // Start video if applicable
     start_video_if_applicable(media, &cache, video_manager, is_video_playing);

@@ -1,4 +1,4 @@
-// Custom file-serving route for derived media assets (display, blur, thumb, poster, video).
+// Custom file-serving route for derived media assets (display, thumb, poster, video).
 //
 // PocketBase's /api/files/ endpoint only serves files registered in file-type schema fields.
 // Derived files are written directly to disk by the processing hook and must be served here.
@@ -16,7 +16,7 @@ routerAdd("GET", "/api/spomienka/media/{collectionId}/{recordId}/{filename}", (e
         !filename ||
         filename.indexOf("/") !== -1 ||
         filename.indexOf("..") !== -1 ||
-        !/^(display_|blur_|thumb_|poster_|video_)[^/]+$/.test(filename)
+        !/^(display_|thumb_|poster_|video_)[^/]+$/.test(filename)
     ) {
         return e.json(404, { message: "Not found" });
     }

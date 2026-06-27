@@ -321,8 +321,7 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
               size="sm"
             >
               <SelectItem value="single" text="Single image" />
-              <SelectItem value="dual-portrait" text="2 portrait images" />
-              <SelectItem value="quad-landscape" text="4 landscape images (coming soon)" disabled />
+              <SelectItem value="dynamic" text="Dynamic random layout" />
             </Select>
           </Stack>
           {saveSuccess && (
