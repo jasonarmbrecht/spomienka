@@ -14,10 +14,13 @@ use assets::{AssetManager, AssetType, Media, Preloader};
 use cache::Cache;
 use config::{Config, Environment, File};
 use realtime::{spawn_realtime, RealtimeEvent};
-use renderer::{MediaInfoOverlay, MediaTextures, OverlayInfo, Renderer, SlideLayout, SlideLayoutKind, Transition, UserAction};
-use std::collections::VecDeque;
+use renderer::{
+    MediaInfoOverlay, MediaTextures, OverlayInfo, Renderer, SlideLayout, SlideLayoutKind,
+    Transition, UserAction,
+};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::env;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -888,15 +891,50 @@ async fn run_render_loop(
 
     if is_dynamic {
         let peek_start = *state.current_index.read().await;
-        let (layout, actual_start) = pick_dynamic_layout(&state, &layout_history, session_start.elapsed().as_secs() < 120, peek_start).await;
+        let (layout, actual_start) = pick_dynamic_layout(
+            &state,
+            &layout_history,
+            session_start.elapsed().as_secs() < 120,
+            peek_start,
+        )
+        .await;
         renderer.current_layout = layout;
         *state.current_index.write().await = actual_start;
         layout_history.push_back(layout.kind());
-        if layout_history.len() > 20 { layout_history.pop_front(); }
+        if layout_history.len() > 20 {
+            layout_history.pop_front();
+        }
         let n = layout.image_count();
-        if n >= 2 { load_panel_item(&state, &mut renderer, &texture_creator, &mut right_textures, 1).await?; }
-        if n >= 3 { load_panel_item(&state, &mut renderer, &texture_creator, &mut panel2_textures, 2).await?; }
-        if n >= 4 { load_panel_item(&state, &mut renderer, &texture_creator, &mut panel3_textures, 3).await?; }
+        if n >= 2 {
+            load_panel_item(
+                &state,
+                &mut renderer,
+                &texture_creator,
+                &mut right_textures,
+                1,
+            )
+            .await?;
+        }
+        if n >= 3 {
+            load_panel_item(
+                &state,
+                &mut renderer,
+                &texture_creator,
+                &mut panel2_textures,
+                2,
+            )
+            .await?;
+        }
+        if n >= 4 {
+            load_panel_item(
+                &state,
+                &mut renderer,
+                &texture_creator,
+                &mut panel3_textures,
+                3,
+            )
+            .await?;
+        }
     }
 
     loop {
@@ -925,25 +963,41 @@ async fn run_render_loop(
             UserAction::Next => {
                 tracing::debug!("Skip to next requested");
                 advance_to_next(
-                    &state, &mut renderer, &texture_creator,
-                    &mut current_textures, &mut next_textures,
-                    &mut right_textures, &mut next_right_textures,
-                    &mut panel2_textures, &mut next_panel2_textures,
-                    &mut panel3_textures, &mut next_panel3_textures,
-                    &mut video_manager, &mut is_video_playing,
-                    &mut layout_history, session_start,
-                ).await?;
+                    &state,
+                    &mut renderer,
+                    &texture_creator,
+                    &mut current_textures,
+                    &mut next_textures,
+                    &mut right_textures,
+                    &mut next_right_textures,
+                    &mut panel2_textures,
+                    &mut next_panel2_textures,
+                    &mut panel3_textures,
+                    &mut next_panel3_textures,
+                    &mut video_manager,
+                    &mut is_video_playing,
+                    &mut layout_history,
+                    session_start,
+                )
+                .await?;
                 last_advance = Instant::now();
                 is_paused = false;
             }
             UserAction::Previous => {
                 tracing::debug!("Go to previous requested");
                 go_to_previous(
-                    &state, &mut renderer, &texture_creator,
-                    &mut current_textures, &mut next_textures,
-                    &mut right_textures, &mut panel2_textures, &mut panel3_textures,
-                    &mut video_manager, &mut is_video_playing,
-                ).await?;
+                    &state,
+                    &mut renderer,
+                    &texture_creator,
+                    &mut current_textures,
+                    &mut next_textures,
+                    &mut right_textures,
+                    &mut panel2_textures,
+                    &mut panel3_textures,
+                    &mut video_manager,
+                    &mut is_video_playing,
+                )
+                .await?;
                 last_advance = Instant::now();
                 is_paused = false;
             }
@@ -988,14 +1042,23 @@ async fn run_render_loop(
                     RealtimeEvent::RemoteNext => {
                         tracing::debug!("Remote: next");
                         advance_to_next(
-                            &state, &mut renderer, &texture_creator,
-                            &mut current_textures, &mut next_textures,
-                            &mut right_textures, &mut next_right_textures,
-                            &mut panel2_textures, &mut next_panel2_textures,
-                            &mut panel3_textures, &mut next_panel3_textures,
-                            &mut video_manager, &mut is_video_playing,
-                            &mut layout_history, session_start,
-                        ).await?;
+                            &state,
+                            &mut renderer,
+                            &texture_creator,
+                            &mut current_textures,
+                            &mut next_textures,
+                            &mut right_textures,
+                            &mut next_right_textures,
+                            &mut panel2_textures,
+                            &mut next_panel2_textures,
+                            &mut panel3_textures,
+                            &mut next_panel3_textures,
+                            &mut video_manager,
+                            &mut is_video_playing,
+                            &mut layout_history,
+                            session_start,
+                        )
+                        .await?;
                         last_advance = Instant::now();
                         is_paused = false;
                         pause_until = None;
@@ -1003,11 +1066,18 @@ async fn run_render_loop(
                     RealtimeEvent::RemotePrev => {
                         tracing::debug!("Remote: prev");
                         go_to_previous(
-                            &state, &mut renderer, &texture_creator,
-                            &mut current_textures, &mut next_textures,
-                            &mut right_textures, &mut panel2_textures, &mut panel3_textures,
-                            &mut video_manager, &mut is_video_playing,
-                        ).await?;
+                            &state,
+                            &mut renderer,
+                            &texture_creator,
+                            &mut current_textures,
+                            &mut next_textures,
+                            &mut right_textures,
+                            &mut panel2_textures,
+                            &mut panel3_textures,
+                            &mut video_manager,
+                            &mut is_video_playing,
+                        )
+                        .await?;
                         last_advance = Instant::now();
                         is_paused = false;
                         pause_until = None;
@@ -1023,14 +1093,46 @@ async fn run_render_loop(
                             }
                         }
                         load_current_item(
-                            &state, &mut renderer, &texture_creator,
-                            &mut current_textures, &mut video_manager, &mut is_video_playing,
-                        ).await?;
+                            &state,
+                            &mut renderer,
+                            &texture_creator,
+                            &mut current_textures,
+                            &mut video_manager,
+                            &mut is_video_playing,
+                        )
+                        .await?;
                         if is_dynamic {
                             let n = renderer.current_layout.image_count();
-                            if n >= 2 { load_panel_item(&state, &mut renderer, &texture_creator, &mut right_textures, 1).await?; }
-                            if n >= 3 { load_panel_item(&state, &mut renderer, &texture_creator, &mut panel2_textures, 2).await?; }
-                            if n >= 4 { load_panel_item(&state, &mut renderer, &texture_creator, &mut panel3_textures, 3).await?; }
+                            if n >= 2 {
+                                load_panel_item(
+                                    &state,
+                                    &mut renderer,
+                                    &texture_creator,
+                                    &mut right_textures,
+                                    1,
+                                )
+                                .await?;
+                            }
+                            if n >= 3 {
+                                load_panel_item(
+                                    &state,
+                                    &mut renderer,
+                                    &texture_creator,
+                                    &mut panel2_textures,
+                                    2,
+                                )
+                                .await?;
+                            }
+                            if n >= 4 {
+                                load_panel_item(
+                                    &state,
+                                    &mut renderer,
+                                    &texture_creator,
+                                    &mut panel3_textures,
+                                    3,
+                                )
+                                .await?;
+                            }
                         }
                         last_advance = Instant::now();
                         is_paused = false;
@@ -1121,14 +1223,23 @@ async fn run_render_loop(
                 tracing::debug!("Video ended, advancing to next");
                 is_video_playing = false;
                 advance_to_next(
-                    &state, &mut renderer, &texture_creator,
-                    &mut current_textures, &mut next_textures,
-                    &mut right_textures, &mut next_right_textures,
-                    &mut panel2_textures, &mut next_panel2_textures,
-                    &mut panel3_textures, &mut next_panel3_textures,
-                    &mut video_manager, &mut is_video_playing,
-                    &mut layout_history, session_start,
-                ).await?;
+                    &state,
+                    &mut renderer,
+                    &texture_creator,
+                    &mut current_textures,
+                    &mut next_textures,
+                    &mut right_textures,
+                    &mut next_right_textures,
+                    &mut panel2_textures,
+                    &mut next_panel2_textures,
+                    &mut panel3_textures,
+                    &mut next_panel3_textures,
+                    &mut video_manager,
+                    &mut is_video_playing,
+                    &mut layout_history,
+                    session_start,
+                )
+                .await?;
                 last_advance = Instant::now();
             }
         }
@@ -1136,10 +1247,18 @@ async fn run_render_loop(
         // Update transition
         let should_swap = renderer.update_transition();
         if should_swap {
-            if let Some(next) = next_textures.take() { current_textures = next; }
-            if let Some(next) = next_right_textures.take() { right_textures = next; }
-            if let Some(next) = next_panel2_textures.take() { panel2_textures = next; }
-            if let Some(next) = next_panel3_textures.take() { panel3_textures = next; }
+            if let Some(next) = next_textures.take() {
+                current_textures = next;
+            }
+            if let Some(next) = next_right_textures.take() {
+                right_textures = next;
+            }
+            if let Some(next) = next_panel2_textures.take() {
+                panel2_textures = next;
+            }
+            if let Some(next) = next_panel3_textures.take() {
+                panel3_textures = next;
+            }
         }
 
         // Check if it's time to advance (for images or looping videos)
@@ -1151,14 +1270,23 @@ async fn run_render_loop(
 
         if should_advance {
             advance_to_next(
-                &state, &mut renderer, &texture_creator,
-                &mut current_textures, &mut next_textures,
-                &mut right_textures, &mut next_right_textures,
-                &mut panel2_textures, &mut next_panel2_textures,
-                &mut panel3_textures, &mut next_panel3_textures,
-                &mut video_manager, &mut is_video_playing,
-                &mut layout_history, session_start,
-            ).await?;
+                &state,
+                &mut renderer,
+                &texture_creator,
+                &mut current_textures,
+                &mut next_textures,
+                &mut right_textures,
+                &mut next_right_textures,
+                &mut panel2_textures,
+                &mut next_panel2_textures,
+                &mut panel3_textures,
+                &mut next_panel3_textures,
+                &mut video_manager,
+                &mut is_video_playing,
+                &mut layout_history,
+                session_start,
+            )
+            .await?;
             last_advance = Instant::now();
         }
 
@@ -1166,14 +1294,34 @@ async fn run_render_loop(
         if renderer.current_layout.is_multi() {
             let n = renderer.current_layout.image_count();
             let mut p: Vec<&mut MediaTextures> = vec![&mut current_textures];
-            if n >= 2 { p.push(&mut right_textures); }
-            if n >= 3 { p.push(&mut panel2_textures); }
-            if n >= 4 { p.push(&mut panel3_textures); }
+            if n >= 2 {
+                p.push(&mut right_textures);
+            }
+            if n >= 3 {
+                p.push(&mut panel2_textures);
+            }
+            if n >= 4 {
+                p.push(&mut panel3_textures);
+            }
             let mut np: Vec<&mut MediaTextures> = Vec::new();
-            if let Some(ref mut t) = next_textures { np.push(t); }
-            if n >= 2 { if let Some(ref mut t) = next_right_textures { np.push(t); } }
-            if n >= 3 { if let Some(ref mut t) = next_panel2_textures { np.push(t); } }
-            if n >= 4 { if let Some(ref mut t) = next_panel3_textures { np.push(t); } }
+            if let Some(ref mut t) = next_textures {
+                np.push(t);
+            }
+            if n >= 2 {
+                if let Some(ref mut t) = next_right_textures {
+                    np.push(t);
+                }
+            }
+            if n >= 3 {
+                if let Some(ref mut t) = next_panel2_textures {
+                    np.push(t);
+                }
+            }
+            if n >= 4 {
+                if let Some(ref mut t) = next_panel3_textures {
+                    np.push(t);
+                }
+            }
             let has_next = !np.is_empty();
             if has_next {
                 renderer.render_layout(&texture_creator, &mut p, Some(&mut np))?;
@@ -1316,7 +1464,11 @@ async fn build_overlay_info(
 async fn build_media_info_overlay(state: &AppState, offset: usize) -> MediaInfoOverlay {
     let playlist = state.playlist.read().await;
     let base = *state.current_index.read().await;
-    let index = if playlist.is_empty() { 0 } else { (base + offset) % playlist.len() };
+    let index = if playlist.is_empty() {
+        0
+    } else {
+        (base + offset) % playlist.len()
+    };
     let Some(media) = playlist.get(index) else {
         return MediaInfoOverlay::default();
     };
@@ -1351,7 +1503,11 @@ async fn build_media_info_overlay(state: &AppState, offset: usize) -> MediaInfoO
 async fn build_location_info_overlay(state: &AppState, offset: usize) -> MediaInfoOverlay {
     let playlist = state.playlist.read().await;
     let base = *state.current_index.read().await;
-    let index = if playlist.is_empty() { 0 } else { (base + offset) % playlist.len() };
+    let index = if playlist.is_empty() {
+        0
+    } else {
+        (base + offset) % playlist.len()
+    };
     let Some(media) = playlist.get(index) else {
         return MediaInfoOverlay::default();
     };
@@ -1443,32 +1599,42 @@ enum ImageOrientation {
 }
 
 fn classify_orientation(w: u32, h: u32) -> ImageOrientation {
-    if w == 0 || h == 0 { return ImageOrientation::Square; }
+    if w == 0 || h == 0 {
+        return ImageOrientation::Square;
+    }
     let ratio = w as f32 / h as f32;
-    if ratio > 1.2 { ImageOrientation::Landscape }
-    else if ratio < 0.83 { ImageOrientation::Portrait }
-    else { ImageOrientation::Square }
+    if ratio > 1.2 {
+        ImageOrientation::Landscape
+    } else if ratio < 0.83 {
+        ImageOrientation::Portrait
+    } else {
+        ImageOrientation::Square
+    }
 }
 
 /// Return the visual (post-EXIF-rotation) orientation of a media item.
 fn media_visual_orientation(m: &assets::Media) -> ImageOrientation {
     match (m.width, m.height) {
         (Some(w), Some(h)) => {
-            let needs_swap = m.orientation.as_ref().map(|v| {
-                if let Some(n) = v.as_u64() {
-                    matches!(n, 5 | 6 | 7 | 8)
-                } else if let Some(f) = v.as_f64() {
-                    matches!(f as u64, 5 | 6 | 7 | 8)
-                } else if let Some(s) = v.as_str() {
-                    if let Ok(n) = s.trim().parse::<u64>() {
+            let needs_swap = m
+                .orientation
+                .as_ref()
+                .map(|v| {
+                    if let Some(n) = v.as_u64() {
                         matches!(n, 5 | 6 | 7 | 8)
+                    } else if let Some(f) = v.as_f64() {
+                        matches!(f as u64, 5 | 6 | 7 | 8)
+                    } else if let Some(s) = v.as_str() {
+                        if let Ok(n) = s.trim().parse::<u64>() {
+                            matches!(n, 5 | 6 | 7 | 8)
+                        } else {
+                            s.contains("90") || s.contains("270")
+                        }
                     } else {
-                        s.contains("90") || s.contains("270")
+                        false
                     }
-                } else {
-                    false
-                }
-            }).unwrap_or(false);
+                })
+                .unwrap_or(false);
             let (vw, vh) = if needs_swap { (h, w) } else { (w, h) };
             classify_orientation(vw, vh)
         }
@@ -1483,8 +1649,8 @@ fn media_visual_orientation(m: &assets::Media) -> ImageOrientation {
 /// are drawn greedily in random weighted order until all images are placed. This guarantees
 /// that consecutive runs of the same orientation always exist, enabling every layout type.
 fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>) {
-    use rand::Rng;
     use rand::seq::SliceRandom;
+    use rand::Rng;
     let mut rng = rand::thread_rng();
 
     // Drain into orientation buckets
@@ -1494,8 +1660,8 @@ fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>) {
     for img in images.drain(..) {
         match media_visual_orientation(&img) {
             ImageOrientation::Landscape => landscapes.push_back(img),
-            ImageOrientation::Portrait  => portraits.push_back(img),
-            ImageOrientation::Square    => squares.push_back(img),
+            ImageOrientation::Portrait => portraits.push_back(img),
+            ImageOrientation::Square => squares.push_back(img),
         }
     }
     // Shuffle each bucket so order is random within orientation groups
@@ -1514,26 +1680,33 @@ fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>) {
     // Greedily form layout groups until all buckets are empty
     loop {
         let (lc, pc, sc) = (l.len(), p.len(), s.len());
-        if lc == 0 && pc == 0 && sc == 0 { break; }
+        if lc == 0 && pc == 0 && sc == 0 {
+            break;
+        }
 
         // Build weighted option list based on what's available
         // 0=QuadLandscape(4L), 1=PortraitDualLandscape(1P+2L), 2=DualPortrait(2P),
         // 3=SingleLandscape(1L), 4=DualSquare(2S), 5=SquarePortrait(1S+1P)
-        let opts: &[(u8, f32)] = &[
-            (0, 2.0), (1, 2.0), (2, 2.0), (3, 3.0), (4, 2.0), (5, 2.0),
-        ];
-        let available: Vec<(u8, f32)> = opts.iter().filter_map(|&(id, w)| {
-            let ok = match id {
-                0 => lc >= 4,
-                1 => pc >= 1 && lc >= 2,
-                2 => pc >= 2,
-                3 => lc >= 1,
-                4 => sc >= 2,
-                5 => sc >= 1 && pc >= 1,
-                _ => false,
-            };
-            if ok { Some((id, w)) } else { None }
-        }).collect();
+        let opts: &[(u8, f32)] = &[(0, 2.0), (1, 2.0), (2, 2.0), (3, 3.0), (4, 2.0), (5, 2.0)];
+        let available: Vec<(u8, f32)> = opts
+            .iter()
+            .filter_map(|&(id, w)| {
+                let ok = match id {
+                    0 => lc >= 4,
+                    1 => pc >= 1 && lc >= 2,
+                    2 => pc >= 2,
+                    3 => lc >= 1,
+                    4 => sc >= 2,
+                    5 => sc >= 1 && pc >= 1,
+                    _ => false,
+                };
+                if ok {
+                    Some((id, w))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         if available.is_empty() {
             // Flush any leftover images that can't form a valid group
@@ -1545,19 +1718,42 @@ fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>) {
 
         let total: f32 = available.iter().map(|(_, w)| *w).sum();
         let mut pick = rng.gen::<f32>() * total;
-        let choice = available.iter()
-            .find(|(_, w)| { pick -= *w; pick <= 0.0 })
+        let choice = available
+            .iter()
+            .find(|(_, w)| {
+                pick -= *w;
+                pick <= 0.0
+            })
             .or_else(|| available.last())
             .map(|(id, _)| *id)
             .unwrap_or(3);
 
         match choice {
-            0 => { for _ in 0..4 { images.push(l.pop_front().unwrap()); } }
-            1 => { images.push(p.pop_front().unwrap()); images.push(l.pop_front().unwrap()); images.push(l.pop_front().unwrap()); }
-            2 => { images.push(p.pop_front().unwrap()); images.push(p.pop_front().unwrap()); }
-            3 => { images.push(l.pop_front().unwrap()); }
-            4 => { images.push(s.pop_front().unwrap()); images.push(s.pop_front().unwrap()); }
-            5 => { images.push(s.pop_front().unwrap()); images.push(p.pop_front().unwrap()); }
+            0 => {
+                for _ in 0..4 {
+                    images.push(l.pop_front().unwrap());
+                }
+            }
+            1 => {
+                images.push(p.pop_front().unwrap());
+                images.push(l.pop_front().unwrap());
+                images.push(l.pop_front().unwrap());
+            }
+            2 => {
+                images.push(p.pop_front().unwrap());
+                images.push(p.pop_front().unwrap());
+            }
+            3 => {
+                images.push(l.pop_front().unwrap());
+            }
+            4 => {
+                images.push(s.pop_front().unwrap());
+                images.push(s.pop_front().unwrap());
+            }
+            5 => {
+                images.push(s.pop_front().unwrap());
+                images.push(p.pop_front().unwrap());
+            }
             _ => unreachable!(),
         }
     }
@@ -1586,40 +1782,58 @@ async fn pick_dynamic_layout(
 
     let playlist = state.playlist.read().await;
     let n = playlist.len();
-    if n == 0 { return (SlideLayout::Single, peek_start); }
+    if n == 0 {
+        return (SlideLayout::Single, peek_start);
+    }
 
-    let orient_of = |idx: usize| -> ImageOrientation {
-        media_visual_orientation(&playlist[idx % n])
-    };
+    let orient_of =
+        |idx: usize| -> ImageOrientation { media_visual_orientation(&playlist[idx % n]) };
 
     // Helper: build valid layout candidates for a given start index.
-    let candidates_at = |start: usize, rng: &mut rand::rngs::ThreadRng| -> Vec<(SlideLayout, f32)> {
-        let o0 = orient_of(start);
-        let o1 = orient_of(start + 1);
-        let o2 = orient_of(start + 2);
-        let o3 = orient_of(start + 3);
-        let mut c: Vec<(SlideLayout, f32)> = Vec::new();
-        if o0 == ImageOrientation::Landscape {
-            c.push((SlideLayout::Single, 3.0));
-        }
-        if o0 == ImageOrientation::Portrait && o1 == ImageOrientation::Portrait {
-            c.push((SlideLayout::DualPortrait { flipped: rng.gen() }, 2.0));
-        }
-        if o0 == ImageOrientation::Portrait && o1 == ImageOrientation::Landscape && o2 == ImageOrientation::Landscape {
-            c.push((SlideLayout::PortraitDualLandscape { portrait_right: rng.gen() }, 2.0));
-        }
-        if o0 == ImageOrientation::Landscape && o1 == ImageOrientation::Landscape
-            && o2 == ImageOrientation::Landscape && o3 == ImageOrientation::Landscape {
-            c.push((SlideLayout::QuadLandscape { flipped: rng.gen() }, 2.0));
-        }
-        if o0 == ImageOrientation::Square && o1 == ImageOrientation::Square {
-            c.push((SlideLayout::DualSquare { flipped: rng.gen() }, 2.0));
-        }
-        if o0 == ImageOrientation::Square && o1 == ImageOrientation::Portrait {
-            c.push((SlideLayout::SquarePortrait { square_right: rng.gen() }, 2.0));
-        }
-        c
-    };
+    let candidates_at =
+        |start: usize, rng: &mut rand::rngs::ThreadRng| -> Vec<(SlideLayout, f32)> {
+            let o0 = orient_of(start);
+            let o1 = orient_of(start + 1);
+            let o2 = orient_of(start + 2);
+            let o3 = orient_of(start + 3);
+            let mut c: Vec<(SlideLayout, f32)> = Vec::new();
+            if o0 == ImageOrientation::Landscape {
+                c.push((SlideLayout::Single, 3.0));
+            }
+            if o0 == ImageOrientation::Portrait && o1 == ImageOrientation::Portrait {
+                c.push((SlideLayout::DualPortrait { flipped: rng.gen() }, 2.0));
+            }
+            if o0 == ImageOrientation::Portrait
+                && o1 == ImageOrientation::Landscape
+                && o2 == ImageOrientation::Landscape
+            {
+                c.push((
+                    SlideLayout::PortraitDualLandscape {
+                        portrait_right: rng.gen(),
+                    },
+                    2.0,
+                ));
+            }
+            if o0 == ImageOrientation::Landscape
+                && o1 == ImageOrientation::Landscape
+                && o2 == ImageOrientation::Landscape
+                && o3 == ImageOrientation::Landscape
+            {
+                c.push((SlideLayout::QuadLandscape { flipped: rng.gen() }, 2.0));
+            }
+            if o0 == ImageOrientation::Square && o1 == ImageOrientation::Square {
+                c.push((SlideLayout::DualSquare { flipped: rng.gen() }, 2.0));
+            }
+            if o0 == ImageOrientation::Square && o1 == ImageOrientation::Portrait {
+                c.push((
+                    SlideLayout::SquarePortrait {
+                        square_right: rng.gen(),
+                    },
+                    2.0,
+                ));
+            }
+            c
+        };
 
     // Try peek_start first; if no valid layout (portrait with no valid partner),
     // scan forward until we find a valid starting position. Cap scan at n steps.
@@ -1635,7 +1849,8 @@ async fn pick_dynamic_layout(
                 if !c.is_empty() {
                     tracing::debug!(
                         "pick_dynamic_layout: skipped {} images to find valid layout at {}",
-                        offset, try_start
+                        offset,
+                        try_start
                     );
                     found = (c, try_start);
                     break;
@@ -1649,10 +1864,11 @@ async fn pick_dynamic_layout(
         return (SlideLayout::Single, actual_start);
     }
 
-    let select = |candidates: &[(SlideLayout, f32)], rng: &mut rand::rngs::ThreadRng| -> SlideLayout {
-        let idx = rng.gen_range(0..candidates.len());
-        candidates[idx].0
-    };
+    let select =
+        |candidates: &[(SlideLayout, f32)], rng: &mut rand::rngs::ThreadRng| -> SlideLayout {
+            let idx = rng.gen_range(0..candidates.len());
+            candidates[idx].0
+        };
 
     if warmup {
         return (select(&candidates, &mut rng), actual_start);
@@ -1660,25 +1876,56 @@ async fn pick_dynamic_layout(
 
     // Bias Single to ~50% of weight; halve weight of recently shown layouts.
     let recent: Vec<SlideLayoutKind> = history.iter().rev().take(3).copied().collect();
-    let single_w: f32 = candidates.iter().find(|(l, _)| l.kind() == SlideLayoutKind::Single).map(|(_, w)| *w).unwrap_or(0.0);
-    let other_total: f32 = candidates.iter().filter(|(l, _)| l.kind() != SlideLayoutKind::Single).map(|(_, w)| *w).sum();
-    let scale = if other_total > 0.0 && single_w > 0.0 { single_w / other_total } else { 1.0 };
+    let single_w: f32 = candidates
+        .iter()
+        .find(|(l, _)| l.kind() == SlideLayoutKind::Single)
+        .map(|(_, w)| *w)
+        .unwrap_or(0.0);
+    let other_total: f32 = candidates
+        .iter()
+        .filter(|(l, _)| l.kind() != SlideLayoutKind::Single)
+        .map(|(_, w)| *w)
+        .sum();
+    let scale = if other_total > 0.0 && single_w > 0.0 {
+        single_w / other_total
+    } else {
+        1.0
+    };
 
-    let weighted: Vec<(SlideLayout, f32)> = candidates.iter().map(|(layout, w)| {
-        let mut weight = if layout.kind() == SlideLayoutKind::Single { *w } else { w * scale };
-        if recent.contains(&layout.kind()) { weight *= 0.5; }
-        (*layout, weight)
-    }).collect();
+    let weighted: Vec<(SlideLayout, f32)> = candidates
+        .iter()
+        .map(|(layout, w)| {
+            let mut weight = if layout.kind() == SlideLayoutKind::Single {
+                *w
+            } else {
+                w * scale
+            };
+            if recent.contains(&layout.kind()) {
+                weight *= 0.5;
+            }
+            (*layout, weight)
+        })
+        .collect();
 
     let total: f32 = weighted.iter().map(|(_, w)| *w).sum();
-    if total <= 0.0 { return (SlideLayout::Single, actual_start); }
+    if total <= 0.0 {
+        return (SlideLayout::Single, actual_start);
+    }
 
     let mut pick = rng.gen::<f32>() * total;
     for (layout, weight) in &weighted {
         pick -= weight;
-        if pick <= 0.0 { return (*layout, actual_start); }
+        if pick <= 0.0 {
+            return (*layout, actual_start);
+        }
     }
-    (weighted.last().map(|(l, _)| *l).unwrap_or(SlideLayout::Single), actual_start)
+    (
+        weighted
+            .last()
+            .map(|(l, _)| *l)
+            .unwrap_or(SlideLayout::Single),
+        actual_start,
+    )
 }
 
 /// Advance to the next item in the playlist.
@@ -1732,10 +1979,13 @@ async fn advance_to_next<'a>(
     // Pick layout for the next slide, peeking from next_start.
     // pick_dynamic_layout acquires the playlist lock internally — don't hold it here.
     let next_index = if is_dynamic {
-        let (layout, actual_start) = pick_dynamic_layout(state, layout_history, warmup, next_start).await;
+        let (layout, actual_start) =
+            pick_dynamic_layout(state, layout_history, warmup, next_start).await;
         renderer.current_layout = layout;
         layout_history.push_back(layout.kind());
-        if layout_history.len() > 20 { layout_history.pop_front(); }
+        if layout_history.len() > 20 {
+            layout_history.pop_front();
+        }
         actual_start
     } else {
         next_start
@@ -1745,7 +1995,9 @@ async fn advance_to_next<'a>(
     *state.current_index.write().await = next_index;
 
     let playlist = state.playlist.read().await;
-    if playlist.is_empty() { return Ok(()); }
+    if playlist.is_empty() {
+        return Ok(());
+    }
 
     let media = &playlist[next_index];
     tracing::debug!("Advancing to: {} ({})", media.id, media.media_type);
@@ -1779,7 +2031,9 @@ async fn advance_to_next<'a>(
         let m = playlist[idx].clone();
         state.preload_media_safe(&m).await?;
         let cache = state.cache.read().await;
-        let t = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
+        let t = state
+            .asset_manager
+            .load_textures(renderer, texture_creator, &m, &cache)?;
         drop(cache);
         *next_right_textures = Some(t);
         let mut cache = state.cache.write().await;
@@ -1791,7 +2045,9 @@ async fn advance_to_next<'a>(
         let m = playlist[idx].clone();
         state.preload_media_safe(&m).await?;
         let cache = state.cache.read().await;
-        let t = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
+        let t = state
+            .asset_manager
+            .load_textures(renderer, texture_creator, &m, &cache)?;
         drop(cache);
         *next_panel2_textures = Some(t);
         let mut cache = state.cache.write().await;
@@ -1804,7 +2060,9 @@ async fn advance_to_next<'a>(
         drop(playlist);
         state.preload_media_safe(&m).await?;
         let cache = state.cache.read().await;
-        let t = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
+        let t = state
+            .asset_manager
+            .load_textures(renderer, texture_creator, &m, &cache)?;
         drop(cache);
         *next_panel3_textures = Some(t);
         let mut cache = state.cache.write().await;
@@ -1830,7 +2088,9 @@ async fn advance_to_next<'a>(
             next_panel3_textures.as_ref().and_then(|t| t.display_size),
         ];
         let rects = Renderer::compute_panel_rects(renderer.current_layout, sw, sh, &sizes);
-        let too_small = rects.iter().any(|r| r.width() < min_w || r.height() < min_h);
+        let too_small = rects
+            .iter()
+            .any(|r| r.width() < min_w || r.height() < min_h);
         if too_small {
             tracing::warn!(
                 "Layout {:?} produced image smaller than 20% of screen — falling back to Single",
@@ -1846,12 +2106,22 @@ async fn advance_to_next<'a>(
 
     match Transition::from_str(&state.config.transition) {
         Transition::Cut => {
-            if let Some(next) = next_textures.take() { *current_textures = next; }
-            if let Some(next) = next_right_textures.take() { *right_textures = next; }
-            if let Some(next) = next_panel2_textures.take() { *panel2_textures = next; }
-            if let Some(next) = next_panel3_textures.take() { *panel3_textures = next; }
+            if let Some(next) = next_textures.take() {
+                *current_textures = next;
+            }
+            if let Some(next) = next_right_textures.take() {
+                *right_textures = next;
+            }
+            if let Some(next) = next_panel2_textures.take() {
+                *panel2_textures = next;
+            }
+            if let Some(next) = next_panel3_textures.take() {
+                *panel3_textures = next;
+            }
         }
-        _ => { renderer.start_transition(); }
+        _ => {
+            renderer.start_transition();
+        }
     }
 
     // Touch cache for primary panel
@@ -1906,7 +2176,9 @@ async fn go_to_previous<'a>(
     state.preload_media_safe(media).await?;
     let cache = state.cache.read().await;
     let new_textures =
-        state.asset_manager.load_textures(renderer, texture_creator, media, &cache)?;
+        state
+            .asset_manager
+            .load_textures(renderer, texture_creator, media, &cache)?;
     drop(cache);
 
     *next_textures = None;
@@ -1918,7 +2190,10 @@ async fn go_to_previous<'a>(
         let m = playlist[idx].clone();
         state.preload_media_safe(&m).await?;
         let cache = state.cache.read().await;
-        *right_textures = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
+        *right_textures =
+            state
+                .asset_manager
+                .load_textures(renderer, texture_creator, &m, &cache)?;
         drop(cache);
     }
     if step >= 3 {
@@ -1926,7 +2201,10 @@ async fn go_to_previous<'a>(
         let m = playlist[idx].clone();
         state.preload_media_safe(&m).await?;
         let cache = state.cache.read().await;
-        *panel2_textures = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
+        *panel2_textures =
+            state
+                .asset_manager
+                .load_textures(renderer, texture_creator, &m, &cache)?;
         drop(cache);
     }
     if step >= 4 {
@@ -1935,7 +2213,10 @@ async fn go_to_previous<'a>(
         drop(playlist);
         state.preload_media_safe(&m).await?;
         let cache = state.cache.read().await;
-        *panel3_textures = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
+        *panel3_textures =
+            state
+                .asset_manager
+                .load_textures(renderer, texture_creator, &m, &cache)?;
         drop(cache);
     } else {
         drop(playlist);
