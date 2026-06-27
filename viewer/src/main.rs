@@ -627,11 +627,17 @@ async fn main() -> Result<()> {
 
     *state.playlist.write().await = playlist.clone();
 
-    // Shuffle if configured
-    if state.config.shuffle {
-        use rand::seq::SliceRandom;
+    // Shuffle / reorder the playlist
+    {
         let mut playlist = state.playlist.write().await;
-        playlist.shuffle(&mut rand::thread_rng());
+        if state.config.display_mode == "dynamic" {
+            // In dynamic mode always reorder into layout-compatible groups so that
+            // multi-image layouts (quad-landscape, portrait+2-landscape, etc.) fire reliably.
+            reorder_for_dynamic_layouts(&mut playlist);
+        } else if state.config.shuffle {
+            use rand::seq::SliceRandom;
+            playlist.shuffle(&mut rand::thread_rng());
+        }
     }
 
     // Start preloader for initial assets
@@ -1444,6 +1450,119 @@ fn classify_orientation(w: u32, h: u32) -> ImageOrientation {
     else { ImageOrientation::Square }
 }
 
+/// Return the visual (post-EXIF-rotation) orientation of a media item.
+fn media_visual_orientation(m: &assets::Media) -> ImageOrientation {
+    match (m.width, m.height) {
+        (Some(w), Some(h)) => {
+            let needs_swap = m.orientation.as_ref().map(|v| {
+                if let Some(n) = v.as_u64() {
+                    matches!(n, 5 | 6 | 7 | 8)
+                } else if let Some(f) = v.as_f64() {
+                    matches!(f as u64, 5 | 6 | 7 | 8)
+                } else if let Some(s) = v.as_str() {
+                    if let Ok(n) = s.trim().parse::<u64>() {
+                        matches!(n, 5 | 6 | 7 | 8)
+                    } else {
+                        s.contains("90") || s.contains("270")
+                    }
+                } else {
+                    false
+                }
+            }).unwrap_or(false);
+            let (vw, vh) = if needs_swap { (h, w) } else { (w, h) };
+            classify_orientation(vw, vh)
+        }
+        _ => ImageOrientation::Landscape,
+    }
+}
+
+/// Reorder a playlist into layout-compatible groups so that the sequential layout picker
+/// reliably finds valid multi-image combinations (quad-landscape, portrait+2-landscape, etc.).
+///
+/// Images are separated by orientation, each bucket is independently shuffled, then groups
+/// are drawn greedily in random weighted order until all images are placed. This guarantees
+/// that consecutive runs of the same orientation always exist, enabling every layout type.
+fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>) {
+    use rand::Rng;
+    use rand::seq::SliceRandom;
+    let mut rng = rand::thread_rng();
+
+    // Drain into orientation buckets
+    let mut landscapes: std::collections::VecDeque<assets::Media> = Default::default();
+    let mut portraits: std::collections::VecDeque<assets::Media> = Default::default();
+    let mut squares: std::collections::VecDeque<assets::Media> = Default::default();
+    for img in images.drain(..) {
+        match media_visual_orientation(&img) {
+            ImageOrientation::Landscape => landscapes.push_back(img),
+            ImageOrientation::Portrait  => portraits.push_back(img),
+            ImageOrientation::Square    => squares.push_back(img),
+        }
+    }
+    // Shuffle each bucket so order is random within orientation groups
+    let (mut lv, mut pv, mut sv): (Vec<_>, Vec<_>, Vec<_>) = (
+        landscapes.into_iter().collect(),
+        portraits.into_iter().collect(),
+        squares.into_iter().collect(),
+    );
+    lv.shuffle(&mut rng);
+    pv.shuffle(&mut rng);
+    sv.shuffle(&mut rng);
+    let mut l = std::collections::VecDeque::from(lv);
+    let mut p = std::collections::VecDeque::from(pv);
+    let mut s = std::collections::VecDeque::from(sv);
+
+    // Greedily form layout groups until all buckets are empty
+    loop {
+        let (lc, pc, sc) = (l.len(), p.len(), s.len());
+        if lc == 0 && pc == 0 && sc == 0 { break; }
+
+        // Build weighted option list based on what's available
+        // 0=QuadLandscape(4L), 1=PortraitDualLandscape(1P+2L), 2=DualPortrait(2P),
+        // 3=SingleLandscape(1L), 4=DualSquare(2S), 5=SquarePortrait(1S+1P)
+        let opts: &[(u8, f32)] = &[
+            (0, 2.0), (1, 2.0), (2, 2.0), (3, 3.0), (4, 2.0), (5, 2.0),
+        ];
+        let available: Vec<(u8, f32)> = opts.iter().filter_map(|&(id, w)| {
+            let ok = match id {
+                0 => lc >= 4,
+                1 => pc >= 1 && lc >= 2,
+                2 => pc >= 2,
+                3 => lc >= 1,
+                4 => sc >= 2,
+                5 => sc >= 1 && pc >= 1,
+                _ => false,
+            };
+            if ok { Some((id, w)) } else { None }
+        }).collect();
+
+        if available.is_empty() {
+            // Flush any leftover images that can't form a valid group
+            images.extend(p.drain(..));
+            images.extend(l.drain(..));
+            images.extend(s.drain(..));
+            break;
+        }
+
+        let total: f32 = available.iter().map(|(_, w)| *w).sum();
+        let mut pick = rng.gen::<f32>() * total;
+        let choice = available.iter()
+            .find(|(_, w)| { pick -= *w; pick <= 0.0 })
+            .or_else(|| available.last())
+            .map(|(id, _)| *id)
+            .unwrap_or(3);
+
+        match choice {
+            0 => { for _ in 0..4 { images.push(l.pop_front().unwrap()); } }
+            1 => { images.push(p.pop_front().unwrap()); images.push(l.pop_front().unwrap()); images.push(l.pop_front().unwrap()); }
+            2 => { images.push(p.pop_front().unwrap()); images.push(p.pop_front().unwrap()); }
+            3 => { images.push(l.pop_front().unwrap()); }
+            4 => { images.push(s.pop_front().unwrap()); images.push(s.pop_front().unwrap()); }
+            5 => { images.push(s.pop_front().unwrap()); images.push(p.pop_front().unwrap()); }
+            _ => unreachable!(),
+        }
+    }
+}
+
 /// Pick a dynamic layout for the upcoming slide.
 ///
 /// Returns `(layout, actual_start)` where `actual_start` is the playlist index the
@@ -1469,35 +1588,8 @@ async fn pick_dynamic_layout(
     let n = playlist.len();
     if n == 0 { return (SlideLayout::Single, peek_start); }
 
-    // Helper: classify visual orientation of a media item, accounting for EXIF rotation.
-    // ExifTool returns orientation as a string ("Rotate 90 CW") without -n flag, or as a
-    // numeric value with -n. Handle both. Orientations 5-8 rotate 90/270° and swap w/h.
     let orient_of = |idx: usize| -> ImageOrientation {
-        let m = &playlist[idx % n];
-        match (m.width, m.height) {
-            (Some(w), Some(h)) => {
-                let needs_swap = m.orientation.as_ref().map(|v| {
-                    if let Some(n) = v.as_u64() {
-                        matches!(n, 5 | 6 | 7 | 8)
-                    } else if let Some(f) = v.as_f64() {
-                        matches!(f as u64, 5 | 6 | 7 | 8)
-                    } else if let Some(s) = v.as_str() {
-                        // PocketBase text field stores orientation as a string: either numeric ("6")
-                        // or an ExifTool description ("Rotate 90 CW"). Handle both.
-                        if let Ok(n) = s.trim().parse::<u64>() {
-                            matches!(n, 5 | 6 | 7 | 8)
-                        } else {
-                            s.contains("90") || s.contains("270")
-                        }
-                    } else {
-                        false
-                    }
-                }).unwrap_or(false);
-                let (vw, vh) = if needs_swap { (h, w) } else { (w, h) };
-                classify_orientation(vw, vh)
-            }
-            _ => ImageOrientation::Landscape,
-        }
+        media_visual_orientation(&playlist[idx % n])
     };
 
     // Helper: build valid layout candidates for a given start index.
@@ -1627,13 +1719,12 @@ async fn advance_to_next<'a>(
     let current_index_val = *state.current_index.read().await;
     let next_start_raw = current_index_val + current_step;
 
-    // In dynamic mode, re-shuffle the playlist whenever we complete a full cycle so
-    // the images appear in a different random order each time rather than repeating.
+    // In dynamic mode, regroup the playlist whenever we complete a full cycle so that
+    // each new pass shows images in a freshly randomised layout-compatible order.
     if is_dynamic && next_start_raw >= n {
-        use rand::seq::SliceRandom;
         let mut playlist = state.playlist.write().await;
-        playlist.shuffle(&mut rand::thread_rng());
-        tracing::debug!("Dynamic mode: reshuffled playlist for new cycle");
+        reorder_for_dynamic_layouts(&mut playlist);
+        tracing::debug!("Dynamic mode: reordered playlist for new cycle");
     }
 
     let next_start = next_start_raw % n;
