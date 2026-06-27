@@ -14,7 +14,8 @@ use assets::{AssetManager, AssetType, Media, Preloader};
 use cache::Cache;
 use config::{Config, Environment, File};
 use realtime::{spawn_realtime, RealtimeEvent};
-use renderer::{LayoutMode, MediaInfoOverlay, MediaTextures, OverlayInfo, Renderer, Transition, UserAction};
+use renderer::{MediaInfoOverlay, MediaTextures, OverlayInfo, Renderer, SlideLayout, SlideLayoutKind, Transition, UserAction};
+use std::collections::VecDeque;
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use std::env;
@@ -113,7 +114,7 @@ struct AppConfig {
     #[serde(default)]
     pub show_location_info: bool,
 
-    /// Display layout mode: "single", "dual-portrait", "quad-landscape" (default: "single").
+    /// Display layout mode: "single" or "dynamic" (default: "single").
     #[serde(default = "default_display_mode")]
     pub display_mode: String,
 }
@@ -776,7 +777,7 @@ async fn run_discovery_mode(config: &AppConfig) -> Result<()> {
         config.fullscreen,
         false,
         false,
-        LayoutMode::Single,
+        SlideLayout::Single,
     )?;
 
     loop {
@@ -829,7 +830,7 @@ async fn run_render_loop(
         state.config.fullscreen,
         state.config.blur_background,
         state.config.show_clock,
-        LayoutMode::from_str(&state.config.display_mode),
+        SlideLayout::Single, // initial layout; dynamic mode picks per-slide
     )?;
 
     // Initialize video manager
@@ -838,13 +839,20 @@ async fn run_render_loop(
     // Create texture creator
     let texture_creator = renderer.texture_creator();
 
-    // Current and next textures
+    // Panel textures (up to 4 for dynamic layouts)
     let mut current_textures = MediaTextures::new();
     let mut next_textures: Option<MediaTextures> = None;
-
-    // Right-panel textures for dual-portrait mode
     let mut right_textures = MediaTextures::new();
     let mut next_right_textures: Option<MediaTextures> = None;
+    let mut panel2_textures = MediaTextures::new();
+    let mut next_panel2_textures: Option<MediaTextures> = None;
+    let mut panel3_textures = MediaTextures::new();
+    let mut next_panel3_textures: Option<MediaTextures> = None;
+
+    // Dynamic layout state
+    let session_start = Instant::now();
+    let mut layout_history: VecDeque<SlideLayoutKind> = VecDeque::new();
+    let is_dynamic = state.config.display_mode == "dynamic";
 
     // Timing
     let mut last_advance = Instant::now();
@@ -872,15 +880,17 @@ async fn run_render_loop(
     )
     .await?;
 
-    if renderer.display_mode == LayoutMode::DualPortrait {
-        load_panel_item(
-            &state,
-            &mut renderer,
-            &texture_creator,
-            &mut right_textures,
-            1,
-        )
-        .await?;
+    if is_dynamic {
+        let peek_start = *state.current_index.read().await;
+        let (layout, actual_start) = pick_dynamic_layout(&state, &layout_history, session_start.elapsed().as_secs() < 120, peek_start).await;
+        renderer.current_layout = layout;
+        *state.current_index.write().await = actual_start;
+        layout_history.push_back(layout.kind());
+        if layout_history.len() > 20 { layout_history.pop_front(); }
+        let n = layout.image_count();
+        if n >= 2 { load_panel_item(&state, &mut renderer, &texture_creator, &mut right_textures, 1).await?; }
+        if n >= 3 { load_panel_item(&state, &mut renderer, &texture_creator, &mut panel2_textures, 2).await?; }
+        if n >= 4 { load_panel_item(&state, &mut renderer, &texture_creator, &mut panel3_textures, 3).await?; }
     }
 
     loop {
@@ -909,33 +919,25 @@ async fn run_render_loop(
             UserAction::Next => {
                 tracing::debug!("Skip to next requested");
                 advance_to_next(
-                    &state,
-                    &mut renderer,
-                    &texture_creator,
-                    &mut current_textures,
-                    &mut next_textures,
-                    &mut right_textures,
-                    &mut next_right_textures,
-                    &mut video_manager,
-                    &mut is_video_playing,
-                )
-                .await?;
+                    &state, &mut renderer, &texture_creator,
+                    &mut current_textures, &mut next_textures,
+                    &mut right_textures, &mut next_right_textures,
+                    &mut panel2_textures, &mut next_panel2_textures,
+                    &mut panel3_textures, &mut next_panel3_textures,
+                    &mut video_manager, &mut is_video_playing,
+                    &mut layout_history, session_start,
+                ).await?;
                 last_advance = Instant::now();
                 is_paused = false;
             }
             UserAction::Previous => {
                 tracing::debug!("Go to previous requested");
                 go_to_previous(
-                    &state,
-                    &mut renderer,
-                    &texture_creator,
-                    &mut current_textures,
-                    &mut next_textures,
-                    &mut right_textures,
-                    &mut video_manager,
-                    &mut is_video_playing,
-                )
-                .await?;
+                    &state, &mut renderer, &texture_creator,
+                    &mut current_textures, &mut next_textures,
+                    &mut right_textures, &mut panel2_textures, &mut panel3_textures,
+                    &mut video_manager, &mut is_video_playing,
+                ).await?;
                 last_advance = Instant::now();
                 is_paused = false;
             }
@@ -980,17 +982,14 @@ async fn run_render_loop(
                     RealtimeEvent::RemoteNext => {
                         tracing::debug!("Remote: next");
                         advance_to_next(
-                            &state,
-                            &mut renderer,
-                            &texture_creator,
-                            &mut current_textures,
-                            &mut next_textures,
-                            &mut right_textures,
-                            &mut next_right_textures,
-                            &mut video_manager,
-                            &mut is_video_playing,
-                        )
-                        .await?;
+                            &state, &mut renderer, &texture_creator,
+                            &mut current_textures, &mut next_textures,
+                            &mut right_textures, &mut next_right_textures,
+                            &mut panel2_textures, &mut next_panel2_textures,
+                            &mut panel3_textures, &mut next_panel3_textures,
+                            &mut video_manager, &mut is_video_playing,
+                            &mut layout_history, session_start,
+                        ).await?;
                         last_advance = Instant::now();
                         is_paused = false;
                         pause_until = None;
@@ -998,16 +997,11 @@ async fn run_render_loop(
                     RealtimeEvent::RemotePrev => {
                         tracing::debug!("Remote: prev");
                         go_to_previous(
-                            &state,
-                            &mut renderer,
-                            &texture_creator,
-                            &mut current_textures,
-                            &mut next_textures,
-                            &mut right_textures,
-                            &mut video_manager,
-                            &mut is_video_playing,
-                        )
-                        .await?;
+                            &state, &mut renderer, &texture_creator,
+                            &mut current_textures, &mut next_textures,
+                            &mut right_textures, &mut panel2_textures, &mut panel3_textures,
+                            &mut video_manager, &mut is_video_playing,
+                        ).await?;
                         last_advance = Instant::now();
                         is_paused = false;
                         pause_until = None;
@@ -1023,16 +1017,14 @@ async fn run_render_loop(
                             }
                         }
                         load_current_item(
-                            &state,
-                            &mut renderer,
-                            &texture_creator,
-                            &mut current_textures,
-                            &mut video_manager,
-                            &mut is_video_playing,
-                        )
-                        .await?;
-                        if renderer.display_mode == LayoutMode::DualPortrait {
-                            load_panel_item(&state, &mut renderer, &texture_creator, &mut right_textures, 1).await?;
+                            &state, &mut renderer, &texture_creator,
+                            &mut current_textures, &mut video_manager, &mut is_video_playing,
+                        ).await?;
+                        if is_dynamic {
+                            let n = renderer.current_layout.image_count();
+                            if n >= 2 { load_panel_item(&state, &mut renderer, &texture_creator, &mut right_textures, 1).await?; }
+                            if n >= 3 { load_panel_item(&state, &mut renderer, &texture_creator, &mut panel2_textures, 2).await?; }
+                            if n >= 4 { load_panel_item(&state, &mut renderer, &texture_creator, &mut panel3_textures, 3).await?; }
                         }
                         last_advance = Instant::now();
                         is_paused = false;
@@ -1123,17 +1115,14 @@ async fn run_render_loop(
                 tracing::debug!("Video ended, advancing to next");
                 is_video_playing = false;
                 advance_to_next(
-                    &state,
-                    &mut renderer,
-                    &texture_creator,
-                    &mut current_textures,
-                    &mut next_textures,
-                    &mut right_textures,
-                    &mut next_right_textures,
-                    &mut video_manager,
-                    &mut is_video_playing,
-                )
-                .await?;
+                    &state, &mut renderer, &texture_creator,
+                    &mut current_textures, &mut next_textures,
+                    &mut right_textures, &mut next_right_textures,
+                    &mut panel2_textures, &mut next_panel2_textures,
+                    &mut panel3_textures, &mut next_panel3_textures,
+                    &mut video_manager, &mut is_video_playing,
+                    &mut layout_history, session_start,
+                ).await?;
                 last_advance = Instant::now();
             }
         }
@@ -1141,12 +1130,10 @@ async fn run_render_loop(
         // Update transition
         let should_swap = renderer.update_transition();
         if should_swap {
-            if let Some(next) = next_textures.take() {
-                current_textures = next;
-            }
-            if let Some(next_right) = next_right_textures.take() {
-                right_textures = next_right;
-            }
+            if let Some(next) = next_textures.take() { current_textures = next; }
+            if let Some(next) = next_right_textures.take() { right_textures = next; }
+            if let Some(next) = next_panel2_textures.take() { panel2_textures = next; }
+            if let Some(next) = next_panel3_textures.take() { panel3_textures = next; }
         }
 
         // Check if it's time to advance (for images or looping videos)
@@ -1158,29 +1145,35 @@ async fn run_render_loop(
 
         if should_advance {
             advance_to_next(
-                &state,
-                &mut renderer,
-                &texture_creator,
-                &mut current_textures,
-                &mut next_textures,
-                &mut right_textures,
-                &mut next_right_textures,
-                &mut video_manager,
-                &mut is_video_playing,
-            )
-            .await?;
+                &state, &mut renderer, &texture_creator,
+                &mut current_textures, &mut next_textures,
+                &mut right_textures, &mut next_right_textures,
+                &mut panel2_textures, &mut next_panel2_textures,
+                &mut panel3_textures, &mut next_panel3_textures,
+                &mut video_manager, &mut is_video_playing,
+                &mut layout_history, session_start,
+            ).await?;
             last_advance = Instant::now();
         }
 
         // Render image + clock (no present yet)
-        if renderer.display_mode == LayoutMode::DualPortrait {
-            renderer.render_paired(
-                &texture_creator,
-                &mut current_textures,
-                &mut right_textures,
-                next_textures.as_mut(),
-                next_right_textures.as_mut(),
-            )?;
+        if renderer.current_layout.is_multi() {
+            let n = renderer.current_layout.image_count();
+            let mut p: Vec<&mut MediaTextures> = vec![&mut current_textures];
+            if n >= 2 { p.push(&mut right_textures); }
+            if n >= 3 { p.push(&mut panel2_textures); }
+            if n >= 4 { p.push(&mut panel3_textures); }
+            let mut np: Vec<&mut MediaTextures> = Vec::new();
+            if let Some(ref mut t) = next_textures { np.push(t); }
+            if n >= 2 { if let Some(ref mut t) = next_right_textures { np.push(t); } }
+            if n >= 3 { if let Some(ref mut t) = next_panel2_textures { np.push(t); } }
+            if n >= 4 { if let Some(ref mut t) = next_panel3_textures { np.push(t); } }
+            let has_next = !np.is_empty();
+            if has_next {
+                renderer.render_layout(&texture_creator, &mut p, Some(&mut np))?;
+            } else {
+                renderer.render_layout(&texture_creator, &mut p, None)?;
+            }
         } else {
             renderer.render(
                 &texture_creator,
@@ -1207,11 +1200,14 @@ async fn run_render_loop(
 
         // Render media info overlay on top
         if info_overlay_visible {
-            if renderer.display_mode == LayoutMode::DualPortrait {
-                let left_info = build_media_info_overlay(&state, 0).await;
-                let right_info = build_media_info_overlay(&state, 1).await;
-                if let Err(e) = renderer.render_info_overlay_dual(&left_info, &right_info) {
-                    tracing::warn!("Failed to render dual info overlay: {}", e);
+            let n = renderer.current_layout.image_count();
+            if n > 1 {
+                let mut infos = Vec::new();
+                for i in 0..n {
+                    infos.push(build_media_info_overlay(&state, i).await);
+                }
+                if let Err(e) = renderer.render_info_overlay_multi(&infos) {
+                    tracing::warn!("Failed to render multi info overlay: {}", e);
                 }
             } else {
                 let media_info = build_media_info_overlay(&state, 0).await;
@@ -1220,11 +1216,14 @@ async fn run_render_loop(
                 }
             }
         } else if location_overlay_visible {
-            if renderer.display_mode == LayoutMode::DualPortrait {
-                let left_info = build_location_info_overlay(&state, 0).await;
-                let right_info = build_location_info_overlay(&state, 1).await;
-                if let Err(e) = renderer.render_info_overlay_dual(&left_info, &right_info) {
-                    tracing::warn!("Failed to render dual location overlay: {}", e);
+            let n = renderer.current_layout.image_count();
+            if n > 1 {
+                let mut infos = Vec::new();
+                for i in 0..n {
+                    infos.push(build_location_info_overlay(&state, i).await);
+                }
+                if let Err(e) = renderer.render_info_overlay_multi(&infos) {
+                    tracing::warn!("Failed to render multi location overlay: {}", e);
                 }
             } else {
                 let loc_info = build_location_info_overlay(&state, 0).await;
@@ -1429,6 +1428,167 @@ async fn load_panel_item<'a>(
     Ok(())
 }
 
+/// Image orientation bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImageOrientation {
+    Portrait,
+    Landscape,
+    Square,
+}
+
+fn classify_orientation(w: u32, h: u32) -> ImageOrientation {
+    if w == 0 || h == 0 { return ImageOrientation::Square; }
+    let ratio = w as f32 / h as f32;
+    if ratio > 1.2 { ImageOrientation::Landscape }
+    else if ratio < 0.83 { ImageOrientation::Portrait }
+    else { ImageOrientation::Square }
+}
+
+/// Pick a dynamic layout for the upcoming slide.
+///
+/// Returns `(layout, actual_start)` where `actual_start` is the playlist index the
+/// caller should use for loading — normally equal to `peek_start`, but may be advanced
+/// if a portrait image at `peek_start` has no valid multi-image partner and we need to
+/// scan forward to avoid showing a portrait alone.
+///
+/// Rules:
+/// - Only landscape images may be shown alone.
+/// - Portrait images are NEVER shown alone; we scan forward until a valid layout exists.
+/// - The 3-image layout is strictly [portrait, landscape, landscape].
+/// - The 4-image layout requires 4 consecutive landscapes.
+async fn pick_dynamic_layout(
+    state: &AppState,
+    history: &VecDeque<SlideLayoutKind>,
+    warmup: bool,
+    peek_start: usize,
+) -> (SlideLayout, usize) {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+
+    let playlist = state.playlist.read().await;
+    let n = playlist.len();
+    if n == 0 { return (SlideLayout::Single, peek_start); }
+
+    // Helper: classify visual orientation of a media item, accounting for EXIF rotation.
+    // ExifTool returns orientation as a string ("Rotate 90 CW") without -n flag, or as a
+    // numeric value with -n. Handle both. Orientations 5-8 rotate 90/270° and swap w/h.
+    let orient_of = |idx: usize| -> ImageOrientation {
+        let m = &playlist[idx % n];
+        match (m.width, m.height) {
+            (Some(w), Some(h)) => {
+                let needs_swap = m.orientation.as_ref().map(|v| {
+                    if let Some(n) = v.as_u64() {
+                        matches!(n, 5 | 6 | 7 | 8)
+                    } else if let Some(f) = v.as_f64() {
+                        matches!(f as u64, 5 | 6 | 7 | 8)
+                    } else if let Some(s) = v.as_str() {
+                        // PocketBase text field stores orientation as a string: either numeric ("6")
+                        // or an ExifTool description ("Rotate 90 CW"). Handle both.
+                        if let Ok(n) = s.trim().parse::<u64>() {
+                            matches!(n, 5 | 6 | 7 | 8)
+                        } else {
+                            s.contains("90") || s.contains("270")
+                        }
+                    } else {
+                        false
+                    }
+                }).unwrap_or(false);
+                let (vw, vh) = if needs_swap { (h, w) } else { (w, h) };
+                classify_orientation(vw, vh)
+            }
+            _ => ImageOrientation::Landscape,
+        }
+    };
+
+    // Helper: build valid layout candidates for a given start index.
+    let candidates_at = |start: usize, rng: &mut rand::rngs::ThreadRng| -> Vec<(SlideLayout, f32)> {
+        let o0 = orient_of(start);
+        let o1 = orient_of(start + 1);
+        let o2 = orient_of(start + 2);
+        let o3 = orient_of(start + 3);
+        let mut c: Vec<(SlideLayout, f32)> = Vec::new();
+        if o0 == ImageOrientation::Landscape {
+            c.push((SlideLayout::Single, 3.0));
+        }
+        if o0 == ImageOrientation::Portrait && o1 == ImageOrientation::Portrait {
+            c.push((SlideLayout::DualPortrait { flipped: rng.gen() }, 2.0));
+        }
+        if o0 == ImageOrientation::Portrait && o1 == ImageOrientation::Landscape && o2 == ImageOrientation::Landscape {
+            c.push((SlideLayout::PortraitDualLandscape { portrait_right: rng.gen() }, 2.0));
+        }
+        if o0 == ImageOrientation::Landscape && o1 == ImageOrientation::Landscape
+            && o2 == ImageOrientation::Landscape && o3 == ImageOrientation::Landscape {
+            c.push((SlideLayout::QuadLandscape { flipped: rng.gen() }, 2.0));
+        }
+        if o0 == ImageOrientation::Square && o1 == ImageOrientation::Square {
+            c.push((SlideLayout::DualSquare { flipped: rng.gen() }, 2.0));
+        }
+        if o0 == ImageOrientation::Square && o1 == ImageOrientation::Portrait {
+            c.push((SlideLayout::SquarePortrait { square_right: rng.gen() }, 2.0));
+        }
+        c
+    };
+
+    // Try peek_start first; if no valid layout (portrait with no valid partner),
+    // scan forward until we find a valid starting position. Cap scan at n steps.
+    let (candidates, actual_start) = {
+        let c = candidates_at(peek_start, &mut rng);
+        if !c.is_empty() {
+            (c, peek_start)
+        } else {
+            let mut found = (Vec::new(), peek_start);
+            for offset in 1..=n {
+                let try_start = (peek_start + offset) % n;
+                let c = candidates_at(try_start, &mut rng);
+                if !c.is_empty() {
+                    tracing::debug!(
+                        "pick_dynamic_layout: skipped {} images to find valid layout at {}",
+                        offset, try_start
+                    );
+                    found = (c, try_start);
+                    break;
+                }
+            }
+            found
+        }
+    };
+
+    if candidates.is_empty() {
+        return (SlideLayout::Single, actual_start);
+    }
+
+    let select = |candidates: &[(SlideLayout, f32)], rng: &mut rand::rngs::ThreadRng| -> SlideLayout {
+        let idx = rng.gen_range(0..candidates.len());
+        candidates[idx].0
+    };
+
+    if warmup {
+        return (select(&candidates, &mut rng), actual_start);
+    }
+
+    // Bias Single to ~50% of weight; halve weight of recently shown layouts.
+    let recent: Vec<SlideLayoutKind> = history.iter().rev().take(3).copied().collect();
+    let single_w: f32 = candidates.iter().find(|(l, _)| l.kind() == SlideLayoutKind::Single).map(|(_, w)| *w).unwrap_or(0.0);
+    let other_total: f32 = candidates.iter().filter(|(l, _)| l.kind() != SlideLayoutKind::Single).map(|(_, w)| *w).sum();
+    let scale = if other_total > 0.0 && single_w > 0.0 { single_w / other_total } else { 1.0 };
+
+    let weighted: Vec<(SlideLayout, f32)> = candidates.iter().map(|(layout, w)| {
+        let mut weight = if layout.kind() == SlideLayoutKind::Single { *w } else { w * scale };
+        if recent.contains(&layout.kind()) { weight *= 0.5; }
+        (*layout, weight)
+    }).collect();
+
+    let total: f32 = weighted.iter().map(|(_, w)| *w).sum();
+    if total <= 0.0 { return (SlideLayout::Single, actual_start); }
+
+    let mut pick = rng.gen::<f32>() * total;
+    for (layout, weight) in &weighted {
+        pick -= weight;
+        if pick <= 0.0 { return (*layout, actual_start); }
+    }
+    (weighted.last().map(|(l, _)| *l).unwrap_or(SlideLayout::Single), actual_start)
+}
+
 /// Advance to the next item in the playlist.
 async fn advance_to_next<'a>(
     state: &AppState,
@@ -1438,26 +1598,51 @@ async fn advance_to_next<'a>(
     next_textures: &mut Option<MediaTextures<'a>>,
     right_textures: &mut MediaTextures<'a>,
     next_right_textures: &mut Option<MediaTextures<'a>>,
+    panel2_textures: &mut MediaTextures<'a>,
+    next_panel2_textures: &mut Option<MediaTextures<'a>>,
+    panel3_textures: &mut MediaTextures<'a>,
+    next_panel3_textures: &mut Option<MediaTextures<'a>>,
     video_manager: &mut VideoManager,
     is_video_playing: &mut bool,
+    layout_history: &mut VecDeque<SlideLayoutKind>,
+    session_start: Instant,
 ) -> Result<()> {
     // Stop current video
     video_manager.stop();
     *is_video_playing = false;
 
-    let playlist = state.playlist.read().await;
-    if playlist.is_empty() {
-        return Ok(());
+    {
+        let playlist = state.playlist.read().await;
+        if playlist.is_empty() {
+            return Ok(());
+        }
     }
 
-    let is_dual = renderer.display_mode == LayoutMode::DualPortrait;
-    let step = if is_dual { 2 } else { 1 };
+    let is_dynamic = state.config.display_mode == "dynamic";
+    let warmup = session_start.elapsed().as_secs() < 120;
 
-    // Advance index
-    let mut index = state.current_index.write().await;
-    *index = (*index + step) % playlist.len();
-    let next_index = *index;
-    drop(index);
+    // Compute where the next slide starts (after current slide's images).
+    let current_step = renderer.current_layout.image_count();
+    let n = state.playlist.read().await.len();
+    let next_start = (*state.current_index.read().await + current_step) % n;
+
+    // Pick layout for the next slide, peeking from next_start.
+    // pick_dynamic_layout acquires the playlist lock internally — don't hold it here.
+    let next_index = if is_dynamic {
+        let (layout, actual_start) = pick_dynamic_layout(state, layout_history, warmup, next_start).await;
+        renderer.current_layout = layout;
+        layout_history.push_back(layout.kind());
+        if layout_history.len() > 20 { layout_history.pop_front(); }
+        actual_start
+    } else {
+        next_start
+    };
+
+    let step = renderer.current_layout.image_count();
+    *state.current_index.write().await = next_index;
+
+    let playlist = state.playlist.read().await;
+    if playlist.is_empty() { return Ok(()); }
 
     let media = &playlist[next_index];
     tracing::debug!("Advancing to: {} ({})", media.id, media.media_type);
@@ -1466,7 +1651,7 @@ async fn advance_to_next<'a>(
     let preloader = Preloader::new(state.asset_manager.clone(), state.client.clone());
     let token = state.token().await;
     let playlist_clone = playlist.clone();
-    let preload_ahead = if is_dual { 4 } else { 2 };
+    let preload_ahead = (step * 2).max(4);
 
     tokio::spawn(async move {
         preloader
@@ -1483,54 +1668,66 @@ async fn advance_to_next<'a>(
             .load_textures(renderer, texture_creator, media, &cache)?;
     drop(cache);
 
-    // Prepare next frame and kick off transition if needed
     *next_textures = Some(new_textures);
 
-    // Load right panel if in dual-portrait mode
-    if is_dual {
-        let right_index = (next_index + 1) % playlist.len();
-        let right_media = playlist[right_index].clone();
-        drop(playlist);
-
-        state.preload_media_safe(&right_media).await?;
+    // Load extra panels for multi-image layouts
+    if step >= 2 {
+        let idx = (next_index + 1) % playlist.len();
+        let m = playlist[idx].clone();
+        state.preload_media_safe(&m).await?;
         let cache = state.cache.read().await;
-        let new_right =
-            state
-                .asset_manager
-                .load_textures(renderer, texture_creator, &right_media, &cache)?;
+        let t = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
         drop(cache);
-
-        *next_right_textures = Some(new_right);
-
+        *next_right_textures = Some(t);
         let mut cache = state.cache.write().await;
-        cache.touch(&right_media.id, AssetType::Display);
-        cache.touch(&right_media.id, AssetType::Blur);
+        cache.touch(&m.id, AssetType::Display);
+        cache.touch(&m.id, AssetType::Blur);
+    }
+    if step >= 3 {
+        let idx = (next_index + 2) % playlist.len();
+        let m = playlist[idx].clone();
+        state.preload_media_safe(&m).await?;
+        let cache = state.cache.read().await;
+        let t = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
+        drop(cache);
+        *next_panel2_textures = Some(t);
+        let mut cache = state.cache.write().await;
+        cache.touch(&m.id, AssetType::Display);
+        cache.touch(&m.id, AssetType::Blur);
+    }
+    if step >= 4 {
+        let idx = (next_index + 3) % playlist.len();
+        let m = playlist[idx].clone();
+        drop(playlist);
+        state.preload_media_safe(&m).await?;
+        let cache = state.cache.read().await;
+        let t = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
+        drop(cache);
+        *next_panel3_textures = Some(t);
+        let mut cache = state.cache.write().await;
+        cache.touch(&m.id, AssetType::Display);
+        cache.touch(&m.id, AssetType::Blur);
     } else {
         drop(playlist);
     }
 
     match Transition::from_str(&state.config.transition) {
         Transition::Cut => {
-            if let Some(next) = next_textures.take() {
-                *current_textures = next;
-            }
-            if let Some(next_right) = next_right_textures.take() {
-                *right_textures = next_right;
-            }
+            if let Some(next) = next_textures.take() { *current_textures = next; }
+            if let Some(next) = next_right_textures.take() { *right_textures = next; }
+            if let Some(next) = next_panel2_textures.take() { *panel2_textures = next; }
+            if let Some(next) = next_panel3_textures.take() { *panel3_textures = next; }
         }
-        _ => {
-            renderer.start_transition();
-        }
+        _ => { renderer.start_transition(); }
     }
 
-    // Touch cache for left panel
+    // Touch cache for primary panel
     let playlist = state.playlist.read().await;
     let media = &playlist[next_index % playlist.len()];
     let mut cache = state.cache.write().await;
     cache.touch(&media.id, AssetType::Display);
     cache.touch(&media.id, AssetType::Blur);
 
-    // Start video if applicable
     start_video_if_applicable(media, &cache, video_manager, is_video_playing);
 
     Ok(())
@@ -1544,6 +1741,8 @@ async fn go_to_previous<'a>(
     current_textures: &mut MediaTextures<'a>,
     next_textures: &mut Option<MediaTextures<'a>>,
     right_textures: &mut MediaTextures<'a>,
+    panel2_textures: &mut MediaTextures<'a>,
+    panel3_textures: &mut MediaTextures<'a>,
     video_manager: &mut VideoManager,
     is_video_playing: &mut bool,
 ) -> Result<()> {
@@ -1556,13 +1755,12 @@ async fn go_to_previous<'a>(
         return Ok(());
     }
 
-    let is_dual = renderer.display_mode == LayoutMode::DualPortrait;
-    let step = if is_dual { 2 } else { 1 };
+    let step = renderer.current_layout.image_count();
 
     // Go to previous index (wrap around)
     let mut index = state.current_index.write().await;
     *index = if *index < step {
-        playlist.len() - step
+        playlist.len().saturating_sub(step)
     } else {
         *index - step
     };
@@ -1572,40 +1770,40 @@ async fn go_to_previous<'a>(
     let media = &playlist[prev_index];
     tracing::debug!("Going to previous: {} ({})", media.id, media.media_type);
 
-    // Ensure current item is cached
     state.preload_media_safe(media).await?;
-
-    // Load textures
     let cache = state.cache.read().await;
     let new_textures =
-        state
-            .asset_manager
-            .load_textures(renderer, texture_creator, media, &cache)?;
+        state.asset_manager.load_textures(renderer, texture_creator, media, &cache)?;
     drop(cache);
 
-    // Use cut transition for manual navigation
     *next_textures = None;
     *current_textures = new_textures;
 
-    // Load right panel if in dual-portrait mode
-    if is_dual {
-        let right_index = (prev_index + 1) % playlist.len();
-        let right_media = playlist[right_index].clone();
-        drop(playlist);
-
-        state.preload_media_safe(&right_media).await?;
+    // Load extra panels for multi-image layouts (cut transition for previous)
+    if step >= 2 {
+        let idx = (prev_index + 1) % playlist.len();
+        let m = playlist[idx].clone();
+        state.preload_media_safe(&m).await?;
         let cache = state.cache.read().await;
-        let new_right =
-            state
-                .asset_manager
-                .load_textures(renderer, texture_creator, &right_media, &cache)?;
+        *right_textures = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
         drop(cache);
-
-        *right_textures = new_right;
-
-        let mut cache = state.cache.write().await;
-        cache.touch(&right_media.id, AssetType::Display);
-        cache.touch(&right_media.id, AssetType::Blur);
+    }
+    if step >= 3 {
+        let idx = (prev_index + 2) % playlist.len();
+        let m = playlist[idx].clone();
+        state.preload_media_safe(&m).await?;
+        let cache = state.cache.read().await;
+        *panel2_textures = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
+        drop(cache);
+    }
+    if step >= 4 {
+        let idx = (prev_index + 3) % playlist.len();
+        let m = playlist[idx].clone();
+        drop(playlist);
+        state.preload_media_safe(&m).await?;
+        let cache = state.cache.read().await;
+        *panel3_textures = state.asset_manager.load_textures(renderer, texture_creator, &m, &cache)?;
+        drop(cache);
     } else {
         drop(playlist);
     }
