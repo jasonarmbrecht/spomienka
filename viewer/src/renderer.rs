@@ -34,6 +34,24 @@ impl Transition {
     }
 }
 
+/// Display layout mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutMode {
+    Single,
+    DualPortrait,
+    QuadLandscape, // future
+}
+
+impl LayoutMode {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "dual-portrait" => LayoutMode::DualPortrait,
+            "quad-landscape" => LayoutMode::QuadLandscape,
+            _ => LayoutMode::Single,
+        }
+    }
+}
+
 /// State of the current transition animation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TransitionState {
@@ -143,6 +161,7 @@ pub struct Renderer<'ttf> {
     transition_state: TransitionState,
     transition_start: Option<Instant>,
     pub blur_background: bool,
+    pub display_mode: LayoutMode,
     show_clock: bool,
     font_overlay: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_info: Option<sdl2::ttf::Font<'ttf, 'static>>,
@@ -150,6 +169,8 @@ pub struct Renderer<'ttf> {
     font_discovery_small: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_discovery_label: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_discovery_pin: Option<sdl2::ttf::Font<'ttf, 'static>>,
+    /// Rects of the last rendered image(s), used to align info overlays.
+    last_image_rects: [Option<Rect>; 2],
 }
 
 const CLOCK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/BodoniModa-Regular.ttf");
@@ -173,6 +194,7 @@ impl<'ttf> Renderer<'ttf> {
         fullscreen: bool,
         blur_background: bool,
         show_clock: bool,
+        layout_mode: LayoutMode,
     ) -> Result<Self> {
         let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL init failed: {}", e))?;
 
@@ -251,25 +273,24 @@ impl<'ttf> Renderer<'ttf> {
             .event_pump()
             .map_err(|e| anyhow::anyhow!("Failed to get event pump: {}", e))?;
 
-        // Load utility fonts from the system. The clock uses bundled Bodoni Moda.
+        // Clock uses bundled Bodoni Moda (serif). Info and utility text use a system
+        // sans-serif so overlay metadata is clean and easy to read.
         let font_path = Self::find_font_path();
         let font_clock = sdl2::rwops::RWops::from_bytes(CLOCK_FONT_BYTES)
             .ok()
             .and_then(|rwops| ttf_context.load_font_from_rwops(rwops, 76).ok());
-        let font_info = sdl2::rwops::RWops::from_bytes(CLOCK_FONT_BYTES)
-            .ok()
-            .and_then(|rwops| ttf_context.load_font_from_rwops(rwops, 22).ok());
 
-        let (font_overlay, font_discovery_small, font_discovery_label, font_discovery_pin) =
+        let (font_info, font_overlay, font_discovery_small, font_discovery_label, font_discovery_pin) =
             if let Some(path) = font_path {
                 (
+                    ttf_context.load_font(&path, 18).ok(),
                     ttf_context.load_font(&path, 24).ok(),
                     ttf_context.load_font(&path, 28).ok(),
                     ttf_context.load_font(&path, 36).ok(),
                     ttf_context.load_font(&path, 96).ok(),
                 )
             } else {
-                (None, None, None, None)
+                (None, None, None, None, None)
             };
 
         Ok(Self {
@@ -282,6 +303,7 @@ impl<'ttf> Renderer<'ttf> {
             transition_state: TransitionState::Idle,
             transition_start: None,
             blur_background,
+            display_mode: layout_mode,
             show_clock,
             font_overlay,
             font_info,
@@ -289,6 +311,7 @@ impl<'ttf> Renderer<'ttf> {
             font_discovery_small,
             font_discovery_label,
             font_discovery_pin,
+            last_image_rects: [None; 2],
         })
     }
 
@@ -478,6 +501,161 @@ impl<'ttf> Renderer<'ttf> {
         Rect::new(x, y, fit_width, fit_height)
     }
 
+    /// Render two portrait panels side-by-side with per-panel blur backgrounds.
+    ///
+    /// The blur textures bleed into the gap by half the gap width so the gap shows
+    /// a natural color blend from both images rather than a hard black line.
+    fn render_dual_portrait_panels<'a>(
+        &mut self,
+        _texture_creator: &'a TextureCreator<WindowContext>,
+        left: &mut MediaTextures<'a>,
+        right: &mut MediaTextures<'a>,
+        alpha: u8,
+    ) -> Result<()> {
+        const GAP: u32 = 10;
+        let sw = self.screen_width;
+        let sh = self.screen_height;
+
+        // Compute each image's natural width when scaled to fill the full screen height.
+        let natural_w = |size: Option<(u32, u32)>| -> u32 {
+            let (w, h) = size.unwrap_or((sh, sh)); // fallback: square
+            ((sh as f64 * w as f64 / h as f64).round() as u32).max(1)
+        };
+        let nw_left = natural_w(left.display_size);
+        let nw_right = natural_w(right.display_size);
+
+        // If the pair plus gap exceeds the screen width, scale both images down uniformly
+        // so the combined width fits, preserving aspect ratios.
+        let total_natural = nw_left + GAP + nw_right;
+        let (dw_left, dw_right, dh) = if total_natural <= sw {
+            (nw_left, nw_right, sh)
+        } else {
+            let scale = sw as f64 / total_natural as f64;
+            let scaled_h = (sh as f64 * scale).round() as u32;
+            let scaled_l = (nw_left as f64 * scale).round() as u32;
+            let scaled_r = (nw_right as f64 * scale).round() as u32;
+            (scaled_l, scaled_r, scaled_h)
+        };
+
+        // Place the pair centered horizontally; vertically they fill top-to-bottom.
+        let pair_w = dw_left + GAP + dw_right;
+        let x0 = ((sw.saturating_sub(pair_w)) / 2) as i32;
+        let y0 = ((sh.saturating_sub(dh)) / 2) as i32;
+
+        let left_rect = Rect::new(x0, y0, dw_left, dh);
+        let right_rect = Rect::new(x0 + dw_left as i32 + GAP as i32, y0, dw_right, dh);
+        let gap_x = x0 + dw_left as i32; // screen x where the gap begins
+
+        // Record for info overlay alignment
+        self.last_image_rects = [Some(left_rect), Some(right_rect)];
+
+        if self.blur_background {
+            // Left blur: covers entire left half of the screen up to the start of the gap.
+            // Using the full-screen texture clipped to [0, gap_x + GAP] so it fills behind
+            // the left image and also across the full gap (will be overdrawn by gradient).
+            let left_blur_clip = Rect::new(0, 0, (gap_x + GAP as i32) as u32, sh);
+            self.canvas.set_clip_rect(left_blur_clip);
+            if let Some(ref mut blur) = left.blur {
+                blur.set_alpha_mod(alpha);
+                self.canvas
+                    .copy(blur, None, None)
+                    .map_err(|e| anyhow::anyhow!("Failed to render left blur: {}", e))?;
+            }
+
+            // Right blur: covers screen from right edge of gap to the right screen edge.
+            let right_blur_x = gap_x + GAP as i32;
+            let right_blur_clip = Rect::new(right_blur_x, 0, sw.saturating_sub(right_blur_x as u32), sh);
+            self.canvas.set_clip_rect(right_blur_clip);
+            if let Some(ref mut blur) = right.blur {
+                blur.set_alpha_mod(alpha);
+                self.canvas
+                    .copy(blur, None, None)
+                    .map_err(|e| anyhow::anyhow!("Failed to render right blur: {}", e))?;
+            }
+
+            // Gradient crossfade across the gap: overdraw right blur column-by-column
+            // with alpha ramping 0→alpha, on top of the left blur already covering the gap.
+            self.canvas.set_clip_rect(None::<Rect>);
+            if let Some(ref mut blur) = right.blur {
+                for col in 0..GAP {
+                    let t = col as f32 / (GAP - 1) as f32; // 0.0 → 1.0
+                    let col_alpha = (t * alpha as f32).round() as u8;
+                    // src_x: the column in the full-screen blur texture that maps to this
+                    // screen position. The blur is always rendered stretched to sw×sh,
+                    // so we sample it at the proportional source position.
+                    let screen_x = gap_x + col as i32;
+                    let src_x = ((screen_x as f64 / sw as f64) * 1920.0).round() as i32;
+                    let src_rect = Rect::new(src_x.max(0).min(1919), 0, 1, 1080);
+                    let dst_rect = Rect::new(screen_x, 0, 1, sh);
+                    blur.set_alpha_mod(col_alpha);
+                    self.canvas
+                        .copy(blur, src_rect, dst_rect)
+                        .map_err(|e| anyhow::anyhow!("Failed to render gap gradient: {}", e))?;
+                }
+                blur.set_alpha_mod(alpha); // restore
+            }
+        }
+
+        // Left image — hard-clipped to its display rect (no bleed into gap)
+        self.canvas.set_clip_rect(left_rect);
+        if let Some(ref mut display) = left.display {
+            display.set_alpha_mod(alpha);
+            self.canvas
+                .copy(display, None, left_rect)
+                .map_err(|e| anyhow::anyhow!("Failed to render left image: {}", e))?;
+        }
+
+        // Right image — hard-clipped to its display rect
+        self.canvas.set_clip_rect(right_rect);
+        if let Some(ref mut display) = right.display {
+            display.set_alpha_mod(alpha);
+            self.canvas
+                .copy(display, None, right_rect)
+                .map_err(|e| anyhow::anyhow!("Failed to render right image: {}", e))?;
+        }
+
+        self.canvas.set_clip_rect(None::<Rect>);
+
+        Ok(())
+    }
+
+    /// Render the dual-portrait frame with transition support.
+    pub fn render_paired<'a>(
+        &mut self,
+        texture_creator: &'a TextureCreator<WindowContext>,
+        left: &mut MediaTextures<'a>,
+        right: &mut MediaTextures<'a>,
+        mut next_left: Option<&mut MediaTextures<'a>>,
+        mut next_right: Option<&mut MediaTextures<'a>>,
+    ) -> Result<()> {
+        self.canvas.set_draw_color(Color::RGB(0, 0, 0));
+        self.canvas.clear();
+
+        let alpha = match (self.transition_type, self.transition_state) {
+            (Transition::Cut, _) | (_, TransitionState::Idle) => 255u8,
+            (_, TransitionState::TransitioningOut { progress }) => ((1.0 - progress) * 255.0) as u8,
+            (_, TransitionState::TransitioningIn { progress }) => (progress * 255.0) as u8,
+        };
+
+        // Crossfade: render the next pair underneath with increasing alpha
+        if self.transition_type == Transition::Crossfade {
+            if let TransitionState::TransitioningOut { progress } = self.transition_state {
+                let next_alpha = (progress * 255.0) as u8;
+                if let (Some(ref mut nl), Some(ref mut nr)) = (&mut next_left, &mut next_right) {
+                    self.render_dual_portrait_panels(texture_creator, nl, nr, next_alpha)?;
+                }
+            }
+        }
+
+        self.render_dual_portrait_panels(texture_creator, left, right, alpha)?;
+
+        if self.show_clock {
+            self.render_clock(texture_creator)?;
+        }
+
+        Ok(())
+    }
+
     /// Start a transition to the next image.
     pub fn start_transition(&mut self) {
         self.transition_state = TransitionState::TransitioningOut { progress: 0.0 };
@@ -594,7 +772,7 @@ impl<'ttf> Renderer<'ttf> {
         let clock_text = Self::format_clock_time();
         let surface = font
             .render(&clock_text)
-            .blended(Color::RGBA(255, 255, 255, 118))
+            .blended(Color::RGBA(255, 255, 255, 200))
             .map_err(|e| anyhow::anyhow!("Failed to render clock: {}", e))?;
         let texture = texture_creator
             .create_texture_from_surface(&surface)
@@ -606,20 +784,26 @@ impl<'ttf> Renderer<'ttf> {
         let y = self.screen_height as i32 - query.height as i32 - margin;
         let dest = Rect::new(x, y, query.width, query.height);
 
+        // Warm dark brown shadow — softer and less harsh than pure black
         let shadow_surface = font
             .render(&clock_text)
-            .blended(Color::RGBA(0, 0, 0, 44))
+            .blended(Color::RGBA(28, 14, 6, 200))
             .map_err(|e| anyhow::anyhow!("Failed to render clock shadow: {}", e))?;
-        let shadow = texture_creator
-            .create_texture_from_surface(&shadow_surface)
-            .map_err(|e| anyhow::anyhow!("Failed to create clock shadow texture: {}", e))?;
-        self.canvas
-            .copy(
-                &shadow,
-                None,
-                Rect::new(x + 2, y + 2, query.width, query.height),
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to copy clock shadow: {}", e))?;
+        let offsets: &[(i32, i32, u8)] = &[
+            (-2,  0, 60), ( 2,  0, 60),
+            ( 0, -2, 60), ( 0,  2, 60),
+            (-2, -2, 35), ( 2, -2, 35),
+            (-2,  2, 35), ( 2,  2, 35),
+        ];
+        for &(dx, dy, a) in offsets {
+            let mut shadow = texture_creator
+                .create_texture_from_surface(&shadow_surface)
+                .map_err(|e| anyhow::anyhow!("Failed to create clock shadow texture: {}", e))?;
+            shadow.set_alpha_mod(a);
+            self.canvas
+                .copy(&shadow, None, Rect::new(x + dx, y + dy, query.width, query.height))
+                .map_err(|e| anyhow::anyhow!("Failed to copy clock shadow: {}", e))?;
+        }
         self.canvas
             .copy(&texture, None, dest)
             .map_err(|e| anyhow::anyhow!("Failed to copy clock: {}", e))?;
@@ -682,6 +866,7 @@ impl<'ttf> Renderer<'ttf> {
         if let Some(ref mut display) = textures.display {
             if let Some((width, height)) = textures.display_size {
                 let dest_rect = self.calculate_aspect_fit(width, height);
+                self.last_image_rects = [Some(dest_rect), None];
                 display.set_alpha_mod(alpha);
                 self.canvas
                     .copy(display, None, dest_rect)
@@ -854,13 +1039,36 @@ impl<'ttf> Renderer<'ttf> {
 
     /// Render a media info overlay at the bottom-left of the screen.
     /// Uses shadow text styled like the clock — no opaque background panel.
+    /// Render info overlay for dual-portrait mode, aligned to each image's actual rect.
+    pub fn render_info_overlay_dual(
+        &mut self,
+        left: &MediaInfoOverlay,
+        right: &MediaInfoOverlay,
+    ) -> Result<()> {
+        let left_rect = self.last_image_rects[0]
+            .unwrap_or_else(|| Rect::new(0, 0, self.screen_width / 2, self.screen_height));
+        let right_rect = self.last_image_rects[1]
+            .unwrap_or_else(|| Rect::new((self.screen_width / 2) as i32, 0, self.screen_width / 2, self.screen_height));
+        self.render_info_overlay_in_rect(left, left_rect)?;
+        self.render_info_overlay_in_rect(right, right_rect)?;
+        Ok(())
+    }
+
     pub fn render_info_overlay(&mut self, info: &MediaInfoOverlay) -> Result<()> {
+        let rect = self.last_image_rects[0]
+            .unwrap_or_else(|| Rect::new(0, 0, self.screen_width, self.screen_height));
+        self.render_info_overlay_in_rect(info, rect)
+    }
+
+    /// Render info overlay text anchored to the bottom-left of the given image rect.
+    fn render_info_overlay_in_rect(&mut self, info: &MediaInfoOverlay, image_rect: Rect) -> Result<()> {
         let Some(font) = &self.font_info else {
             return Ok(());
         };
 
-        let line_h = 30i32;
-        let margin = (self.screen_width.min(self.screen_height) as f32 * 0.035).round() as i32;
+        let line_h = 24i32;
+        let margin = (image_rect.width().min(image_rect.height()) as f32 * 0.03).round() as i32;
+        let text_x = image_rect.x() + margin;
         let mut lines: Vec<String> = Vec::new();
 
         if let Some(t) = &info.title {
@@ -932,7 +1140,7 @@ impl<'ttf> Renderer<'ttf> {
 
         let texture_creator = self.canvas.texture_creator();
         let total_h = lines.len() as i32 * line_h;
-        let start_y = self.screen_height as i32 - total_h - margin;
+        let start_y = image_rect.y() + image_rect.height() as i32 - total_h - margin;
 
         for (i, line) in lines.iter().enumerate() {
             let y = start_y + i as i32 * line_h;
@@ -941,7 +1149,7 @@ impl<'ttf> Renderer<'ttf> {
                 font,
                 &texture_creator,
                 line,
-                margin,
+                text_x,
                 y,
                 Color::RGBA(255, 255, 255, 210),
             )?;
@@ -1087,6 +1295,9 @@ impl<'ttf> Renderer<'ttf> {
         Ok(())
     }
 
+    /// Render text with a soft multi-offset shadow for legibility on any background.
+    /// Draws a dark shadow at several small offsets (simulating a blur), then the
+    /// foreground text on top — elegant and readable without any opaque background box.
     fn render_text(
         canvas: &mut Canvas<Window>,
         font: &sdl2::ttf::Font,
@@ -1100,20 +1311,41 @@ impl<'ttf> Renderer<'ttf> {
             return Ok(());
         }
 
+        // Warm dark brown shadow — softer and less harsh than pure black
+        let shadow_surface = font
+            .render(text)
+            .blended(Color::RGBA(28, 14, 6, 200))
+            .map_err(|e| anyhow::anyhow!("Failed to render text shadow: {}", e))?;
+        let shadow_tex = texture_creator
+            .create_texture_from_surface(&shadow_surface)
+            .map_err(|e| anyhow::anyhow!("Failed to create text shadow texture: {}", e))?;
+        let q = shadow_tex.query();
+
+        let offsets: &[(i32, i32, u8)] = &[
+            (-2,  0, 60), ( 2,  0, 60),
+            ( 0, -2, 60), ( 0,  2, 60),
+            (-2, -2, 35), ( 2, -2, 35),
+            (-2,  2, 35), ( 2,  2, 35),
+        ];
+        for &(dx, dy, a) in offsets {
+            let mut t = texture_creator
+                .create_texture_from_surface(&shadow_surface)
+                .map_err(|e| anyhow::anyhow!("Failed to duplicate shadow texture: {}", e))?;
+            t.set_alpha_mod(a);
+            canvas
+                .copy(&t, None, Rect::new(x + dx, y + dy, q.width, q.height))
+                .map_err(|e| anyhow::anyhow!("Failed to copy shadow: {}", e))?;
+        }
+
         let surface = font
             .render(text)
             .blended(color)
             .map_err(|e| anyhow::anyhow!("Failed to render text: {}", e))?;
-
         let texture = texture_creator
             .create_texture_from_surface(&surface)
             .map_err(|e| anyhow::anyhow!("Failed to create text texture: {}", e))?;
-
-        let query = texture.query();
-        let dest = Rect::new(x, y, query.width, query.height);
-
         canvas
-            .copy(&texture, None, dest)
+            .copy(&texture, None, Rect::new(x, y, q.width, q.height))
             .map_err(|e| anyhow::anyhow!("Failed to copy text: {}", e))?;
 
         Ok(())

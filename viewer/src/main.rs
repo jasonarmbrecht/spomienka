@@ -14,7 +14,7 @@ use assets::{AssetManager, AssetType, Media, Preloader};
 use cache::Cache;
 use config::{Config, Environment, File};
 use realtime::{spawn_realtime, RealtimeEvent};
-use renderer::{MediaInfoOverlay, MediaTextures, OverlayInfo, Renderer, Transition, UserAction};
+use renderer::{LayoutMode, MediaInfoOverlay, MediaTextures, OverlayInfo, Renderer, Transition, UserAction};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use std::env;
@@ -112,6 +112,10 @@ struct AppConfig {
     /// Start with the location & date overlay visible (default: false).
     #[serde(default)]
     pub show_location_info: bool,
+
+    /// Display layout mode: "single", "dual-portrait", "quad-landscape" (default: "single").
+    #[serde(default = "default_display_mode")]
+    pub display_mode: String,
 }
 
 fn default_pb_url() -> String {
@@ -156,6 +160,10 @@ fn default_blur_background() -> bool {
 
 fn default_show_clock() -> bool {
     true
+}
+
+fn default_display_mode() -> String {
+    "single".to_string()
 }
 
 impl AppConfig {
@@ -571,6 +579,9 @@ async fn main() -> Result<()> {
                 if let Some(v) = cfg.get("showLocationInfo").and_then(|v| v.as_bool()) {
                     config.show_location_info = v;
                 }
+                if let Some(v) = cfg.get("displayMode").and_then(|v| v.as_str()) {
+                    config.display_mode = v.to_string();
+                }
                 tracing::info!("Device authenticated — applied config from PocketBase");
                 Some(resp.token)
             }
@@ -765,6 +776,7 @@ async fn run_discovery_mode(config: &AppConfig) -> Result<()> {
         config.fullscreen,
         false,
         false,
+        LayoutMode::Single,
     )?;
 
     loop {
@@ -817,6 +829,7 @@ async fn run_render_loop(
         state.config.fullscreen,
         state.config.blur_background,
         state.config.show_clock,
+        LayoutMode::from_str(&state.config.display_mode),
     )?;
 
     // Initialize video manager
@@ -828,6 +841,10 @@ async fn run_render_loop(
     // Current and next textures
     let mut current_textures = MediaTextures::new();
     let mut next_textures: Option<MediaTextures> = None;
+
+    // Right-panel textures for dual-portrait mode
+    let mut right_textures = MediaTextures::new();
+    let mut next_right_textures: Option<MediaTextures> = None;
 
     // Timing
     let mut last_advance = Instant::now();
@@ -854,6 +871,17 @@ async fn run_render_loop(
         &mut is_video_playing,
     )
     .await?;
+
+    if renderer.display_mode == LayoutMode::DualPortrait {
+        load_panel_item(
+            &state,
+            &mut renderer,
+            &texture_creator,
+            &mut right_textures,
+            1,
+        )
+        .await?;
+    }
 
     loop {
         // Process SDL events with extended actions
@@ -886,6 +914,8 @@ async fn run_render_loop(
                     &texture_creator,
                     &mut current_textures,
                     &mut next_textures,
+                    &mut right_textures,
+                    &mut next_right_textures,
                     &mut video_manager,
                     &mut is_video_playing,
                 )
@@ -901,6 +931,7 @@ async fn run_render_loop(
                     &texture_creator,
                     &mut current_textures,
                     &mut next_textures,
+                    &mut right_textures,
                     &mut video_manager,
                     &mut is_video_playing,
                 )
@@ -954,6 +985,8 @@ async fn run_render_loop(
                             &texture_creator,
                             &mut current_textures,
                             &mut next_textures,
+                            &mut right_textures,
+                            &mut next_right_textures,
                             &mut video_manager,
                             &mut is_video_playing,
                         )
@@ -970,6 +1003,7 @@ async fn run_render_loop(
                             &texture_creator,
                             &mut current_textures,
                             &mut next_textures,
+                            &mut right_textures,
                             &mut video_manager,
                             &mut is_video_playing,
                         )
@@ -997,6 +1031,9 @@ async fn run_render_loop(
                             &mut is_video_playing,
                         )
                         .await?;
+                        if renderer.display_mode == LayoutMode::DualPortrait {
+                            load_panel_item(&state, &mut renderer, &texture_creator, &mut right_textures, 1).await?;
+                        }
                         last_advance = Instant::now();
                         is_paused = false;
                         pause_until = None;
@@ -1091,6 +1128,8 @@ async fn run_render_loop(
                     &texture_creator,
                     &mut current_textures,
                     &mut next_textures,
+                    &mut right_textures,
+                    &mut next_right_textures,
                     &mut video_manager,
                     &mut is_video_playing,
                 )
@@ -1102,9 +1141,11 @@ async fn run_render_loop(
         // Update transition
         let should_swap = renderer.update_transition();
         if should_swap {
-            // Swap current and next textures
             if let Some(next) = next_textures.take() {
                 current_textures = next;
+            }
+            if let Some(next_right) = next_right_textures.take() {
+                right_textures = next_right;
             }
         }
 
@@ -1122,6 +1163,8 @@ async fn run_render_loop(
                 &texture_creator,
                 &mut current_textures,
                 &mut next_textures,
+                &mut right_textures,
+                &mut next_right_textures,
                 &mut video_manager,
                 &mut is_video_playing,
             )
@@ -1130,11 +1173,21 @@ async fn run_render_loop(
         }
 
         // Render image + clock (no present yet)
-        renderer.render(
-            &texture_creator,
-            &mut current_textures,
-            next_textures.as_mut(),
-        )?;
+        if renderer.display_mode == LayoutMode::DualPortrait {
+            renderer.render_paired(
+                &texture_creator,
+                &mut current_textures,
+                &mut right_textures,
+                next_textures.as_mut(),
+                next_right_textures.as_mut(),
+            )?;
+        } else {
+            renderer.render(
+                &texture_creator,
+                &mut current_textures,
+                next_textures.as_mut(),
+            )?;
+        }
 
         // Render debug overlay on top
         if overlay_visible {
@@ -1154,14 +1207,30 @@ async fn run_render_loop(
 
         // Render media info overlay on top
         if info_overlay_visible {
-            let media_info = build_media_info_overlay(&state).await;
-            if let Err(e) = renderer.render_info_overlay(&media_info) {
-                tracing::warn!("Failed to render info overlay: {}", e);
+            if renderer.display_mode == LayoutMode::DualPortrait {
+                let left_info = build_media_info_overlay(&state, 0).await;
+                let right_info = build_media_info_overlay(&state, 1).await;
+                if let Err(e) = renderer.render_info_overlay_dual(&left_info, &right_info) {
+                    tracing::warn!("Failed to render dual info overlay: {}", e);
+                }
+            } else {
+                let media_info = build_media_info_overlay(&state, 0).await;
+                if let Err(e) = renderer.render_info_overlay(&media_info) {
+                    tracing::warn!("Failed to render info overlay: {}", e);
+                }
             }
         } else if location_overlay_visible {
-            let loc_info = build_location_info_overlay(&state).await;
-            if let Err(e) = renderer.render_info_overlay(&loc_info) {
-                tracing::warn!("Failed to render location overlay: {}", e);
+            if renderer.display_mode == LayoutMode::DualPortrait {
+                let left_info = build_location_info_overlay(&state, 0).await;
+                let right_info = build_location_info_overlay(&state, 1).await;
+                if let Err(e) = renderer.render_info_overlay_dual(&left_info, &right_info) {
+                    tracing::warn!("Failed to render dual location overlay: {}", e);
+                }
+            } else {
+                let loc_info = build_location_info_overlay(&state, 0).await;
+                if let Err(e) = renderer.render_info_overlay(&loc_info) {
+                    tracing::warn!("Failed to render location overlay: {}", e);
+                }
             }
         }
 
@@ -1238,10 +1307,11 @@ async fn build_overlay_info(
     }
 }
 
-/// Build media info overlay from the current playlist item.
-async fn build_media_info_overlay(state: &AppState) -> MediaInfoOverlay {
+/// Build media info overlay from the playlist item at `current_index + offset`.
+async fn build_media_info_overlay(state: &AppState, offset: usize) -> MediaInfoOverlay {
     let playlist = state.playlist.read().await;
-    let index = *state.current_index.read().await;
+    let base = *state.current_index.read().await;
+    let index = if playlist.is_empty() { 0 } else { (base + offset) % playlist.len() };
     let Some(media) = playlist.get(index) else {
         return MediaInfoOverlay::default();
     };
@@ -1273,9 +1343,10 @@ async fn build_media_info_overlay(state: &AppState) -> MediaInfoOverlay {
     }
 }
 
-async fn build_location_info_overlay(state: &AppState) -> MediaInfoOverlay {
+async fn build_location_info_overlay(state: &AppState, offset: usize) -> MediaInfoOverlay {
     let playlist = state.playlist.read().await;
-    let index = *state.current_index.read().await;
+    let base = *state.current_index.read().await;
+    let index = if playlist.is_empty() { 0 } else { (base + offset) % playlist.len() };
     let Some(media) = playlist.get(index) else {
         return MediaInfoOverlay::default();
     };
@@ -1326,6 +1397,38 @@ async fn load_current_item<'a>(
     Ok(())
 }
 
+/// Load a panel item at `current_index + offset` (wrapping) into textures.
+/// Used to load the right panel in dual-portrait mode.
+async fn load_panel_item<'a>(
+    state: &AppState,
+    renderer: &mut Renderer<'_>,
+    texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+    textures: &mut MediaTextures<'a>,
+    offset: usize,
+) -> Result<()> {
+    let playlist = state.playlist.read().await;
+    if playlist.is_empty() {
+        return Ok(());
+    }
+    let current_index = *state.current_index.read().await;
+    let panel_index = (current_index + offset) % playlist.len();
+    let media = &playlist[panel_index];
+
+    state.preload_media_safe(media).await?;
+
+    let cache = state.cache.read().await;
+    *textures = state
+        .asset_manager
+        .load_textures(renderer, texture_creator, media, &cache)?;
+    drop(cache);
+
+    let mut cache = state.cache.write().await;
+    cache.touch(&media.id, AssetType::Display);
+    cache.touch(&media.id, AssetType::Blur);
+
+    Ok(())
+}
+
 /// Advance to the next item in the playlist.
 async fn advance_to_next<'a>(
     state: &AppState,
@@ -1333,6 +1436,8 @@ async fn advance_to_next<'a>(
     texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
     current_textures: &mut MediaTextures<'a>,
     next_textures: &mut Option<MediaTextures<'a>>,
+    right_textures: &mut MediaTextures<'a>,
+    next_right_textures: &mut Option<MediaTextures<'a>>,
     video_manager: &mut VideoManager,
     is_video_playing: &mut bool,
 ) -> Result<()> {
@@ -1345,31 +1450,32 @@ async fn advance_to_next<'a>(
         return Ok(());
     }
 
+    let is_dual = renderer.display_mode == LayoutMode::DualPortrait;
+    let step = if is_dual { 2 } else { 1 };
+
     // Advance index
     let mut index = state.current_index.write().await;
-    *index = (*index + 1) % playlist.len();
+    *index = (*index + step) % playlist.len();
     let next_index = *index;
     drop(index);
 
     let media = &playlist[next_index];
     tracing::debug!("Advancing to: {} ({})", media.id, media.media_type);
 
-    // Preload in background
+    // Preload ahead in background
     let preloader = Preloader::new(state.asset_manager.clone(), state.client.clone());
     let token = state.token().await;
     let playlist_clone = playlist.clone();
-    let next_idx = next_index;
+    let preload_ahead = if is_dual { 4 } else { 2 };
 
     tokio::spawn(async move {
         preloader
-            .preload_next(&playlist_clone, next_idx, 2, token.as_deref())
+            .preload_next(&playlist_clone, next_index, preload_ahead, token.as_deref())
             .await;
     });
 
-    // Ensure current item is cached
+    // Ensure current item is cached and load textures
     state.preload_media_safe(media).await?;
-
-    // Load next textures
     let cache = state.cache.read().await;
     let new_textures =
         state
@@ -1380,10 +1486,36 @@ async fn advance_to_next<'a>(
     // Prepare next frame and kick off transition if needed
     *next_textures = Some(new_textures);
 
+    // Load right panel if in dual-portrait mode
+    if is_dual {
+        let right_index = (next_index + 1) % playlist.len();
+        let right_media = playlist[right_index].clone();
+        drop(playlist);
+
+        state.preload_media_safe(&right_media).await?;
+        let cache = state.cache.read().await;
+        let new_right =
+            state
+                .asset_manager
+                .load_textures(renderer, texture_creator, &right_media, &cache)?;
+        drop(cache);
+
+        *next_right_textures = Some(new_right);
+
+        let mut cache = state.cache.write().await;
+        cache.touch(&right_media.id, AssetType::Display);
+        cache.touch(&right_media.id, AssetType::Blur);
+    } else {
+        drop(playlist);
+    }
+
     match Transition::from_str(&state.config.transition) {
         Transition::Cut => {
             if let Some(next) = next_textures.take() {
                 *current_textures = next;
+            }
+            if let Some(next_right) = next_right_textures.take() {
+                *right_textures = next_right;
             }
         }
         _ => {
@@ -1391,7 +1523,9 @@ async fn advance_to_next<'a>(
         }
     }
 
-    // Touch cache
+    // Touch cache for left panel
+    let playlist = state.playlist.read().await;
+    let media = &playlist[next_index % playlist.len()];
     let mut cache = state.cache.write().await;
     cache.touch(&media.id, AssetType::Display);
     cache.touch(&media.id, AssetType::Blur);
@@ -1409,6 +1543,7 @@ async fn go_to_previous<'a>(
     texture_creator: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
     current_textures: &mut MediaTextures<'a>,
     next_textures: &mut Option<MediaTextures<'a>>,
+    right_textures: &mut MediaTextures<'a>,
     video_manager: &mut VideoManager,
     is_video_playing: &mut bool,
 ) -> Result<()> {
@@ -1421,12 +1556,15 @@ async fn go_to_previous<'a>(
         return Ok(());
     }
 
+    let is_dual = renderer.display_mode == LayoutMode::DualPortrait;
+    let step = if is_dual { 2 } else { 1 };
+
     // Go to previous index (wrap around)
     let mut index = state.current_index.write().await;
-    *index = if *index == 0 {
-        playlist.len() - 1
+    *index = if *index < step {
+        playlist.len() - step
     } else {
-        *index - 1
+        *index - step
     };
     let prev_index = *index;
     drop(index);
@@ -1449,7 +1587,32 @@ async fn go_to_previous<'a>(
     *next_textures = None;
     *current_textures = new_textures;
 
-    // Touch cache
+    // Load right panel if in dual-portrait mode
+    if is_dual {
+        let right_index = (prev_index + 1) % playlist.len();
+        let right_media = playlist[right_index].clone();
+        drop(playlist);
+
+        state.preload_media_safe(&right_media).await?;
+        let cache = state.cache.read().await;
+        let new_right =
+            state
+                .asset_manager
+                .load_textures(renderer, texture_creator, &right_media, &cache)?;
+        drop(cache);
+
+        *right_textures = new_right;
+
+        let mut cache = state.cache.write().await;
+        cache.touch(&right_media.id, AssetType::Display);
+        cache.touch(&right_media.id, AssetType::Blur);
+    } else {
+        drop(playlist);
+    }
+
+    // Touch cache for left panel
+    let playlist = state.playlist.read().await;
+    let media = &playlist[prev_index % playlist.len()];
     let mut cache = state.cache.write().await;
     cache.touch(&media.id, AssetType::Display);
     cache.touch(&media.id, AssetType::Blur);

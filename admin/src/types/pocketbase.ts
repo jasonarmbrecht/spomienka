@@ -90,6 +90,7 @@ export interface DeviceConfig {
   showClock?: boolean;
   showInfo?: boolean;
   showLocationInfo?: boolean;
+  displayMode?: "single" | "dual-portrait" | "quad-landscape";
 }
 
 /**
