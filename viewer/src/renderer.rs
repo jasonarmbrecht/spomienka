@@ -561,6 +561,7 @@ impl<'ttf> Renderer<'ttf> {
     /// The opposite (outer) edge is left floating so the gap between adjacent images is always
     /// exactly the cell boundary, not inflated by letterbox padding.
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
     fn fit_snap(
         img_w: u32,
         img_h: u32,
@@ -596,6 +597,46 @@ impl<'ttf> Renderer<'ttf> {
         Rect::new(x, y, fw.max(1), fh.max(1))
     }
 
+    /// Cover-mode fit: scale image to fill cell (no distortion), center-crop overflow.
+    /// Returns `Some((dst_rect, src_rect))` if scale ≤ `max_scale` and crop fraction ≤
+    /// `max_crop_frac` in both axes. Returns `None` — caller should use `fit_snap` fallback.
+    #[allow(clippy::too_many_arguments)]
+    fn fit_cover(
+        img_w: u32,
+        img_h: u32,
+        bx: i32,
+        by: i32,
+        bw: u32,
+        bh: u32,
+        max_scale: f32,
+        max_crop_frac: f32,
+    ) -> Option<(Rect, Rect)> {
+        if img_w == 0 || img_h == 0 || bw == 0 || bh == 0 {
+            return None;
+        }
+        let scale = (bw as f64 / img_w as f64).max(bh as f64 / img_h as f64);
+        if scale > max_scale as f64 {
+            return None;
+        }
+        let scaled_w = (img_w as f64 * scale).round() as u32;
+        let scaled_h = (img_h as f64 * scale).round() as u32;
+        let crop_x_frac = scaled_w.saturating_sub(bw) as f32 / scaled_w as f32;
+        let crop_y_frac = scaled_h.saturating_sub(bh) as f32 / scaled_h as f32;
+        if crop_x_frac > max_crop_frac || crop_y_frac > max_crop_frac {
+            return None;
+        }
+        let off_x = scaled_w.saturating_sub(bw) / 2;
+        let off_y = scaled_h.saturating_sub(bh) / 2;
+        let src_x = (off_x as f64 / scale).round() as i32;
+        let src_y = (off_y as f64 / scale).round() as i32;
+        let src_w = ((bw as f64) / scale).round() as u32;
+        let src_h = ((bh as f64) / scale).round() as u32;
+        Some((
+            Rect::new(bx, by, bw, bh),
+            Rect::new(src_x.max(0), src_y.max(0), src_w.max(1), src_h.max(1)),
+        ))
+    }
+
     /// Compute display rects for all panels in the given layout.
     ///
     /// Returns up to 4 Rects corresponding to slots 0–(image_count-1).
@@ -607,7 +648,7 @@ impl<'ttf> Renderer<'ttf> {
         sw: u32,
         sh: u32,
         sizes: &[Option<(u32, u32)>; 4],
-    ) -> Vec<Rect> {
+    ) -> Vec<(Rect, Option<Rect>)> {
         const GAP: u32 = 8;
         let natural_w_at_h = |size: Option<(u32, u32)>, h: u32| -> u32 {
             let (w, ih) = size.unwrap_or((h, h));
@@ -628,7 +669,7 @@ impl<'ttf> Renderer<'ttf> {
                     sw,
                     sh,
                 );
-                vec![r]
+                vec![(r, None)]
             }
 
             SlideLayout::DualPortrait { flipped } | SlideLayout::DualSquare { flipped } => {
@@ -652,13 +693,13 @@ impl<'ttf> Renderer<'ttf> {
                 let y0 = ((sh.saturating_sub(dh)) / 2) as i32;
                 if flipped {
                     vec![
-                        Rect::new(x0 + dw1 as i32 + GAP as i32, y0, dw0, dh),
-                        Rect::new(x0, y0, dw1, dh),
+                        (Rect::new(x0 + dw1 as i32 + GAP as i32, y0, dw0, dh), None),
+                        (Rect::new(x0, y0, dw1, dh), None),
                     ]
                 } else {
                     vec![
-                        Rect::new(x0, y0, dw0, dh),
-                        Rect::new(x0 + dw0 as i32 + GAP as i32, y0, dw1, dh),
+                        (Rect::new(x0, y0, dw0, dh), None),
+                        (Rect::new(x0 + dw0 as i32 + GAP as i32, y0, dw1, dh), None),
                     ]
                 }
             }
@@ -685,106 +726,227 @@ impl<'ttf> Renderer<'ttf> {
                 // slot 0 = square, slot 1 = portrait
                 if square_right {
                     vec![
-                        Rect::new(x0 + dw1 as i32 + GAP as i32, y0, dw0, dh),
-                        Rect::new(x0, y0, dw1, dh),
+                        (Rect::new(x0 + dw1 as i32 + GAP as i32, y0, dw0, dh), None),
+                        (Rect::new(x0, y0, dw1, dh), None),
                     ]
                 } else {
                     vec![
-                        Rect::new(x0, y0, dw0, dh),
-                        Rect::new(x0 + dw0 as i32 + GAP as i32, y0, dw1, dh),
+                        (Rect::new(x0, y0, dw0, dh), None),
+                        (Rect::new(x0 + dw0 as i32 + GAP as i32, y0, dw1, dh), None),
                     ]
                 }
             }
 
             SlideLayout::PortraitDualLandscape { portrait_right } => {
-                // Slot 0 = portrait (full screen height, snapped to screen edge).
-                // Slots 1+2 = two landscape images stacked in the remaining column,
-                // each snapped to the portrait-adjacent edge so the gap is exactly GAP.
-                let p_w = natural_w_at_h(sizes[0], sh).max(1);
+                // Slot 0 = portrait, slots 1+2 = two landscapes stacked in the remaining column.
+                // All three panels share the same layout height. After determining that height,
+                // portrait_w and col_w are always derived from it (not scaled independently),
+                // ensuring portrait_w + GAP + col_w == sw at all times.
+                const MAX_SCALE: f32 = 1.2;
+                // Landscape cells are wider than the image ratio when the layout is scaled
+                // down to fit sh (e.g. 9:16 portrait + 16:9 landscapes → ~1.9:1 cells).
+                // Common photos (3:2 DSLR, 4:3 phone) need up to ~31% crop to fill those
+                // cells. 0.35 covers all typical aspect ratios without going to center-align.
+                const MAX_CROP: f32 = 0.35;
 
-                // Column spans the remaining screen width beside the portrait.
-                let (portrait_x, col_x, col_w) = if portrait_right {
-                    let px = sw as i32 - p_w as i32;
-                    (px, 0_i32, (px - GAP as i32).max(1) as u32)
-                } else {
-                    let cx = p_w as i32 + GAP as i32;
-                    (0_i32, cx, (sw as i32 - cx).max(1) as u32)
+                // Use sensible default ratios when sizes are not yet loaded.
+                let r_p = {
+                    let (pw, ph) = sizes[0].unwrap_or((2, 3)); // typical portrait
+                    if ph == 0 { 0.667_f64 } else { pw as f64 / ph as f64 }
+                };
+                let r1 = {
+                    let (w, h) = sizes[1].unwrap_or((3, 2)); // typical landscape
+                    if h == 0 { 1.5_f64 } else { w as f64 / h as f64 }
+                };
+                let r2 = {
+                    let (w, h) = sizes[2].unwrap_or((3, 2));
+                    if h == 0 { 1.5_f64 } else { w as f64 / h as f64 }
                 };
 
-                // Each landscape gets half the screen height; they snap to the center seam.
-                let cy = (sh / 2) as i32;
-                let gap_half = (GAP / 2) as i32;
-                let cell_th = (cy - gap_half) as u32;
-                let cell_bh = (sh as i32 - cy - gap_half) as u32;
-                let by_ = cy + gap_half;
+                let sum_inv_r = 1.0 / r1 + 1.0 / r2;
+                // Analytically solve for the natural layout height where:
+                //   col_w = sw - GAP - total_col_h * r_p
+                //   h_top + h_bot + GAP = total_col_h  (landscapes fill column naturally)
+                // => total_col_h * (1 + r_p * sum_inv_r) = (sw - GAP) * sum_inv_r + GAP
+                let natural_h = ((sw as f64 - GAP as f64) * sum_inv_r + GAP as f64)
+                    / (1.0 + r_p * sum_inv_r);
 
-                // Landscapes snap horizontally toward the portrait (inner edge of column).
-                let snap_r = portrait_right; // right-snap when portrait is on the right
-                let land1 = Self::fit_snap(
-                    sizes[1].map(|s| s.0).unwrap_or(col_w),
-                    sizes[1].map(|s| s.1).unwrap_or(cell_th),
-                    col_x,
-                    0,
-                    col_w,
-                    cell_th,
-                    snap_r,
-                    true,
-                );
-                let land2 = Self::fit_snap(
-                    sizes[2].map(|s| s.0).unwrap_or(col_w),
-                    sizes[2].map(|s| s.1).unwrap_or(cell_bh),
-                    col_x,
-                    by_,
-                    col_w,
-                    cell_bh,
-                    snap_r,
-                    false,
-                );
-                let portrait_rect = Rect::new(portrait_x, 0, p_w, sh);
+                // Clamp: scale down to sh if too tall; scale up if unused > 25%, with 1.2× cap.
+                let target_h = if natural_h > sh as f64 {
+                    sh as f64
+                } else {
+                    let unused = (sh as f64 - natural_h) / sh as f64;
+                    if unused > 0.25 {
+                        let natural_col_w = sw as f64 - GAP as f64 - natural_h * r_p;
+                        let max_s_portrait = MAX_SCALE as f64
+                            * sizes[0].map(|s| s.1 as f64).unwrap_or(natural_h)
+                            / natural_h;
+                        let h_top_n = natural_col_w / r1;
+                        let h_bot_n = natural_col_w / r2;
+                        let max_s_l1 = MAX_SCALE as f64
+                            * sizes[1].map(|s| s.1 as f64).unwrap_or(h_top_n)
+                            / h_top_n.max(1.0);
+                        let max_s_l2 = MAX_SCALE as f64
+                            * sizes[2].map(|s| s.1 as f64).unwrap_or(h_bot_n)
+                            / h_bot_n.max(1.0);
+                        let max_s = max_s_portrait
+                            .min(max_s_l1)
+                            .min(max_s_l2)
+                            .min(sh as f64 / natural_h);
+                        natural_h * max_s.max(1.0)
+                    } else {
+                        natural_h
+                    }
+                };
+
+                let total_col_h = target_h.round() as u32;
+                // Always derive portrait_w and col_w from total_col_h so their sum = sw - GAP.
+                let portrait_w = ((target_h * r_p).round() as i32)
+                    .clamp(1, sw as i32 - GAP as i32 - 1) as u32;
+                let col_w = (sw as i32 - GAP as i32 - portrait_w as i32).max(1) as u32;
+                // Row heights: scale natural heights to fill total_col_h - GAP.
+                let h_top_n = (col_w as f64 / r1).max(1.0);
+                let h_bot_n = (col_w as f64 / r2).max(1.0);
+                let available = total_col_h.saturating_sub(GAP) as f64;
+                let h_row_scale = available / (h_top_n + h_bot_n);
+                let h_top = (h_top_n * h_row_scale).round() as u32;
+                let h_bot = total_col_h.saturating_sub(GAP).saturating_sub(h_top);
+
+                let layout_y = ((sh.saturating_sub(total_col_h)) / 2) as i32;
+                let by_ = layout_y + h_top as i32 + GAP as i32;
+
+                let (portrait_x, col_x) = if portrait_right {
+                    (sw as i32 - portrait_w as i32, 0_i32)
+                } else {
+                    (0_i32, portrait_w as i32 + GAP as i32)
+                };
+
+                // Helper: cover-mode preferred; center-aligned contain as fallback.
+                // Centering ensures no directional bias when the image ratio doesn't match the cell.
+                let place = |iw: u32, ih: u32, bx: i32, by: i32, bw: u32, bh: u32| -> (Rect, Option<Rect>) {
+                    if let Some((dst, src)) = Self::fit_cover(iw, ih, bx, by, bw, bh, MAX_SCALE, MAX_CROP) {
+                        return (dst, Some(src));
+                    }
+                    // Center-aligned contain: equal letterbox on both axes.
+                    if iw == 0 || ih == 0 { return (Rect::new(bx, by, bw.max(1), bh.max(1)), None); }
+                    let img_r = iw as f64 / ih as f64;
+                    let box_r = bw as f64 / bh as f64;
+                    let (fw, fh) = if img_r > box_r {
+                        let fw = bw;
+                        (fw, ((bw as f64 / img_r).round() as u32).max(1))
+                    } else {
+                        let fh = bh;
+                        (((bh as f64 * img_r).round() as u32).max(1), fh)
+                    };
+                    let x = bx + (bw as i32 - fw as i32) / 2;
+                    let y = by + (bh as i32 - fh as i32) / 2;
+                    (Rect::new(x, y, fw, fh), None)
+                };
+
+                let (portrait_iw, portrait_ih) = sizes[0].unwrap_or((portrait_w, total_col_h));
+                let (land1_iw, land1_ih) = sizes[1].unwrap_or((col_w, h_top));
+                let (land2_iw, land2_ih) = sizes[2].unwrap_or((col_w, h_bot));
+
+                let portrait_rect = place(portrait_iw, portrait_ih, portrait_x, layout_y, portrait_w, total_col_h);
+                let land1 = place(land1_iw, land1_ih, col_x, layout_y, col_w, h_top);
+                let land2 = place(land2_iw, land2_ih, col_x, by_, col_w, h_bot);
+
                 vec![portrait_rect, land1, land2]
             }
 
             SlideLayout::QuadLandscape { flipped } => {
-                // 2×2 grid. Each image snaps its inner edges to the centre seam so that
-                // the gap between any two adjacent images is exactly GAP — not inflated by
-                // letterbox padding when images differ in aspect ratio from the cell.
-                let cx = (sw / 2) as i32;
-                let cy = (sh / 2) as i32;
-                let gh = (GAP / 2) as i32; // half-gap offset from centre
+                // 2×2 grid with natural cell sizes derived from image aspect ratios.
+                // Fills full canvas width; row heights are computed from those column widths.
+                const MAX_SCALE: f32 = 1.2;
+                // Column widths are derived from image ratios so cells closely match images.
+                // Still allow up to 25% crop for the scale-down case and mixed-ratio images.
+                const MAX_CROP: f32 = 0.25;
 
-                let lw = (cx - gh) as u32; // left-column  cell width
-                let rw = (sw as i32 - cx - gh) as u32; // right-column cell width
-                let th = (cy - gh) as u32; // top-row      cell height
-                let bh = (sh as i32 - cy - gh) as u32; // bottom-row   cell height
-                let rx = cx + gh; // right-column x origin
-                let by_ = cy + gh; // bottom-row   y origin
+                // Assign slots: non-flipped → TL=0, BL=1, TR=2, BR=3
+                //               flipped     → TL=2, BL=3, TR=0, BR=1
+                let (tl, bl, tr, br) = if flipped { (2, 3, 0, 1) } else { (0, 1, 2, 3) };
 
-                let s = |i: usize| sizes[i].unwrap_or((1, 1));
-
-                // snap_right=true  → image right-aligns  to inner (centre) edge
-                // snap_bottom=true → image bottom-aligns to inner (centre) edge
-                let place = |i: usize, bx: i32, by: i32, bw: u32, bh: u32, sr: bool, sb: bool| {
-                    Self::fit_snap(s(i).0, s(i).1, bx, by, bw, bh, sr, sb)
+                let ratio = |i: usize| -> f64 {
+                    let (w, h) = sizes[i].unwrap_or((1, 1));
+                    if h == 0 { 1.0 } else { w as f64 / h as f64 }
                 };
+                let r_tl = ratio(tl);
+                let r_bl = ratio(bl);
+                let r_tr = ratio(tr);
+                let r_br = ratio(br);
 
-                let (r0, r1, r2, r3) = if flipped {
-                    // slots 0,1 → right column; 2,3 → left column
-                    (
-                        place(0, rx, 0, rw, th, false, true),
-                        place(1, rx, by_, rw, bh, false, false),
-                        place(2, 0, 0, lw, th, true, true),
-                        place(3, 0, by_, lw, bh, true, false),
-                    )
+                // Natural column widths proportional to geometric mean of each column's ratios.
+                let r_left = (r_tl * r_bl).sqrt();
+                let r_right = (r_tr * r_br).sqrt();
+                let w_left = ((sw as f64 - GAP as f64) * r_left / (r_left + r_right)).round() as u32;
+                let w_right = sw.saturating_sub(GAP).saturating_sub(w_left);
+
+                // Natural row heights: average of each image's natural height at its column width.
+                let h_top_f = (w_left as f64 / r_tl + w_right as f64 / r_tr) / 2.0;
+                let h_bot_f = (w_left as f64 / r_bl + w_right as f64 / r_br) / 2.0;
+                let total_h_f = h_top_f + GAP as f64 + h_bot_f;
+
+                let v_scale = if total_h_f > sh as f64 {
+                    // Scale down to fit canvas height.
+                    (sh as f64 - GAP as f64) / (h_top_f + h_bot_f)
                 } else {
-                    // slots 0,1 → left column; 2,3 → right column
-                    (
-                        place(0, 0, 0, lw, th, true, true),
-                        place(1, 0, by_, lw, bh, true, false),
-                        place(2, rx, 0, rw, th, false, true),
-                        place(3, rx, by_, rw, bh, false, false),
-                    )
+                    let unused = (sh as f64 - total_h_f) / sh as f64;
+                    if unused > 0.25 {
+                        // Scale up, capped at 1.2× for any image.
+                        let cap = |h_natural: f64, slot: usize| -> f64 {
+                            let ih = sizes[slot].map(|s| s.1 as f64).unwrap_or(h_natural);
+                            if ih == 0.0 { f64::MAX } else { MAX_SCALE as f64 * ih / h_natural }
+                        };
+                        let max_s = cap(h_top_f, tl).min(cap(h_top_f, tr))
+                            .min(cap(h_bot_f, bl)).min(cap(h_bot_f, br))
+                            .min((sh as f64 - GAP as f64) / (h_top_f + h_bot_f));
+                        max_s.max(1.0)
+                    } else {
+                        1.0
+                    }
                 };
-                vec![r0, r1, r2, r3]
+
+                let h_top = (h_top_f * v_scale).round() as u32;
+                let total_h = (h_top_f * v_scale + GAP as f64 + h_bot_f * v_scale).round() as u32;
+                let h_bot = total_h.saturating_sub(GAP).saturating_sub(h_top);
+
+                let layout_y = ((sh.saturating_sub(total_h)) / 2) as i32;
+                let rx = w_left as i32 + GAP as i32;
+                let by_ = layout_y + h_top as i32 + GAP as i32;
+
+                // Helper: cover-mode preferred; center-aligned contain as fallback.
+                let place_cell = |slot: usize, bx: i32, by: i32, bw: u32, bh: u32| -> (Rect, Option<Rect>) {
+                    let (iw, ih) = sizes[slot].unwrap_or((bw, bh));
+                    if let Some((dst, src)) = Self::fit_cover(iw, ih, bx, by, bw, bh, MAX_SCALE, MAX_CROP) {
+                        return (dst, Some(src));
+                    }
+                    if iw == 0 || ih == 0 { return (Rect::new(bx, by, bw.max(1), bh.max(1)), None); }
+                    let img_r = iw as f64 / ih as f64;
+                    let box_r = bw as f64 / bh as f64;
+                    let (fw, fh) = if img_r > box_r {
+                        let fw = bw;
+                        (fw, ((bw as f64 / img_r).round() as u32).max(1))
+                    } else {
+                        let fh = bh;
+                        (((bh as f64 * img_r).round() as u32).max(1), fh)
+                    };
+                    let x = bx + (bw as i32 - fw as i32) / 2;
+                    let y = by + (bh as i32 - fh as i32) / 2;
+                    (Rect::new(x, y, fw, fh), None)
+                };
+
+                let r_tl_rect = place_cell(tl, 0,   layout_y, w_left,  h_top);
+                let r_bl_rect = place_cell(bl, 0,   by_,      w_left,  h_bot);
+                let r_tr_rect = place_cell(tr, rx,  layout_y, w_right, h_top);
+                let r_br_rect = place_cell(br, rx,  by_,      w_right, h_bot);
+
+                // Return in slot order (0,1,2,3)
+                let mut result = [(Rect::new(0, 0, 1, 1), None); 4];
+                result[tl] = r_tl_rect;
+                result[bl] = r_bl_rect;
+                result[tr] = r_tr_rect;
+                result[br] = r_br_rect;
+                vec![result[0], result[1], result[2], result[3]]
             }
         }
     }
@@ -811,7 +973,7 @@ impl<'ttf> Renderer<'ttf> {
 
         // Record rects for info overlay
         self.last_image_rects = [None; 4];
-        for (i, r) in rects.iter().enumerate() {
+        for (i, (r, _)) in rects.iter().enumerate() {
             if i < 4 {
                 self.last_image_rects[i] = Some(*r);
             }
@@ -830,7 +992,7 @@ impl<'ttf> Renderer<'ttf> {
             if let Some(ref mut display) = panels[0].display {
                 display.set_alpha_mod(alpha);
                 self.canvas
-                    .copy(display, None, rects[0])
+                    .copy(display, None, rects[0].0)
                     .map_err(|e| anyhow::anyhow!("display: {}", e))?;
             }
             return Ok(());
@@ -870,14 +1032,14 @@ impl<'ttf> Renderer<'ttf> {
                     continue;
                 }
 
-                let this_r = rects[i];
+                let this_r = rects[i].0;
 
                 // Find seams against any already-drawn panel (j < i).
                 // Track both the seam position and whether this panel is to the right/below it.
                 let mut seam_x: Option<(i32, bool)> = None; // (seam_x_coord, this_is_right_of_seam)
                 let mut seam_y: Option<(i32, bool)> = None; // (seam_y_coord, this_is_below_seam)
                 for other in rects.iter().take(i) {
-                    let other = *other;
+                    let other = other.0;
                     // Panels are in different columns if their x-centres differ more than a gap width
                     if (other.x() - this_r.x()).abs() > GAP as i32 {
                         if other.x() < this_r.x() {
@@ -1122,12 +1284,12 @@ impl<'ttf> Renderer<'ttf> {
         }
 
         // Step 2: Render each image clipped to its rect
-        for (i, rect) in rects.iter().enumerate() {
+        for (i, (dst, src)) in rects.iter().enumerate() {
             if let Some(ref mut display) = panels[i].display {
-                self.canvas.set_clip_rect(*rect);
+                self.canvas.set_clip_rect(*dst);
                 display.set_alpha_mod(alpha);
                 self.canvas
-                    .copy(display, None, *rect)
+                    .copy(display, *src, *dst)
                     .map_err(|e| anyhow::anyhow!("img {}: {}", i, e))?;
             }
         }
@@ -1141,8 +1303,8 @@ impl<'ttf> Renderer<'ttf> {
         let mut hseams: Vec<i32> = Vec::new(); // y-coords of horizontal gap top edges
         for i in 0..n {
             for j in (i + 1)..n {
-                let a = rects[i];
-                let b = rects[j];
+                let a = rects[i].0;
+                let b = rects[j].0;
                 // Vertical gap (a is left of b)
                 if (a.right() + GAP as i32) <= b.x() + 2 {
                     let gx = a.right();
