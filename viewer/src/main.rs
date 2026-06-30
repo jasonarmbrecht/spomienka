@@ -1685,7 +1685,7 @@ fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>) {
         // Build weighted option list based on what's available
         // 0=QuadLandscape(4L), 1=PortraitDualLandscape(1P+2L), 2=DualPortrait(2P),
         // 3=SingleLandscape(1L), 4=DualSquare(2S), 5=SquarePortrait(1S+1P)
-        let opts: &[(u8, f32)] = &[(0, 2.0), (1, 2.0), (2, 2.0), (3, 3.0), (4, 2.0), (5, 2.0)];
+        let opts: &[(u8, f32)] = &[(0, 4.0), (1, 3.0), (2, 2.0), (3, 1.5), (4, 2.0), (5, 2.0)];
         let available: Vec<(u8, f32)> = opts
             .iter()
             .filter_map(|&(id, w)| {
@@ -1809,7 +1809,7 @@ async fn pick_dynamic_layout(
                     SlideLayout::PortraitDualLandscape {
                         portrait_right: rng.gen(),
                     },
-                    2.0,
+                    3.0,
                 ));
             }
             if o0 == ImageOrientation::Landscape
@@ -1817,7 +1817,7 @@ async fn pick_dynamic_layout(
                 && o2 == ImageOrientation::Landscape
                 && o3 == ImageOrientation::Landscape
             {
-                c.push((SlideLayout::QuadLandscape { flipped: rng.gen() }, 2.0));
+                c.push((SlideLayout::QuadLandscape { flipped: rng.gen() }, 4.0));
             }
             if o0 == ImageOrientation::Square && o1 == ImageOrientation::Square {
                 c.push((SlideLayout::DualSquare { flipped: rng.gen() }, 2.0));
@@ -2086,7 +2086,7 @@ async fn advance_to_next<'a>(
         let rects = Renderer::compute_panel_rects(renderer.current_layout, sw, sh, &sizes);
         let too_small = rects
             .iter()
-            .any(|r| r.width() < min_w || r.height() < min_h);
+            .any(|(r, _)| r.width() < min_w || r.height() < min_h);
         if too_small {
             tracing::warn!(
                 "Layout {:?} produced image smaller than 20% of screen — falling back to Single",
