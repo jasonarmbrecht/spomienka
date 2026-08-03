@@ -198,6 +198,13 @@ def detect_unmounted_partitions() -> list[dict]:
     return candidates
 
 
+# Filesystems with no native Unix ownership/permissions — without explicit
+# uid=/gid=/umask= mount options these come up owned by root, and services
+# running as a regular user get "permission denied" even after chown (which
+# is a silent no-op on these filesystems).
+_NO_UNIX_PERMS_FSTYPES = {"vfat", "exfat", "ntfs", "ntfs3"}
+
+
 def auto_mount_partition(part: dict) -> str:
     """Create a mount point, add a persistent fstab entry (if not already there), and mount now.
 
@@ -207,7 +214,10 @@ def auto_mount_partition(part: dict) -> str:
     run(["sudo", "mkdir", "-p", mount_path])
     fstab = Path("/etc/fstab").read_text()
     if part["uuid"] not in fstab:
-        fstab_line = f"UUID={part['uuid']} {mount_path} {part['fstype']} defaults,nofail 0 2"
+        opts = "defaults,nofail"
+        if part["fstype"] in _NO_UNIX_PERMS_FSTYPES:
+            opts += f",uid={os.getuid()},gid={os.getgid()},umask=002"
+        fstab_line = f"UUID={part['uuid']} {mount_path} {part['fstype']} {opts} 0 2"
         run_shell(f"echo '{fstab_line}' | sudo tee -a /etc/fstab > /dev/null")
     run(["sudo", "mount", "-a"], check=False)
     return mount_path
@@ -1269,12 +1279,15 @@ WantedBy=multi-user.target
     console.print()
     console.print(Panel(
         "[green bold]Installation complete![/green bold]\n\n"
-        "If the GL driver was changed, a reboot is recommended.\n"
-        "[dim]Check service logs: journalctl -u frame-viewer -f[/dim]",
+        "A reboot is required to apply the GL driver and mount configuration.\n"
+        "[dim]After reboot, check service logs: journalctl -u frame-viewer -f[/dim]",
         border_style="green",
         padding=(1, 2),
     ))
     console.print()
+    console.print("[yellow]Rebooting in 10 seconds to apply changes (this will end any SSH session)…[/yellow]")
+    time.sleep(10)
+    run(["sudo", "reboot"])
 
 
 if __name__ == "__main__":
