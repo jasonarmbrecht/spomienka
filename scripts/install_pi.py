@@ -785,7 +785,7 @@ def main() -> None:
         if hooks_src.is_dir():
             with Status("Installing PocketBase hooks…", console=console):
                 run(["sudo", "mkdir", "-p", f"{PB_DATA_DIR}/pb_hooks"])
-                run_shell(f"sudo cp -r {hooks_src}/* {PB_DATA_DIR}/pb_hooks/")
+                run_shell(f'sudo cp -r "{hooks_src}"/* "{PB_DATA_DIR}/pb_hooks/"')
                 run(["sudo", "chown", "-R", f"{os.environ['USER']}:{os.environ['USER']}", f"{PB_DATA_DIR}/pb_hooks"])
             step_ok("Hooks installed")
         else:
