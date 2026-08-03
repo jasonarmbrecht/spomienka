@@ -807,14 +807,16 @@ def main() -> None:
         for m in (primary_mount, backup_mount if backup_enabled else ""):
             if m and m not in pb_mounts:
                 pb_mounts.append(m)
-        pb_requires_mounts = f"\nRequiresMountsFor={' '.join(pb_mounts)}" if pb_mounts else ""
+        pb_requires_mounts = (
+            f"\nRequiresMountsFor={' '.join(f'\"{m}\"' for m in pb_mounts)}" if pb_mounts else ""
+        )
         service_content = f"""[Unit]
 Description=PocketBase
 After=network-online.target
 Wants=network-online.target{pb_requires_mounts}
 
 [Service]
-ExecStart={PB_BIN_PATH} serve --http=0.0.0.0:{PB_PORT_DEFAULT} --dir {PB_DATA_DIR} --migrationsDir {PB_DATA_DIR}/pb_migrations --hooksDir {PB_DATA_DIR}/pb_hooks
+ExecStart={PB_BIN_PATH} serve --http=0.0.0.0:{PB_PORT_DEFAULT} --dir "{PB_DATA_DIR}" --migrationsDir "{PB_DATA_DIR}/pb_migrations" --hooksDir "{PB_DATA_DIR}/pb_hooks"
 WorkingDirectory=/opt/pocketbase
 Restart=on-failure
 RestartSec=5
@@ -1142,7 +1144,7 @@ device_api_key = "{device_key}"
     if pb_on_pi:
         viewer_after += " pocketbase.service"
 
-    viewer_requires_mounts = f"\nRequiresMountsFor={primary_mount}" if primary_mount else ""
+    viewer_requires_mounts = f'\nRequiresMountsFor="{primary_mount}"' if primary_mount else ""
 
     viewer_service = f"""[Unit]
 Description=Frame Viewer
