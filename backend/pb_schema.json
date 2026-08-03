@@ -739,6 +739,18 @@
         "min": null,
         "max": 64,
         "pattern": ""
+      },
+      {
+        "id": "pd_repair",
+        "name": "repairDeviceId",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": 64,
+        "pattern": ""
       }
     ],
     "indexes": [

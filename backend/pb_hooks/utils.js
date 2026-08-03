@@ -22,6 +22,10 @@ const FFMPEG   = findBinary(["/opt/homebrew/bin/ffmpeg",   "/usr/bin/ffmpeg",   
 const FFPROBE  = findBinary(["/opt/homebrew/bin/ffprobe",  "/usr/bin/ffprobe",  "/usr/local/bin/ffprobe",  "ffprobe"]);
 const EXIFTOOL = findBinary(["/opt/homebrew/bin/exiftool", "/usr/bin/exiftool", "/usr/local/bin/exiftool", "exiftool"]);
 
+// heif-convert (from libheif-examples on Debian/Raspbian) decodes HEIC more
+// reliably than ffmpeg on Linux, where ffmpeg often lacks HEIF support.
+const HEIF_CONVERT = findBinary(["/usr/bin/heif-convert", "/usr/local/bin/heif-convert", "heif-convert"]);
+
 // sha256sum is Linux-only; macOS ships shasum instead.
 const SHA256_CMD  = findBinary(["/usr/bin/sha256sum", "/opt/homebrew/bin/shasum", "/usr/bin/shasum", "sha256sum"]);
 const SHA256_ARGS = SHA256_CMD.includes("shasum") ? ["-a", "256"] : [];
@@ -227,11 +231,17 @@ function processImage(record, originalPath, procDir, storagePath) {
     const recordId = record.id;
     const collectionId = record.collection().id;
 
-    // HEIC/HEIF: ffmpeg on macOS (VideoToolbox) can decode HEIC directly.
+    // HEIC/HEIF: prefer heif-convert (works reliably on Linux), fall back to
+    // ffmpeg (works on macOS via VideoToolbox, unreliable for HEIF on Linux).
     const isHeic = /\.heic$/i.test(originalPath);
     if (isHeic) {
         const tmpPng = procDir + "/original.png";
-        execCommand(FFMPEG, ["-y", "-i", originalPath, "-frames:v", "1", "-update", "1", tmpPng]);
+        try {
+            execCommand(HEIF_CONVERT, [originalPath, tmpPng]);
+        } catch (_) {
+            execCommand(FFMPEG, ["-y", "-i", originalPath, "-frames:v", "1", "-update", "1", tmpPng]);
+        }
+        try { $os.stat(tmpPng); } catch (_) { throw new Error("HEIC conversion produced no output"); }
         originalPath = tmpPng;
     }
 

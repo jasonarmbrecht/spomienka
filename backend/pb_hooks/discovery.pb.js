@@ -7,7 +7,10 @@
 //   4. Viewer polls GET /api/spomienka/claim/:session_id to receive credentials
 
 // POST /api/spomienka/announce  (no auth — viewer is unregistered)
-// Body: { session_id, pin_hash, hostname, ip }
+// Body: { session_id, pin_hash, hostname, ip, repair_device_id? }
+// repair_device_id is set when an already-paired viewer lost its api_key and
+// re-entered discovery mode to get a new one for the SAME device record
+// (see the /repair_request device_inbox message and repair discovery mode).
 routerAdd("POST", "/api/spomienka/announce", (e) => {
     try {
         const utils = require(__hooks + "/utils.js");
@@ -17,6 +20,7 @@ routerAdd("POST", "/api/spomienka/announce", (e) => {
         const pinHash = (body.pin_hash || "").trim();
         const hostname = (body.hostname || "").trim().substring(0, 255);
         const ip = (body.ip || "").trim().substring(0, 64);
+        const repairDeviceId = (body.repair_device_id || "").trim().substring(0, 64);
 
         if (!sessionId || sessionId.length < 16 || sessionId.length > 64) {
             throw new BadRequestError("Invalid session_id");
@@ -38,6 +42,7 @@ routerAdd("POST", "/api/spomienka/announce", (e) => {
             // Already exists — update heartbeat fields
             if (ip) record.set("ip", ip);
             if (hostname) record.set("hostname", hostname);
+            if (repairDeviceId) record.set("repairDeviceId", repairDeviceId);
         } catch (_) {
             // New session — evict any stale unclaimed records from same host/IP
             if (hostname || ip) {
@@ -61,6 +66,7 @@ routerAdd("POST", "/api/spomienka/announce", (e) => {
             record.set("hostname", hostname);
             record.set("ip", ip);
             record.set("claimed", false);
+            if (repairDeviceId) record.set("repairDeviceId", repairDeviceId);
         }
 
         $app.save(record);
@@ -137,6 +143,8 @@ routerAdd("POST", "/api/spomienka/device-auth", (e) => {
                 showInfo: cfg.showInfo ?? false,
                 showLocationInfo: cfg.showLocationInfo ?? false,
                 displayMode: cfg.displayMode ?? "single",
+                clockOffsetX: cfg.clockOffsetX ?? 0,
+                clockOffsetY: cfg.clockOffsetY ?? 0,
             },
         });
     } catch (err) {
@@ -267,20 +275,38 @@ routerAdd("POST", "/api/spomienka/register", (e) => {
         // Note: $os.exec does not capture stdout in PocketBase 0.25, so openssl is unusable here.
         const rawKey = $security.randomString(32);
 
-        // Create the device record (the onRecordCreate hook will hash apiKey)
-        const devCol = $app.findCollectionByNameOrId("devices");
-        const device = new Record(devCol);
-        device.set("name", name);
-        device.set("apiKey", rawKey);
-        device.set("config", {
-            interval: 8000,
-            transition: "fade",
-            transitionDuration: 1000,
-            blur: true,
-            shuffle: false,
-            showClock: true,
-        });
-        $app.save(device);
+        const repairDeviceId = pending.getString("repairDeviceId");
+
+        let device;
+        if (repairDeviceId) {
+            // Repair flow: update the EXISTING device's key in place instead of
+            // creating a new record, so its config/history/id are preserved.
+            try {
+                device = $app.findRecordById("devices", repairDeviceId);
+            } catch (_) {
+                throw new NotFoundError("Device being repaired no longer exists");
+            }
+            device.set("name", name);
+            device.set("apiKey", rawKey);
+            $app.save(device);
+        } else {
+            // Create the device record (the onRecordCreate hook will hash apiKey)
+            const devCol = $app.findCollectionByNameOrId("devices");
+            device = new Record(devCol);
+            device.set("name", name);
+            device.set("apiKey", rawKey);
+            device.set("config", {
+                interval: 8000,
+                transition: "fade",
+                transitionDuration: 1000,
+                blur: true,
+                shuffle: false,
+                showClock: true,
+                clockOffsetX: 0,
+                clockOffsetY: 0,
+            });
+            $app.save(device);
+        }
 
         // Store raw key in pending record so viewer can pick it up via /claim
         // The key is cleared after the viewer fetches it (one-time delivery)

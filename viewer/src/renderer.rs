@@ -202,6 +202,9 @@ pub struct Renderer<'ttf> {
     pub blur_background: bool,
     pub current_layout: SlideLayout,
     show_clock: bool,
+    clock_offset_x: i32,
+    clock_offset_y: i32,
+    max_texture_dim: u32,
     font_overlay: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_info: Option<sdl2::ttf::Font<'ttf, 'static>>,
     font_clock: Option<sdl2::ttf::Font<'ttf, 'static>>,
@@ -233,6 +236,8 @@ impl<'ttf> Renderer<'ttf> {
         fullscreen: bool,
         blur_background: bool,
         show_clock: bool,
+        clock_offset_x: i32,
+        clock_offset_y: i32,
         initial_layout: SlideLayout,
     ) -> Result<Self> {
         let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL init failed: {}", e))?;
@@ -281,6 +286,19 @@ impl<'ttf> Renderer<'ttf> {
 
         // Enable blending for overlay
         canvas.set_blend_mode(sdl2::render::BlendMode::Blend);
+
+        // Cap decoded image dimensions to what the GPU can actually turn into a
+        // texture. Oversized textures (e.g. modern phone photos with no
+        // server-side downscale) silently fail create_texture_streaming on some
+        // GPUs (observed on Raspberry Pi 4's VideoCore VI), leaving only the
+        // capped blur-background layer visible. Fall back to a conservative
+        // value if the driver reports 0 (unknown).
+        let renderer_info = canvas.info();
+        let max_texture_dim = {
+            let reported = renderer_info.max_texture_width.min(renderer_info.max_texture_height);
+            if reported == 0 { 4096 } else { reported }
+        };
+        tracing::info!("Max GPU texture dimension: {}", max_texture_dim);
 
         // Hide cursor only in fullscreen kiosk mode
         sdl_context.mouse().show_cursor(!fullscreen);
@@ -349,6 +367,9 @@ impl<'ttf> Renderer<'ttf> {
             blur_background,
             current_layout: initial_layout,
             show_clock,
+            clock_offset_x,
+            clock_offset_y,
+            max_texture_dim,
             font_overlay,
             font_info,
             font_clock,
@@ -390,7 +411,28 @@ impl<'ttf> Renderer<'ttf> {
             .context("Failed to guess image format")?
             .decode()
             .context("Failed to open image")?;
-        let rgba = img.to_rgba8();
+        let mut rgba = img.to_rgba8();
+        let (orig_width, orig_height) = rgba.dimensions();
+
+        // Downscale if the decoded image exceeds what the GPU can texture —
+        // otherwise create_texture_streaming fails below and only the (always
+        // screen-capped) blur background ends up visible.
+        if orig_width.max(orig_height) > self.max_texture_dim {
+            use image::imageops::{resize, FilterType};
+            let scale = self.max_texture_dim as f32 / orig_width.max(orig_height) as f32;
+            let new_width = ((orig_width as f32 * scale).round() as u32).max(1);
+            let new_height = ((orig_height as f32 * scale).round() as u32).max(1);
+            tracing::info!(
+                "Downscaling oversized image {} from {}x{} to {}x{} (max texture dim {})",
+                path.display(),
+                orig_width,
+                orig_height,
+                new_width,
+                new_height,
+                self.max_texture_dim
+            );
+            rgba = resize(&rgba, new_width, new_height, FilterType::Triangle);
+        }
         let (width, height) = rgba.dimensions();
 
         let mut texture = texture_creator
@@ -1532,9 +1574,9 @@ impl<'ttf> Renderer<'ttf> {
             .map_err(|e| anyhow::anyhow!("Failed to create clock texture: {}", e))?;
         let query = texture.query();
 
-        let margin = (self.screen_width.min(self.screen_height) as f32 * 0.035).round() as i32;
-        let x = self.screen_width as i32 - query.width as i32 - margin;
-        let y = self.screen_height as i32 - query.height as i32 - margin;
+        let base_margin = (self.screen_width.min(self.screen_height) as f32 * 0.035).round() as i32;
+        let x = self.screen_width as i32 - query.width as i32 - base_margin - self.clock_offset_x;
+        let y = self.screen_height as i32 - query.height as i32 - base_margin - self.clock_offset_y;
         let dest = Rect::new(x, y, query.width, query.height);
 
         // Warm dark brown shadow — softer and less harsh than pure black

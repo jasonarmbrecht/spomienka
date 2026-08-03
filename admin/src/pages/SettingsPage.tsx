@@ -89,6 +89,8 @@ type Device = {
     blur?: boolean;
     shuffle?: boolean;
     showClock?: boolean;
+    clockOffsetX?: number;
+    clockOffsetY?: number;
     displayMode?: string;
   };
 };
@@ -105,10 +107,9 @@ type DeviceCardProps = {
   onRefresh: (preferredId?: string) => void;
   showMessage: (msg: string) => void;
   showError: (err: unknown, fallback: string) => void;
-  onNewApiKey: (key: string) => void;
 };
 
-function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: DeviceCardProps) {
+function DeviceCard({ device, onRefresh, showMessage, showError }: DeviceCardProps) {
   const cfg = device.config ?? {};
   const [slideInterval, setSlideInterval] = useState(cfg.interval ?? 8000);
   const [transition, setTransition] = useState(cfg.transition ?? "fade");
@@ -116,6 +117,8 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
   const [blur, setBlur] = useState(cfg.blur ?? true);
   const [shuffle, setShuffle] = useState(cfg.shuffle ?? false);
   const [showClock, setShowClock] = useState(cfg.showClock ?? true);
+  const [clockOffsetX, setClockOffsetX] = useState(cfg.clockOffsetX ?? 0);
+  const [clockOffsetY, setClockOffsetY] = useState(cfg.clockOffsetY ?? 0);
   const [showInfo, setShowInfo] = useState(cfg.showInfo ?? false);
   const [showLocationInfo, setShowLocationInfo] = useState(cfg.showLocationInfo ?? false);
   const [displayMode, setDisplayMode] = useState(cfg.displayMode ?? "single");
@@ -123,7 +126,7 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(device.name);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [showRegenModal, setShowRegenModal] = useState(false);
+  const [showRepairModal, setShowRepairModal] = useState(false);
 
   const isDirty =
     (cfg.interval ?? 8000) !== slideInterval ||
@@ -132,13 +135,15 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
     (cfg.blur ?? true) !== blur ||
     (cfg.shuffle ?? false) !== shuffle ||
     (cfg.showClock ?? true) !== showClock ||
+    (cfg.clockOffsetX ?? 0) !== clockOffsetX ||
+    (cfg.clockOffsetY ?? 0) !== clockOffsetY ||
     (cfg.showInfo ?? false) !== showInfo ||
     (cfg.showLocationInfo ?? false) !== showLocationInfo ||
     (cfg.displayMode ?? "single") !== displayMode;
 
   const saveConfig = async () => {
     try {
-      const newConfig = { interval: slideInterval, transition, transitionDuration, blur, shuffle, showClock, showInfo, showLocationInfo, displayMode };
+      const newConfig = { interval: slideInterval, transition, transitionDuration, blur, shuffle, showClock, clockOffsetX, clockOffsetY, showInfo, showLocationInfo, displayMode };
       await pb.collection("devices").update(device.id, { config: newConfig });
       try {
         await pb.collection("device_inbox").create({ device_id: device.id, type: "config_reload" });
@@ -165,16 +170,15 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
     }
   };
 
-  const regenerateApiKey = async () => {
+  const requestRepair = async () => {
     try {
-      const newKey = generateApiKey();
-      await pb.collection("devices").update(device.id, { apiKey: newKey });
-      setShowRegenModal(false);
-      onNewApiKey(newKey);
-      showMessage("API key regenerated successfully");
-      onRefresh(device.id);
+      await pb.collection("device_inbox").create({ device_id: device.id, type: "repair_request" });
+      setShowRepairModal(false);
+      showMessage(
+        `Re-pair requested. "${device.name}" will restart into pairing mode within a few seconds — enter its new PIN under Discovered Viewers below.`
+      );
     } catch (err) {
-      showError(err, "Failed to regenerate API key");
+      showError(err, "Failed to request re-pair");
     }
   };
 
@@ -191,15 +195,19 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
 
   return (
     <Tile style={{ height: "100%" }}>
-      {showRegenModal && (
+      {showRepairModal && (
         <Modal
-          title="Regenerate API Key"
-          onConfirm={regenerateApiKey}
-          onCancel={() => setShowRegenModal(false)}
-          confirmLabel="Regenerate"
+          title="Re-pair Device"
+          onConfirm={requestRepair}
+          onCancel={() => setShowRepairModal(false)}
+          confirmLabel="Re-pair"
           confirmDestructive
         >
-          <p>The old API key will stop working immediately. The device will need to be reconfigured with the new key.</p>
+          <p>
+            The device will lose its current API key and restart into pairing mode — it will keep
+            its name and slideshow settings. Once it shows a new PIN on screen, enter it below under
+            &quot;Discovered Viewers&quot; to finish reconnecting it.
+          </p>
         </Modal>
       )}
       {showDeleteModal && (
@@ -299,6 +307,26 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
               onToggle={(val) => { setShowClock(val); setSaveSuccess(false); }}
               size="sm"
             />
+            {showClock && (
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <NumberInput
+                  id={`clock-offset-x-${device.id}`}
+                  label="Clock Horizontal Offset (px, shifts left)"
+                  value={clockOffsetX}
+                  step={10}
+                  onChange={(_e, { value }) => { setClockOffsetX(Number(value)); setSaveSuccess(false); }}
+                  size="sm"
+                />
+                <NumberInput
+                  id={`clock-offset-y-${device.id}`}
+                  label="Clock Vertical Offset (px, shifts up)"
+                  value={clockOffsetY}
+                  step={10}
+                  onChange={(_e, { value }) => { setClockOffsetY(Number(value)); setSaveSuccess(false); }}
+                  size="sm"
+                />
+              </div>
+            )}
             <Toggle
               id={`show-info-${device.id}`}
               labelText="Show All Details"
@@ -346,8 +374,8 @@ function DeviceCard({ device, onRefresh, showMessage, showError, onNewApiKey }: 
 
         {/* Footer actions */}
         <div style={{ display: "flex", gap: "0.5rem" }}>
-          <Button kind="tertiary" size="sm" renderIcon={Renew} onClick={() => setShowRegenModal(true)}>
-            Regenerate Key
+          <Button kind="tertiary" size="sm" renderIcon={Renew} onClick={() => setShowRepairModal(true)}>
+            Re-pair Device
           </Button>
           <Button kind="danger" size="sm" renderIcon={TrashCan} onClick={() => setShowDeleteModal(true)}>
             Delete
@@ -443,7 +471,7 @@ export function SettingsPage() {
       const device = await pb.collection("devices").create<Device>({
         name: newDeviceName.trim(),
         apiKey,
-        config: { interval: 8000, transition: "fade", transitionDuration: 1000, blur: true, shuffle: false, showClock: true, showInfo: false, showLocationInfo: false },
+        config: { interval: 8000, transition: "fade", transitionDuration: 1000, blur: true, shuffle: false, showClock: true, clockOffsetX: 0, clockOffsetY: 0, showInfo: false, showLocationInfo: false },
       });
       setDevices((prev) => [...prev, device]);
       setNewDeviceName("");
@@ -461,7 +489,7 @@ export function SettingsPage() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.5rem" }}>
           <Heading>Settings</Heading>
           <Button kind="primary" onClick={() => setShowAddDeviceModal(true)}>
-            Add Device Manually
+            Provision Device Manually
           </Button>
         </div>
 
@@ -506,19 +534,28 @@ export function SettingsPage() {
 
         {showAddDeviceModal && (
           <Modal
-            title="Add Device"
+            title="Provision Device Manually"
             onConfirm={createDevice}
             onCancel={() => { setShowAddDeviceModal(false); setNewDeviceName(""); setError(null); }}
-            confirmLabel="Add Device"
+            confirmLabel="Provision"
           >
-            <TextInput
-              id="new-device-name"
-              labelText="Device Name"
-              value={newDeviceName}
-              onChange={(e) => setNewDeviceName(e.target.value)}
-              placeholder="e.g., Bedroom Frame"
-              autoFocus
-            />
+            <Stack gap={5}>
+              <p className="cds--helper-text-01">
+                This creates a device record and generates a new API key here — it does not
+                talk to any viewer. You&apos;ll need to copy the generated key into that
+                viewer&apos;s <code>config.toml</code> yourself (e.g. over SSH) and restart it.
+                This is unrelated to the PIN-based pairing under &quot;Discovered Viewers&quot;
+                below, and unrelated to re-pairing an existing device.
+              </p>
+              <TextInput
+                id="new-device-name"
+                labelText="Device Name"
+                value={newDeviceName}
+                onChange={(e) => setNewDeviceName(e.target.value)}
+                placeholder="e.g., Bedroom Frame"
+                autoFocus
+              />
+            </Stack>
           </Modal>
         )}
 
@@ -566,7 +603,6 @@ export function SettingsPage() {
                   onRefresh={loadDevices}
                   showMessage={showMessage}
                   showError={showError}
-                  onNewApiKey={setNewApiKey}
                 />
               </Column>
             ))}
