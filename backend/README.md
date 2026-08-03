@@ -40,7 +40,7 @@ Implemented in `pb_hooks/media.pb.js`:
 
 ## Installation
 
-**For Pi deployment:** Use `../scripts/install_pi.sh` - it automatically:
+**For Pi deployment:** Use `../scripts/install_pi.py` - it automatically:
 - Installs PocketBase and all dependencies (ffmpeg, exiftool, sha256sum)
 - Imports the schema from `pb_schema.json`
 - Installs hooks from `pb_hooks/`

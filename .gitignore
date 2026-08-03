@@ -8,6 +8,10 @@ npm-debug.log*
 yarn.lock
 pnpm-lock.yaml
 
+# Python
+__pycache__/
+*.pyc
+
 # Rust
 target/
 Cargo.lock

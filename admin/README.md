@@ -4,7 +4,7 @@ Web interface for authenticated uploads, approvals, library management, and syst
 
 ## Installation
 
-**For Pi deployment:** Use `../scripts/install_pi.sh` - it automatically builds and configures everything, including the PocketBase URL.
+**For Pi deployment:** Use `../scripts/install_pi.py` - it automatically builds and configures everything, including the PocketBase URL.
 
 **For development only:**
 ```bash
