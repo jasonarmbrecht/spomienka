@@ -36,7 +36,7 @@
   - Aspect-fit main image/video with blurred/stretch background.
   - Video playback via GStreamer; seekless looping for short clips (< configurable threshold).
   - LRU cache with configurable size limit; serve from disk when offline.
-  - Hot-reload playlist via PocketBase realtime WebSocket; fallback to cached playlist.
+  - Hot-reload playlist via PocketBase realtime SSE (Server-Sent Events); fallback to cached playlist.
   - Device-specific filters via `deviceScopes` field.
   - Background asset preloading for smooth transitions.
 

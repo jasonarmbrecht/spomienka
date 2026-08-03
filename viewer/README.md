@@ -9,12 +9,12 @@ Fullscreen digital frame slideshow client for Raspberry Pi. Fetches published me
 - **Blurred Backgrounds**: Aspect-fit images with stretched blurred backdrop
 - **Video Playback**: GStreamer-based video with seamless looping for short clips
 - **Offline Cache**: LRU cache with configurable size limit for offline operation
-- **Realtime Sync**: WebSocket subscription for instant playlist updates
+- **Realtime Sync**: Server-Sent Events (SSE) subscription for instant playlist updates
 - **Device Filtering**: Show media only scoped to this device via tags/deviceScopes
 
 ## Installation
 
-**For Pi deployment:** Use `../scripts/install_pi.sh` - it automatically:
+**For Pi deployment:** Use `../scripts/install_pi.py` - it automatically:
 - Installs Rust and all dependencies (SDL2, GStreamer, FFmpeg)
 - Builds the viewer in release mode
 - Generates `/etc/frame-viewer/config.toml` with PocketBase URL and credentials
@@ -58,7 +58,7 @@ Configuration is loaded from (in order of precedence):
 | `auth_email` | `AUTH_EMAIL` | (none) | PocketBase user email |
 | `auth_password` | `AUTH_PASSWORD` | (none) | PocketBase user password |
 | `auth_token` | `AUTH_TOKEN` | (none) | Direct PocketBase auth token |
-| `enable_realtime` | `ENABLE_REALTIME` | `true` | Enable WebSocket sync |
+| `enable_realtime` | `ENABLE_REALTIME` | `true` | Enable SSE sync |
 | `video_loop_threshold_sec` | `VIDEO_LOOP_THRESHOLD_SEC` | `30` | Videos shorter than this loop |
 | `shuffle` | `SHUFFLE` | `false` | Shuffle playlist order |
 
@@ -86,7 +86,7 @@ shuffle = true
 │                        Main Loop                             │
 │  ┌─────────┐  ┌──────────┐  ┌─────────┐  ┌───────────────┐  │
 │  │Renderer │  │  Video   │  │  Cache  │  │   Realtime    │  │
-│  │ (SDL2)  │  │(GStreamer)│ │  (LRU)  │  │  (WebSocket)  │  │
+│  │ (SDL2)  │  │(GStreamer)│ │  (LRU)  │  │     (SSE)     │  │
 │  └────┬────┘  └────┬─────┘  └────┬────┘  └───────┬───────┘  │
 │       │            │             │               │           │
 │       └────────────┴──────┬──────┴───────────────┘           │
@@ -109,7 +109,7 @@ shuffle = true
 - **video.rs**: GStreamer pipeline for video playback with seamless looping
 - **cache.rs**: LRU cache with download, eviction, and playlist persistence
 - **assets.rs**: Asset loading, preloading, texture creation
-- **realtime.rs**: PocketBase WebSocket subscription for live updates
+- **realtime.rs**: PocketBase SSE (Server-Sent Events) subscription for live updates
 
 ## Offline Mode
 

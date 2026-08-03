@@ -62,6 +62,9 @@ VIEWER_CONFIG = "/etc/frame-viewer/config.toml"
 VIEWER_CACHE = "/var/cache/frame-viewer"
 INSTALL_DIR = str(Path.home() / "spomienka")
 
+# Maps platform.machine() to PocketBase's release asset architecture suffix.
+PB_ARCH_MAP = {"aarch64": "arm64", "x86_64": "amd64", "armv7l": "armv7"}
+
 NONINTERACTIVE = os.environ.get("NONINTERACTIVE", "").lower() in ("y", "yes", "true", "1")
 
 
@@ -93,6 +96,155 @@ def require_cmd(name: str) -> None:
     if not shutil.which(name):
         console.print(f"[red]Missing required command: {name}. Aborting.[/red]")
         sys.exit(1)
+
+
+def is_mountpoint(path: str) -> bool:
+    return subprocess.run(["mountpoint", "-q", path]).returncode == 0
+
+
+# Filesystems that are never a real storage candidate (kernel/virtual mounts).
+_VIRTUAL_FSTYPES = {
+    "proc", "sysfs", "devtmpfs", "tmpfs", "cgroup", "cgroup2", "overlay",
+    "squashfs", "devpts", "mqueue", "debugfs", "tracefs", "configfs",
+    "fusectl", "binfmt_misc", "autofs", "pstore", "securityfs", "efivarfs", "ramfs",
+}
+_SYSTEM_MOUNT_PREFIXES = ("/boot", "/proc", "/sys", "/dev", "/run")
+
+
+def detect_candidate_mounts() -> list[dict]:
+    """Currently-mounted, non-system filesystems — read-only detection via findmnt.
+
+    Never partitions/formats anything; only lists what's already mounted.
+    """
+    result = subprocess.run(
+        ["findmnt", "-J", "-o", "TARGET,SOURCE,FSTYPE,SIZE"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        data = json.loads(result.stdout)
+    except Exception:
+        return []
+
+    def flatten(nodes):
+        for node in nodes:
+            yield node
+            yield from flatten(node.get("children", []))
+
+    candidates = []
+    for node in flatten(data.get("filesystems", [])):
+        target = node.get("target", "")
+        fstype = node.get("fstype", "")
+        if not target or fstype in _VIRTUAL_FSTYPES:
+            continue
+        if target == "/" or target in _SYSTEM_MOUNT_PREFIXES or target.startswith(
+            tuple(p + "/" for p in _SYSTEM_MOUNT_PREFIXES)
+        ):
+            continue
+        candidates.append(node)
+    return candidates
+
+
+def detect_unmounted_partitions() -> list[dict]:
+    """Plugged-in partitions with an existing filesystem that aren't mounted yet.
+
+    Read-only inspection via lsblk. Never formats — a partition with no
+    filesystem (empty FSTYPE) is excluded; the user must format it manually
+    (see docs/installer.md 'USB Storage Setup') before it will show up here.
+    """
+    result = subprocess.run(
+        ["lsblk", "-J", "-o", "NAME,PATH,SIZE,FSTYPE,LABEL,MOUNTPOINT,UUID"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return []
+    try:
+        data = json.loads(result.stdout)
+    except Exception:
+        return []
+
+    def flatten(nodes):
+        for node in nodes:
+            yield node
+            yield from flatten(node.get("children", []))
+
+    candidates = []
+    for node in flatten(data.get("blockdevices", [])):
+        fstype = node.get("fstype") or ""
+        mountpoint = node.get("mountpoint") or ""
+        uuid = node.get("uuid") or ""
+        if not fstype or fstype == "swap" or mountpoint or not uuid:
+            continue
+        candidates.append(node)
+    return candidates
+
+
+def auto_mount_partition(part: dict) -> str:
+    """Create a mount point, add a persistent fstab entry (if not already there), and mount now.
+
+    Only ever mounts an existing filesystem — never runs mkfs/fdisk.
+    """
+    mount_path = f"/mnt/spomienka-{part.get('name', 'disk')}"
+    run(["sudo", "mkdir", "-p", mount_path])
+    fstab = Path("/etc/fstab").read_text()
+    if part["uuid"] not in fstab:
+        fstab_line = f"UUID={part['uuid']} {mount_path} {part['fstype']} defaults,nofail 0 2"
+        run_shell(f"echo '{fstab_line}' | sudo tee -a /etc/fstab > /dev/null")
+    run(["sudo", "mount", "-a"], check=False)
+    return mount_path
+
+
+def pick_mount(label: str) -> str:
+    """Prompt for a mount point, offering a picker of detected drives as a shortcut.
+
+    Already-mounted filesystems are used as-is. Plugged-in, already-formatted,
+    unmounted partitions are mounted (fstab entry + `mount -a`) when selected.
+    Never partitions or formats anything itself.
+    """
+    if NONINTERACTIVE:
+        return ask_value(f"Mount point for {label} (leave blank to use the SD card)", default="")
+
+    mounted = detect_candidate_mounts()
+    unmounted = detect_unmounted_partitions()
+
+    if not mounted and not unmounted:
+        console.print(f"  No external drives detected for {label}.")
+        return ask_value(f"Mount point for {label} (leave blank to use the SD card)", default="")
+
+    console.print(f"  Detected drives for {label}:")
+    table = Table(show_header=True, box=None, padding=(0, 1))
+    table.add_column("#", style="bold")
+    table.add_column("Location")
+    table.add_column("Filesystem")
+    table.add_column("Size")
+    table.add_column("Status")
+
+    rows: list[tuple[str, dict]] = []
+    for c in mounted:
+        rows.append(("mounted", c))
+        table.add_row(str(len(rows)), c.get("target", ""), c.get("fstype", ""), c.get("size", ""), "mounted")
+    for c in unmounted:
+        rows.append(("unmounted", c))
+        table.add_row(str(len(rows)), c.get("path", ""), c.get("fstype", ""), c.get("size", ""), "not mounted yet")
+    console.print(table)
+
+    choice = ask_value(
+        f"Select a number for {label}, type a custom mount path, or leave blank for the SD card",
+        default="",
+    )
+    if choice.isdigit() and 1 <= int(choice) <= len(rows):
+        kind, node = rows[int(choice) - 1]
+        if kind == "mounted":
+            return node["target"]
+        with Status(f"Mounting {node['path']}…", console=console):
+            mount_path = auto_mount_partition(node)
+        if is_mountpoint(mount_path):
+            step_ok(f"Mounted {node['path']} at {mount_path}")
+            return mount_path
+        step_warn(f"Failed to mount {node['path']} automatically — falling back to manual entry")
+        return ask_value(f"Mount point for {label} (leave blank to use the SD card)", default="")
+    return choice
 
 
 def generate_password() -> str:
@@ -175,6 +327,19 @@ def api_put(url: str, payload: dict, token: str = "") -> dict:
     import urllib.request
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="PUT")
+    if token:
+        req.add_header("Authorization", token)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except Exception as e:
+        return {"_error": str(e)}
+
+
+def api_patch(url: str, payload: dict, token: str = "") -> dict:
+    import urllib.request
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="PATCH")
     if token:
         req.add_header("Authorization", token)
     try:
@@ -328,7 +493,10 @@ def main() -> None:
     # ── Architecture check ───────────────────────────────────────────────────
     arch = platform.machine()
     if arch != "aarch64":
-        step_warn(f"Expected aarch64; got {arch}")
+        if arch in PB_ARCH_MAP:
+            step_warn(f"Expected aarch64; got {arch} (PocketBase release available, but the viewer build target may still be wrong)")
+        else:
+            step_warn(f"Expected aarch64; got {arch} — no PocketBase release exists for this architecture")
         if not ask_yes_no("Continue anyway?", default=False):
             console.print("[red]Installation cancelled.[/red]")
             sys.exit(1)
@@ -389,7 +557,52 @@ def main() -> None:
     if admin_local:
         admin_port = int(ask_value("Admin UI port", default=str(ADMIN_PORT_DEFAULT)))
 
-    # Questions 7–10: Viewer config
+    # Question 7: Primary storage — PocketBase data + viewer cache on a
+    # separate mounted drive instead of the SD card. The installer does not
+    # partition/format drives itself — it only validates an existing mount.
+    primary_mount = pick_mount("PocketBase data + viewer cache")
+    if primary_mount:
+        if not is_mountpoint(primary_mount):
+            console.print(
+                f"[red]ERROR: '{primary_mount}' is not a mounted filesystem. "
+                f"Prepare and mount the drive first — see docs/installer.md "
+                f"'USB Storage Setup'. Aborting.[/red]"
+            )
+            sys.exit(1)
+        global PB_DATA_DIR, VIEWER_CACHE
+        PB_DATA_DIR = f"{primary_mount}/pocketbase"
+        VIEWER_CACHE = f"{primary_mount}/frame-viewer-cache"
+
+    # Question 8: Automatic PocketBase backups (built into PocketBase 0.25 —
+    # no custom backup scripting needed). Only offered for a locally-run PB.
+    backup_enabled = False
+    backup_cron = ""
+    backup_cron_max_keep = 0
+    backup_mount = ""
+    if pb_on_pi:
+        backup_enabled = ask_yes_no("Configure automatic PocketBase backups?", default=False)
+        if backup_enabled:
+            backup_freq = ask_value("Backup frequency (daily/weekly)", default="daily")
+            freq_map = {
+                "daily": ("0 3 * * *", 7),
+                "weekly": ("0 3 * * 0", 4),
+            }
+            if backup_freq not in freq_map:
+                step_warn(f"Unrecognized frequency '{backup_freq}' — defaulting to daily")
+                backup_freq = "daily"
+            backup_cron, backup_cron_max_keep = freq_map[backup_freq]
+
+            backup_mount = pick_mount("backup storage")
+            if backup_mount:
+                if not is_mountpoint(backup_mount):
+                    console.print(
+                        f"[red]ERROR: '{backup_mount}' is not a mounted filesystem. "
+                        f"Prepare and mount the drive first — see docs/installer.md "
+                        f"'USB Storage Setup'. Aborting.[/red]"
+                    )
+                    sys.exit(1)
+
+    # Questions 9–12: Viewer config
     device_id = ask_value("Device ID (leave blank to auto-create)", default="")
     device_key = ask_value("Device API key (leave blank to auto-create)", default="")
     interval_ms = int(ask_value("Slide interval (ms)", default="8000"))
@@ -455,7 +668,7 @@ def main() -> None:
         "libasound2-dev", "libxcb-shape0-dev", "libxcb-xfixes0-dev",
         "libsdl2-dev", "libsdl2-image-dev", "libsdl2-ttf-dev",
         "ffmpeg", "libgstreamer1.0-dev", "libgstreamer-plugins-base1.0-dev",
-        "gstreamer1.0-libav", "gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad",
+        "gstreamer1.0-plugins-base", "gstreamer1.0-libav", "gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad",
         "gstreamer1.0-plugins-ugly", "gstreamer1.0-alsa", "gstreamer1.0-tools",
         "exiftool", "curl", "unzip", "at", "expect",
         "libheif-examples",
@@ -521,9 +734,23 @@ def main() -> None:
             run(["sudo", "chown", f"{os.environ['USER']}:{os.environ['USER']}", f"{PB_DATA_DIR}/pb_migrations"])
         step_ok("Directories ready")
 
+        # Redirect PocketBase's built-in backups to the separate backup
+        # drive, if one was configured, via a symlink (ln -sfn is idempotent
+        # across reinstalls).
+        if backup_enabled and backup_mount:
+            with Status("Linking backup storage…", console=console):
+                run(["sudo", "mkdir", "-p", f"{backup_mount}/pocketbase-backups"])
+                run(["sudo", "chown", f"{os.environ['USER']}:{os.environ['USER']}", f"{backup_mount}/pocketbase-backups"])
+                run(["ln", "-sfn", f"{backup_mount}/pocketbase-backups", f"{PB_DATA_DIR}/backups"])
+            step_ok(f"Backups linked to {backup_mount}/pocketbase-backups")
+
         # Download PocketBase
+        pb_arch = PB_ARCH_MAP.get(arch)
+        if not pb_arch:
+            console.print(f"[red]ERROR: No PocketBase release available for architecture '{arch}'. Aborting.[/red]")
+            sys.exit(1)
         pb_zip = Path("/tmp/pb.zip")
-        pb_url = f"https://github.com/pocketbase/pocketbase/releases/download/v{PB_VERSION}/pocketbase_{PB_VERSION}_linux_arm64.zip"
+        pb_url = f"https://github.com/pocketbase/pocketbase/releases/download/v{PB_VERSION}/pocketbase_{PB_VERSION}_linux_{pb_arch}.zip"
         console.print(f"  Downloading PocketBase v{PB_VERSION}…")
         download_file(pb_url, pb_zip)
         run(["unzip", "-o", str(pb_zip), "-d", "/opt/pocketbase"])
@@ -558,10 +785,15 @@ def main() -> None:
             step_warn("Superuser creation failed — admin user creation will be skipped")
 
         # Systemd service (TLS terminated by Caddy, PocketBase always on plain HTTP)
+        pb_mounts = []
+        for m in (primary_mount, backup_mount if backup_enabled else ""):
+            if m and m not in pb_mounts:
+                pb_mounts.append(m)
+        pb_requires_mounts = f"\nRequiresMountsFor={' '.join(pb_mounts)}" if pb_mounts else ""
         service_content = f"""[Unit]
 Description=PocketBase
 After=network-online.target
-Wants=network-online.target
+Wants=network-online.target{pb_requires_mounts}
 
 [Service]
 ExecStart={PB_BIN_PATH} serve --http=0.0.0.0:{PB_PORT_DEFAULT} --dir {PB_DATA_DIR} --migrationsDir {PB_DATA_DIR}/pb_migrations --hooksDir {PB_DATA_DIR}/pb_hooks
@@ -596,8 +828,29 @@ WantedBy=multi-user.target
         if pb_ready:
             step_ok("PocketBase is ready")
 
+            if backup_enabled:
+                console.print()
+                console.print(Rule("[bold]Phase 5a — Backup Configuration[/bold]"))
+                console.print()
+
+                token = get_superuser_token(
+                    f"http://localhost:{PB_PORT_DEFAULT}", pb_superuser_email, pb_superuser_password
+                )
+                if token:
+                    resp = api_patch(
+                        f"http://localhost:{PB_PORT_DEFAULT}/api/settings",
+                        {"backups": {"cron": backup_cron, "cronMaxKeep": backup_cron_max_keep}},
+                        token,
+                    )
+                    if "_error" in resp:
+                        step_warn(f"Failed to configure automatic backups: {resp['_error']}")
+                    else:
+                        step_ok(f"Automatic backups scheduled ({backup_cron}, keeping {backup_cron_max_keep})")
+                else:
+                    step_warn("Could not authenticate as superuser — automatic backups not configured")
+
             console.print()
-            console.print(Rule("[bold]Phase 5a — Schema Import[/bold]"))
+            console.print(Rule("[bold]Phase 5b — Schema Import[/bold]"))
             console.print()
 
             schema_ok = import_schema_via_api(
@@ -611,7 +864,7 @@ WantedBy=multi-user.target
                 step_ok("Schema imported successfully")
 
                 console.print()
-                console.print(Rule("[bold]Phase 5b — Frame Admin User[/bold]"))
+                console.print(Rule("[bold]Phase 5c — Frame Admin User[/bold]"))
                 console.print()
 
                 frame_admin_email = "admin@frame.local"
@@ -722,9 +975,46 @@ WantedBy=multi-user.target
     console.print(Rule("[bold]Phase 7 — Viewer Build[/bold]"))
     console.print()
 
-    with Status("cargo build --release (this may take 5–15 min on first run)…", console=console):
-        run(["cargo", "build", "--release"], cwd=str(repo_root / "viewer"))
-    step_ok("Viewer built")
+    # cargo build --release compiles several native/bindgen-heavy crates
+    # (sdl2-sys, gstreamer-video-sys, ring via rustls-tls) — on a 4GB Pi 4
+    # running with the default job count (one per core) this can OOM or
+    # swap-thrash. Temporarily grow swap and cap build parallelism.
+    swapfile_conf = Path("/etc/dphys-swapfile")
+    original_swapsize: Optional[str] = None
+    swap_available = shutil.which("dphys-swapfile") is not None and swapfile_conf.exists()
+
+    if swap_available:
+        with Status("Growing swap for the build (dphys-swapfile)…", console=console):
+            conf_text = run(["sudo", "cat", str(swapfile_conf)], capture=True).stdout
+            for line in conf_text.splitlines():
+                if line.startswith("CONF_SWAPSIZE="):
+                    original_swapsize = line.split("=", 1)[1].strip()
+                    break
+            run(["sudo", "sed", "-i",
+                 "s/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/",
+                 str(swapfile_conf)])
+            run(["sudo", "dphys-swapfile", "swapoff"], check=False)
+            run(["sudo", "dphys-swapfile", "setup"], check=False)
+            run(["sudo", "dphys-swapfile", "swapon"], check=False)
+        step_ok("Swap temporarily increased to 2048MB for the build")
+    else:
+        step_warn("dphys-swapfile not found — skipping temporary swap increase")
+
+    try:
+        with Status("cargo build --release (this may take 15–25 min with limited parallelism)…", console=console):
+            run(["cargo", "build", "--release", "--jobs", "2"], cwd=str(repo_root / "viewer"))
+        step_ok("Viewer built")
+    finally:
+        if swap_available:
+            with Status("Restoring original swap size…", console=console):
+                restore_size = original_swapsize or "100"
+                run(["sudo", "sed", "-i",
+                     f"s/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE={restore_size}/",
+                     str(swapfile_conf)])
+                run(["sudo", "dphys-swapfile", "swapoff"], check=False)
+                run(["sudo", "dphys-swapfile", "setup"], check=False)
+                run(["sudo", "dphys-swapfile", "swapon"], check=False)
+            step_ok(f"Swap restored to {restore_size}MB")
 
     run(["sudo", "install", "-m", "0755",
          str(repo_root / "viewer" / "target" / "release" / VIEWER_BIN_NAME),
@@ -827,16 +1117,27 @@ device_api_key = "{device_key}"
     Path("/tmp/viewer-credentials").unlink(missing_ok=True)
     step_ok("Viewer credentials written to /etc/spomienka/viewer-credentials (mode 0600)")
 
+    # Headless/Lite kiosk boot: no desktop session owns the display, so the
+    # viewer targets KMSDRM directly and starts on multi-user.target rather
+    # than graphical.target (which Lite installs may never reach).
+    viewer_after = "network-online.target"
+    if pb_on_pi:
+        viewer_after += " pocketbase.service"
+
+    viewer_requires_mounts = f"\nRequiresMountsFor={primary_mount}" if primary_mount else ""
+
     viewer_service = f"""[Unit]
 Description=Frame Viewer
-After=network-online.target graphical.target
-Wants=network-online.target
+After={viewer_after}
+Wants=network-online.target{viewer_requires_mounts}
 
 [Service]
 Environment=RUST_LOG=info
+Environment=SDL_VIDEODRIVER=kmsdrm
 EnvironmentFile=/etc/spomienka/viewer-credentials
 ExecStart=/usr/local/bin/{VIEWER_BIN_NAME}
 WorkingDirectory={Path.home()}
+SupplementaryGroups=video render input
 Restart=on-failure
 RestartSec=5
 StartLimitIntervalSec=300
@@ -844,7 +1145,7 @@ StartLimitBurst=5
 User={os.environ['USER']}
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target
 """
     Path("/tmp/frame-viewer.service").write_text(viewer_service)
     run(["sudo", "mv", "/tmp/frame-viewer.service", "/etc/systemd/system/frame-viewer.service"])
@@ -861,6 +1162,11 @@ WantedBy=graphical.target
     pb_location = "local on this Pi" if pb_on_pi else "remote"
     admin_mode = f"local on this Pi (port {admin_port})" if admin_local else "not installed (deploy elsewhere)"
     tls_mode = "Caddy (tls internal — self-signed)" if (enable_tls and pb_on_pi) else "none (HTTP)"
+    primary_storage_mode = f"USB/external drive ({primary_mount})" if primary_mount else "SD card (default)"
+    if backup_enabled:
+        backup_mode = f"{backup_freq}, {backup_mount or PB_DATA_DIR + '/backups'}"
+    else:
+        backup_mode = "not configured"
 
     summary_table = Table(show_header=False, box=None, padding=(0, 1))
     summary_table.add_column("Key", style="bold", no_wrap=True)
@@ -870,6 +1176,8 @@ WantedBy=graphical.target
     summary_table.add_row("PocketBase", pb_location)
     summary_table.add_row("PocketBase URL (LAN)", pb_host_external)
     summary_table.add_row("PocketBase data dir", PB_DATA_DIR)
+    summary_table.add_row("Primary storage", primary_storage_mode)
+    summary_table.add_row("Backups", backup_mode)
     summary_table.add_row("HTTPS / TLS", tls_mode)
     summary_table.add_row("Admin UI", admin_mode)
     summary_table.add_row("Viewer binary", f"/usr/local/bin/{VIEWER_BIN_NAME}")
@@ -912,6 +1220,8 @@ WantedBy=graphical.target
         f"Install dir: {INSTALL_DIR}\n"
         f"PocketBase: {pb_location}\n"
         f"PocketBase URL: {pb_host_external}\n"
+        f"Primary storage: {primary_storage_mode}\n"
+        f"Backups: {backup_mode}\n"
         f"Admin UI: {admin_mode}\n"
         f"Viewer: /usr/local/bin/{VIEWER_BIN_NAME}\n"
         f"Config: {VIEWER_CONFIG}\n"
