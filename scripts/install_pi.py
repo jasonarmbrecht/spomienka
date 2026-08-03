@@ -87,9 +87,10 @@ NONINTERACTIVE = os.environ.get("NONINTERACTIVE", "").lower() in ("y", "yes", "t
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-def run(cmd: list[str], check: bool = True, capture: bool = False, env: Optional[dict] = None) -> subprocess.CompletedProcess:
+def run(cmd: list[str], check: bool = True, capture: bool = False, env: Optional[dict] = None,
+        cwd: Optional[str] = None) -> subprocess.CompletedProcess:
     merged_env = {**os.environ, **(env or {})}
-    return subprocess.run(cmd, check=check, capture_output=capture, text=True, env=merged_env)
+    return subprocess.run(cmd, check=check, capture_output=capture, text=True, env=merged_env, cwd=cwd)
 
 
 def run_shell(cmd: str, check: bool = True, capture: bool = False, env: Optional[dict] = None) -> subprocess.CompletedProcess:
