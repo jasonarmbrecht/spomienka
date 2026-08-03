@@ -17,13 +17,30 @@ Non-interactive env vars:
   REPO_BRANCH=main
 """
 
-# Bootstrap rich before any other imports
+# Bootstrap rich before any other imports. Raspberry Pi OS (Debian
+# Bookworm+) enforces PEP 668 and refuses a bare `pip install`, so fall back
+# to --break-system-packages, then to the apt package, before giving up.
 try:
     from rich.console import Console
 except ImportError:
     import subprocess, sys
-    subprocess.run([sys.executable, "-m", "pip", "install", "rich", "-q"], check=True)
-    from rich.console import Console
+    for _cmd in (
+        [sys.executable, "-m", "pip", "install", "--quiet", "rich"],
+        [sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages", "rich"],
+        ["sudo", "apt-get", "install", "-y", "python3-rich"],
+    ):
+        if subprocess.run(_cmd, check=False).returncode == 0:
+            break
+    try:
+        from rich.console import Console
+    except ImportError:
+        print(
+            "ERROR: could not install the 'rich' package (tried pip, "
+            "pip --break-system-packages, and apt). Install it manually, "
+            "e.g.: pip3 install --break-system-packages rich",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 import json
 import os
