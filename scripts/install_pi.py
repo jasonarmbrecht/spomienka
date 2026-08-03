@@ -960,9 +960,10 @@ WantedBy=multi-user.target
             run(["sudo", "npm", "install", "-g", "serve"])
         step_ok("serve installed")
 
-        # When Caddy is enabled the SPA is served from the same origin as the API,
-        # so we use the external HTTPS URL. Without TLS, use the internal HTTP URL.
-        vite_pb_url = pb_host_external if (enable_tls and pb_on_pi) else f"http://localhost:{PB_PORT_DEFAULT}" if pb_on_pi else pb_host_external
+        # The Admin SPA runs in a browser on a different machine (laptop/phone
+        # over LAN), so it must always target a URL reachable from there —
+        # never "localhost", which would resolve to the browser's own machine.
+        vite_pb_url = pb_host_external
         console.print(f"  Building admin SPA with [cyan]VITE_PB_URL={vite_pb_url}[/cyan]…")
         with Status("npm install…", console=console):
             run(["npm", "install"], cwd=str(repo_root / "admin"))
