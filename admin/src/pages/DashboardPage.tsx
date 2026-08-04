@@ -47,6 +47,26 @@ type MediaStats = {
   failedProcessing: number;
 };
 
+type BackupInfo = { name: string; timestamp: string | null };
+
+type SystemStatus = {
+  storageBytes: number | null;
+  backups: BackupInfo[];
+  software: { pocketbase?: string; ffmpeg?: string; exiftool?: string; hostOs?: string };
+};
+
+function formatBytes(bytes: number | null): string {
+  if (bytes === null) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
 function relativeTime(iso: string): string {
   const diffMin = (Date.now() - new Date(iso).getTime()) / 60_000;
   if (diffMin < 1) return "just now";
@@ -163,6 +183,7 @@ export function DashboardPage() {
   const [pendingPairings, setPendingPairings] = useState(0);
   const [recentMedia, setRecentMedia] = useState<MediaSummary[]>([]);
   const [recentApprovals, setRecentApprovals] = useState<ApprovalSummary[]>([]);
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -180,24 +201,27 @@ export function DashboardPage() {
       });
 
       if (isAdmin) {
-        const [devicesRes, approvalsRes, usersRes, pendingRes, recentMediaRes, recentApprovalsRes] = await Promise.all([
-          pb.collection("devices").getFullList<DeviceRecord>({ sort: "name", requestKey: null }),
-          pb.collection("media").getList(1, 1, { filter: "status='pending'", requestKey: null }),
-          pb.collection("users").getList(1, 1, { requestKey: null }),
-          pb.send("/api/spomienka/pending", { method: "GET" }).catch(() => []),
-          pb.collection("media").getList<MediaSummary>(1, 6, { sort: "-created", requestKey: null }),
-          pb.collection("approvals").getList<ApprovalSummary>(1, 6, {
-            sort: "-reviewedAt",
-            expand: "media",
-            requestKey: null,
-          }),
-        ]);
+        const [devicesRes, approvalsRes, usersRes, pendingRes, recentMediaRes, recentApprovalsRes, systemStatusRes] =
+          await Promise.all([
+            pb.collection("devices").getFullList<DeviceRecord>({ sort: "name", requestKey: null }),
+            pb.collection("media").getList(1, 1, { filter: "status='pending'", requestKey: null }),
+            pb.collection("users").getList(1, 1, { requestKey: null }),
+            pb.send("/api/spomienka/pending", { method: "GET" }).catch(() => []),
+            pb.collection("media").getList<MediaSummary>(1, 6, { sort: "-created", requestKey: null }),
+            pb.collection("approvals").getList<ApprovalSummary>(1, 6, {
+              sort: "-reviewedAt",
+              expand: "media",
+              requestKey: null,
+            }),
+            pb.send("/api/spomienka/system-status", { method: "GET" }).catch(() => null),
+          ]);
         setDevices(devicesRes);
         setPendingApprovals(approvalsRes.totalItems);
         setTotalUsers(usersRes.totalItems);
         setPendingPairings(Array.isArray(pendingRes) ? pendingRes.length : 0);
         setRecentMedia(recentMediaRes.items);
         setRecentApprovals(recentApprovalsRes.items);
+        setSystemStatus(systemStatusRes);
       }
     } catch (err) {
       showError(err, "Failed to load dashboard");
@@ -311,6 +335,59 @@ export function DashboardPage() {
                     </StructuredListBody>
                   </StructuredListWrapper>
                 )}
+              </div>
+            )}
+
+            {/* System: storage, backups, software versions */}
+            {isAdmin && systemStatus && (
+              <div>
+                <p className="cds--productive-heading-02" style={{ marginBottom: "0.75rem" }}>
+                  System
+                </p>
+                <Tile style={{ marginBottom: "1rem" }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "2rem" }}>
+                    <div>
+                      <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
+                        Storage used
+                      </span>
+                      <div style={{ fontWeight: 600 }}>{formatBytes(systemStatus.storageBytes)}</div>
+                    </div>
+                    <div>
+                      <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
+                        Backups
+                      </span>
+                      <div style={{ fontWeight: 600 }}>
+                        {systemStatus.backups.length === 0
+                          ? "Not configured"
+                          : `${systemStatus.backups.length} kept · last ${relativeTime(systemStatus.backups[0].timestamp || "")}`}
+                      </div>
+                    </div>
+                  </div>
+                </Tile>
+                <StructuredListWrapper>
+                  <StructuredListBody>
+                    <StructuredListRow>
+                      <StructuredListCell>Admin SPA</StructuredListCell>
+                      <StructuredListCell>{import.meta.env.VITE_APP_VERSION || "—"}</StructuredListCell>
+                    </StructuredListRow>
+                    <StructuredListRow>
+                      <StructuredListCell>PocketBase</StructuredListCell>
+                      <StructuredListCell>{systemStatus.software.pocketbase || "—"}</StructuredListCell>
+                    </StructuredListRow>
+                    <StructuredListRow>
+                      <StructuredListCell>ffmpeg</StructuredListCell>
+                      <StructuredListCell>{systemStatus.software.ffmpeg || "—"}</StructuredListCell>
+                    </StructuredListRow>
+                    <StructuredListRow>
+                      <StructuredListCell>exiftool</StructuredListCell>
+                      <StructuredListCell>{systemStatus.software.exiftool || "—"}</StructuredListCell>
+                    </StructuredListRow>
+                    <StructuredListRow>
+                      <StructuredListCell>Backend host OS</StructuredListCell>
+                      <StructuredListCell>{systemStatus.software.hostOs || "—"}</StructuredListCell>
+                    </StructuredListRow>
+                  </StructuredListBody>
+                </StructuredListWrapper>
               </div>
             )}
 
