@@ -825,5 +825,53 @@
     "createRule": null,
     "updateRule": null,
     "deleteRule": null
+  },
+  {
+    "id": "di7k2m9p4q1r6nx",
+    "name": "device_inbox",
+    "type": "base",
+    "system": false,
+    "fields": [
+      {
+        "id": "di_device_id",
+        "name": "device_id",
+        "type": "text",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "di_type",
+        "name": "type",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "di_payload",
+        "name": "payload",
+        "type": "json",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "maxSize": 1048576
+      }
+    ],
+    "indexes": [],
+    "listRule": "",
+    "viewRule": "",
+    "createRule": "@request.auth.role = 'admin'",
+    "updateRule": null,
+    "deleteRule": "@request.auth.role = 'admin'"
   }
 ]
