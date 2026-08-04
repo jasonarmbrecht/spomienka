@@ -181,6 +181,19 @@ routerAdd("POST", "/api/spomienka/device-heartbeat", (e) => {
         }
 
         device.set("lastSeen", new Date().toISOString());
+
+        // Telemetry is self-reported and best-effort — an older viewer binary
+        // that doesn't send it, or a malformed payload, should never fail the
+        // heartbeat (lastSeen staying fresh matters far more than telemetry).
+        const telemetry = body.telemetry;
+        if (telemetry && typeof telemetry === "object" && !Array.isArray(telemetry)) {
+            try {
+                device.set("telemetry", telemetry);
+            } catch (err) {
+                console.error("device-heartbeat: failed to store telemetry:", String(err));
+            }
+        }
+
         $app.save(device);
 
         e.json(200, { status: "ok" });

@@ -490,6 +490,56 @@ struct DeviceAuthResponse {
     config: serde_json::Value,
 }
 
+/// Telemetry reported on each heartbeat — process uptime/version, host OS, and
+/// lightweight process/system resource usage. Read directly from /proc rather
+/// than pulling in a dependency like `sysinfo`, since Linux/proc is the only
+/// target platform this viewer runs on.
+struct Telemetry {
+    version: &'static str,
+    uptime_secs: u64,
+    os_version: Option<String>,
+    cpu_percent: Option<f64>,
+    rss_bytes: Option<u64>,
+    mem_available_bytes: Option<u64>,
+}
+
+/// (utime + stime) in clock ticks from /proc/self/stat, or None on any parse failure.
+fn read_process_cpu_ticks() -> Option<u64> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // The comm field (2nd field) is parenthesized and may itself contain spaces,
+    // so split on the last ')' and index the remaining whitespace-separated fields
+    // from there. utime/stime are the 14th/15th fields overall (12th/13th after comm).
+    let after_comm = stat.rsplit_once(')')?.1;
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    let utime: u64 = fields.get(11)?.parse().ok()?;
+    let stime: u64 = fields.get(12)?.parse().ok()?;
+    Some(utime + stime)
+}
+
+fn read_process_rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status.lines().find_map(|line| {
+        let kb: u64 = line.strip_prefix("VmRSS:")?.trim().split_whitespace().next()?.parse().ok()?;
+        Some(kb * 1024)
+    })
+}
+
+fn read_mem_available_bytes() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    meminfo.lines().find_map(|line| {
+        let kb: u64 = line.strip_prefix("MemAvailable:")?.trim().split_whitespace().next()?.parse().ok()?;
+        Some(kb * 1024)
+    })
+}
+
+fn read_os_version() -> Option<String> {
+    let release = std::fs::read_to_string("/etc/os-release").ok()?;
+    release
+        .lines()
+        .find_map(|line| line.strip_prefix("PRETTY_NAME="))
+        .map(|v| v.trim_matches('"').to_string())
+}
+
 /// Authenticate as a device using device_id + device_api_key.
 /// Updates lastSeen on the backend and returns device config.
 async fn device_auth(
@@ -509,6 +559,10 @@ async fn device_auth(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Captured as early as possible so the heartbeat's uptimeSecs reflects true
+    // process age, not just time since the discovery/config-loading branches above.
+    let process_start = Instant::now();
+
     // Initialize logging
     tracing_subscriber::registry()
         .with(fmt::layer())
@@ -698,11 +752,53 @@ async fn main() -> Result<()> {
             .unwrap_or_default();
         let pb_url = state.config.pb_url.clone();
         tokio::spawn(async move {
+            // CPU% is a delta since the previous heartbeat, not instantaneous — the
+            // first heartbeat after startup has no prior sample to diff against, so
+            // it's sent as null and only starts populating from the second heartbeat.
+            let mut last_cpu_sample: Option<(u64, Instant)> = None;
+            let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+
             loop {
                 tokio::time::sleep(Duration::from_secs(90)).await;
+
+                let cpu_percent = read_process_cpu_ticks().and_then(|ticks| {
+                    let now = Instant::now();
+                    let percent = last_cpu_sample.and_then(|(prev_ticks, prev_instant)| {
+                        let secs_delta = now.duration_since(prev_instant).as_secs_f64();
+                        if secs_delta > 0.0 && clk_tck > 0.0 {
+                            let tick_delta = ticks.saturating_sub(prev_ticks) as f64;
+                            Some((tick_delta / clk_tck / secs_delta) * 100.0)
+                        } else {
+                            None
+                        }
+                    });
+                    last_cpu_sample = Some((ticks, now));
+                    percent
+                });
+
+                let telemetry = Telemetry {
+                    version: env!("CARGO_PKG_VERSION"),
+                    uptime_secs: process_start.elapsed().as_secs(),
+                    os_version: read_os_version(),
+                    cpu_percent,
+                    rss_bytes: read_process_rss_bytes(),
+                    mem_available_bytes: read_mem_available_bytes(),
+                };
+
                 match hb_client
                     .post(format!("{}/api/spomienka/device-heartbeat", pb_url))
-                    .json(&serde_json::json!({ "device_id": device_id, "api_key": api_key }))
+                    .json(&serde_json::json!({
+                        "device_id": device_id,
+                        "api_key": api_key,
+                        "telemetry": {
+                            "version": telemetry.version,
+                            "uptimeSecs": telemetry.uptime_secs,
+                            "osVersion": telemetry.os_version,
+                            "cpuPercent": telemetry.cpu_percent,
+                            "rssBytes": telemetry.rss_bytes,
+                            "memAvailableBytes": telemetry.mem_available_bytes,
+                        },
+                    }))
                     .send()
                     .await
                 {

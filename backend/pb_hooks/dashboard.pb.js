@@ -81,5 +81,39 @@ routerAdd("GET", "/api/spomienka/system-status", (e) => {
         console.error("system-status: /etc/os-release read failed:", String(err));
     }
 
-    e.json(200, { storageBytes, backups, software });
+    // Systemd service status/uptime for the three services this app runs as.
+    // ActiveEnterTimestamp comes back as a human string (e.g. "Tue 2026-08-04
+    // 23:31:40 CEST") that's unreliable to parse in JS across timezone
+    // abbreviations, so `date` (running in the same environment that produced
+    // it) converts it to a real UTC ISO timestamp instead.
+    const SERVICE_UNITS = ["pocketbase", "frame-admin", "frame-viewer"];
+    const services = SERVICE_UNITS.map((name) => {
+        try {
+            const out = utils.execCommand("systemctl", [
+                "show", name,
+                "--property=ActiveState,SubState,ActiveEnterTimestamp",
+                "--value",
+            ]);
+            const lines = out.split("\n");
+            const activeState = (lines[0] || "").trim();
+            const subState = (lines[1] || "").trim();
+            const rawTimestamp = (lines[2] || "").trim();
+
+            let since = null;
+            if (rawTimestamp) {
+                try {
+                    since = utils.execCommand("date", ["-d", rawTimestamp, "-u", "+%Y-%m-%dT%H:%M:%SZ"]).trim();
+                } catch (err) {
+                    console.error(`system-status: date parse failed for ${name}:`, String(err));
+                }
+            }
+
+            return { name, active: activeState === "active", state: subState || activeState, since };
+        } catch (err) {
+            console.error(`system-status: systemctl show failed for ${name}:`, String(err));
+            return { name, active: false, state: "unknown", since: null };
+        }
+    });
+
+    e.json(200, { storageBytes, backups, software, services });
 }, $apis.requireAuth());

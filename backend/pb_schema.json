@@ -602,6 +602,16 @@
         "presentable": false,
         "hidden": false,
         "maxSize": 1048576
+      },
+      {
+        "id": "json_telemetry",
+        "name": "telemetry",
+        "type": "json",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "maxSize": 1048576
       }
     ],
     "indexes": [
