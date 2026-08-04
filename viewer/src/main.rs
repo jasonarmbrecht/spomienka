@@ -519,7 +519,12 @@ fn read_process_cpu_ticks() -> Option<u64> {
 fn read_process_rss_bytes() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     status.lines().find_map(|line| {
-        let kb: u64 = line.strip_prefix("VmRSS:")?.trim().split_whitespace().next()?.parse().ok()?;
+        let kb: u64 = line
+            .strip_prefix("VmRSS:")?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()?;
         Some(kb * 1024)
     })
 }
@@ -527,7 +532,12 @@ fn read_process_rss_bytes() -> Option<u64> {
 fn read_mem_available_bytes() -> Option<u64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
     meminfo.lines().find_map(|line| {
-        let kb: u64 = line.strip_prefix("MemAvailable:")?.trim().split_whitespace().next()?.parse().ok()?;
+        let kb: u64 = line
+            .strip_prefix("MemAvailable:")?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()?;
         Some(kb * 1024)
     })
 }
