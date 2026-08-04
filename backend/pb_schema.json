@@ -467,8 +467,8 @@
       "CREATE INDEX idx_media_owner ON media (owner)",
       "CREATE INDEX idx_media_tags ON media (tags)"
     ],
-    "listRule": "status = 'published'",
-    "viewRule": "status = 'published'",
+    "listRule": "status = 'published' || @request.auth.role = 'admin'",
+    "viewRule": "status = 'published' || @request.auth.role = 'admin'",
     "createRule": "@request.auth.id != ''",
     "updateRule": "@request.auth.role = 'admin' || owner = @request.auth.id && status = 'pending'",
     "deleteRule": "@request.auth.role = 'admin'"
@@ -596,6 +596,16 @@
       {
         "id": "d_cfg",
         "name": "config",
+        "type": "json",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "maxSize": 1048576
+      },
+      {
+        "id": "json_telemetry",
+        "name": "telemetry",
         "type": "json",
         "system": false,
         "required": false,

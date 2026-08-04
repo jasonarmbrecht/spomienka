@@ -23,14 +23,9 @@ import {
   FilterRemove,
 } from "@carbon/icons-react";
 import type { DeviceRecord } from "../types/pocketbase";
+import { isDeviceOnline } from "../utils";
 
-const ACTIVE_THRESHOLD_MS = 3 * 60 * 1000;
 const PAUSE_SECS = 300; // 5 minutes
-
-function isOnline(device: DeviceRecord): boolean {
-  if (!device.lastSeen) return false;
-  return Date.now() - new Date(device.lastSeen).getTime() < ACTIVE_THRESHOLD_MS;
-}
 
 function formatCountdown(secs: number): string {
   const m = Math.floor(secs / 60);
@@ -176,14 +171,14 @@ export function ViewerControlPage() {
   };
 
   const selectedDevice = devices.find((d) => d.id === selectedId);
-  const online = selectedDevice ? isOnline(selectedDevice) : false;
+  const online = selectedDevice ? isDeviceOnline(selectedDevice.lastSeen) : false;
   const isPaused = pauseSecs !== null;
 
   return (
     <Grid>
-      <Column sm={4} md={8} lg={8} xlg={6}>
-        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem", padding: "1.5rem 0" }}>
-          <Heading style={{ fontSize: "1.5rem" }}>Viewer Control</Heading>
+      <Column sm={4} md={8} lg={8}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+          <Heading>Viewer Control</Heading>
 
           {error && (
             <InlineNotification
@@ -306,11 +301,7 @@ export function ViewerControlPage() {
                 onClick={handleToggleInfo}
                 disabled={!selectedId || sending === "toggle-info"}
               >
-                {sending === "toggle-info"
-                  ? "…"
-                  : infoOverlayOn
-                  ? "Hide All Details"
-                  : "Show All Details"}
+                {sending === "toggle-info" ? "…" : "Show All Details"}
               </Button>
               <Button
                 kind={locationOverlayOn ? "primary" : "secondary"}
@@ -319,11 +310,7 @@ export function ViewerControlPage() {
                 onClick={handleToggleLocationInfo}
                 disabled={!selectedId || sending === "toggle-location-info"}
               >
-                {sending === "toggle-location-info"
-                  ? "…"
-                  : locationOverlayOn
-                  ? "Hide Location & Date"
-                  : "Show Location & Date"}
+                {sending === "toggle-location-info" ? "…" : "Show Location & Date"}
               </Button>
             </div>
           </Tile>

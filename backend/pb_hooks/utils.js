@@ -529,6 +529,8 @@ function processApproval(approval, status, mediaId, reviewerId) {
 
 module.exports = {
     PROCESS_DIR,
+    FFMPEG,
+    EXIFTOOL,
     checkRateLimit,
     escapeFilterValue,
     validateStringArray,

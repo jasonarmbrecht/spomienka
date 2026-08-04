@@ -4,6 +4,7 @@ import { RouterProvider, createBrowserRouter } from "react-router-dom";
 import "@carbon/styles/index.scss";
 import App from "./App";
 import { LoginPage } from "./pages/LoginPage";
+import { DashboardPage } from "./pages/DashboardPage";
 import { UploadPage } from "./pages/UploadPage";
 import { ApprovalsPage } from "./pages/ApprovalsPage";
 import { LibraryPage } from "./pages/LibraryPage";
@@ -18,7 +19,7 @@ const router = createBrowserRouter([
     path: "/",
     element: <App />,
     children: [
-      { path: "/", element: <RequireAuth redirect="/login"><UploadPage /></RequireAuth> },
+      { path: "/", element: <RequireAuth redirect="/login"><DashboardPage /></RequireAuth> },
       { path: "/upload", element: <RequireAuth redirect="/login"><UploadPage /></RequireAuth> },
       { path: "/approvals", element: <RequireAdmin redirect="/login"><ApprovalsPage /></RequireAdmin> },
       { path: "/library", element: <RequireAuth redirect="/login"><LibraryPage /></RequireAuth> },

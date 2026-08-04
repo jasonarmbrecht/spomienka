@@ -141,98 +141,95 @@ export function UploadPage() {
 
   return (
     <Grid>
-      <Column sm={4} md={8} lg={16}>
+      <Column sm={4} md={8} lg={8}>
         <Heading style={{ marginBottom: "1.5rem" }}>Upload</Heading>
-        <Grid className="cds--grid--no-gutter" style={{ margin: 0 }}>
-          <Column sm={4} md={6} lg={10}>
-            <form onSubmit={onSubmit}>
-              <Stack gap={6}>
-                <div>
-                  <FileUploaderDropContainer
-                    labelText={
-                      <>
-                        <Upload size={32} style={{ display: "block", margin: "0 auto 0.5rem" }} />
-                        Drag and drop files here, or click to select
-                        <br />
-                        <span style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}>
-                          Supports images and videos (max {MAX_FILE_SIZE_DISPLAY} per file)
-                        </span>
-                      </>
-                    }
-                    multiple
-                    accept={[...ALLOWED_IMAGE_TYPES, ...ALLOWED_VIDEO_TYPES]}
-                    onAddFiles={(_e, { addedFiles }) => handleFiles(addedFiles)}
-                    style={{ width: "100%", minHeight: "120px", display: "flex", alignItems: "center", justifyContent: "center" }}
-                  />
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*,video/*"
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                      if (e.target.files) handleFiles(Array.from(e.target.files));
-                    }}
-                    multiple
-                    style={{ display: "none" }}
-                  />
-                </div>
+        <form onSubmit={onSubmit}>
+          <Stack gap={6}>
+            <div>
+              <FileUploaderDropContainer
+                labelText={
+                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.375rem" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
+                      <Upload size={20} />
+                      Drag and drop files here, or click to select
+                    </span>
+                    <span style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}>
+                      Supports images and videos (max {MAX_FILE_SIZE_DISPLAY} per file)
+                    </span>
+                  </span>
+                }
+                multiple
+                accept={[...ALLOWED_IMAGE_TYPES, ...ALLOWED_VIDEO_TYPES]}
+                onAddFiles={(_e, { addedFiles }) => handleFiles(addedFiles)}
+                style={{ width: "100%", maxWidth: "none", minHeight: "120px", display: "flex", alignItems: "center", justifyContent: "center" }}
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,video/*"
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  if (e.target.files) handleFiles(Array.from(e.target.files));
+                }}
+                multiple
+                style={{ display: "none" }}
+              />
+            </div>
 
-                {files.length > 0 && (
-                  <div>
-                    <p style={{ marginBottom: "0.5rem", fontWeight: 500 }}>
-                      Selected Files ({files.length})
-                    </p>
-                    {files.map(({ id, file }) => {
-                      const progress = uploadProgress[id];
-                      const uploaderStatus =
-                        progress?.status === "success"
-                          ? "complete"
-                          : progress?.status === "error"
-                          ? "edit"
-                          : progress?.status === "uploading"
-                          ? "uploading"
-                          : "edit";
-                      return (
-                        // Carbon's FileUploaderItem hardcodes max-inline-size: 20rem on
-                        // its root element (.cds--file__selected-file); cap this wrapper
-                        // to match so the ProgressBar below it doesn't stretch wider.
-                        <div key={id} style={{ marginBottom: "0.5rem", maxWidth: "20rem" }}>
-                          <FileUploaderItem
-                            name={file.name}
-                            status={uploaderStatus}
-                            errorSubject={progress?.error}
-                            onDelete={() => removeFile(id)}
-                            uuid={id}
-                          />
-                          {progress?.status === "uploading" && (
-                            <InlineLoading
-                              status="active"
-                              description={
-                                file.type.startsWith("video/")
-                                  ? "Processing video — this can take a few minutes on this device..."
-                                  : "Processing..."
-                              }
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+            {files.length > 0 && (
+              <div>
+                <p style={{ marginBottom: "0.5rem", fontWeight: 500 }}>
+                  Selected Files ({files.length})
+                </p>
+                {files.map(({ id, file }) => {
+                  const progress = uploadProgress[id];
+                  const uploaderStatus =
+                    progress?.status === "success"
+                      ? "complete"
+                      : progress?.status === "error"
+                      ? "edit"
+                      : progress?.status === "uploading"
+                      ? "uploading"
+                      : "edit";
+                  return (
+                    // Carbon's FileUploaderItem hardcodes max-inline-size: 20rem on
+                    // its root element (.cds--file__selected-file); cap this wrapper
+                    // to match so the ProgressBar below it doesn't stretch wider.
+                    <div key={id} style={{ marginBottom: "0.5rem", maxWidth: "20rem" }}>
+                      <FileUploaderItem
+                        name={file.name}
+                        status={uploaderStatus}
+                        errorSubject={progress?.error}
+                        onDelete={() => removeFile(id)}
+                        uuid={id}
+                      />
+                      {progress?.status === "uploading" && (
+                        <InlineLoading
+                          status="active"
+                          description={
+                            file.type.startsWith("video/")
+                              ? "Processing video — this can take a few minutes on this device..."
+                              : "Processing..."
+                          }
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
-                <Button
-                  type="submit"
-                  kind="primary"
-                  disabled={files.length === 0 || isUploading}
-                >
-                  {isUploading
-                    ? "Uploading..."
-                    : `Upload${files.length > 0 ? ` ${files.length} file${files.length > 1 ? "s" : ""}` : ""}`}
-                </Button>
-              </Stack>
-            </form>
-            <Notification error={error} message={message} />
-          </Column>
-        </Grid>
+            <Button
+              type="submit"
+              kind="primary"
+              disabled={files.length === 0 || isUploading}
+            >
+              {isUploading
+                ? "Uploading..."
+                : `Upload${files.length > 0 ? ` ${files.length} file${files.length > 1 ? "s" : ""}` : ""}`}
+            </Button>
+          </Stack>
+        </form>
+        <Notification error={error} message={message} />
       </Column>
     </Grid>
   );
