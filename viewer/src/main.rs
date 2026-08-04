@@ -1330,6 +1330,24 @@ async fn run_render_loop(
             if let Some(next) = next_panel3_textures.take() {
                 panel3_textures = next;
             }
+
+            // Video playback for an animated-transition slide is deferred
+            // until the swap actually lands here (see advance_to_next) so
+            // its first decoded frames land in current_textures.display
+            // only once that texture really is the new item -- not while it
+            // still holds the outgoing image mid-fade.
+            let playlist = state.playlist.read().await;
+            let index = *state.current_index.read().await;
+            if let Some(media) = playlist.get(index).cloned() {
+                drop(playlist);
+                let cache = state.cache.read().await;
+                start_video_if_applicable(
+                    &media,
+                    &cache,
+                    &mut video_manager,
+                    &mut is_video_playing,
+                );
+            }
         }
 
         // Check if it's time to advance (for images, on the fixed interval).
@@ -2173,7 +2191,8 @@ async fn advance_to_next<'a>(
         }
     }
 
-    match Transition::from_str(&state.config.transition) {
+    let transition = Transition::from_str(&state.config.transition);
+    match transition {
         Transition::Cut => {
             if let Some(next) = next_textures.take() {
                 *current_textures = next;
@@ -2199,7 +2218,16 @@ async fn advance_to_next<'a>(
     let mut cache = state.cache.write().await;
     cache.touch(&media.id, AssetType::Display);
 
-    start_video_if_applicable(media, &cache, video_manager, is_video_playing);
+    // For Cut, current_textures already holds the new item, so it's safe to
+    // start decoding now. For animated transitions the swap above hasn't
+    // happened yet -- current_textures still displays the outgoing item, and
+    // starting playback here would feed the new video's frames into that
+    // texture mid-fade (a frame or two at the wrong opacity, then a snap to
+    // black when the real swap arrives). Starting it is deferred to the
+    // `should_swap` point in the render loop instead.
+    if transition == Transition::Cut {
+        start_video_if_applicable(media, &cache, video_manager, is_video_playing);
+    }
 
     Ok(())
 }
