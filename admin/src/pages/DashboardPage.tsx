@@ -235,35 +235,35 @@ export function DashboardPage() {
         ) : (
           <Stack gap={6}>
             {/* Row 1: primary stat tiles */}
-            <Grid className="cds--grid--no-gutter" style={{ margin: 0 }}>
-              <Column sm={4} md={4} lg={4} style={{ marginBottom: "1rem" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem" }}>
+              <div style={{ flex: "1 1 200px", minWidth: 0 }}>
                 <StatTile
                   label="Media Library"
                   value={mediaStats?.total ?? 0}
                   sublabel={`${mediaStats?.images ?? 0} images · ${mediaStats?.videos ?? 0} videos`}
                   to="/library"
                 />
-              </Column>
+              </div>
               {isAdmin && (
-                <Column sm={4} md={4} lg={4} style={{ marginBottom: "1rem" }}>
+                <div style={{ flex: "1 1 200px", minWidth: 0 }}>
                   <StatTile
                     label="Viewers Online"
                     value={`${onlineCount} / ${devices.length}`}
                     to="/viewer-control"
                   />
-                </Column>
+                </div>
               )}
               {isAdmin && (
-                <Column sm={4} md={4} lg={4} style={{ marginBottom: "1rem" }}>
+                <div style={{ flex: "1 1 200px", minWidth: 0 }}>
                   <StatTile
                     label="Pending Approvals"
                     value={pendingApprovals}
                     warn={pendingApprovals > 0}
                     to="/approvals"
                   />
-                </Column>
+                </div>
               )}
-            </Grid>
+            </div>
 
             {/* Row 2: chip strip */}
             {isAdmin && (
@@ -324,8 +324,8 @@ export function DashboardPage() {
 
             {/* Recent activity */}
             {isAdmin && (
-              <Grid className="cds--grid--no-gutter" style={{ margin: 0 }}>
-                <Column sm={4} md={8} lg={8} style={{ marginBottom: "1rem" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "2rem" }}>
+                <div style={{ flex: "1 1 320px", minWidth: 0 }}>
                   <p className="cds--productive-heading-02" style={{ marginBottom: "0.75rem" }}>
                     Recent Uploads
                   </p>
@@ -334,20 +334,20 @@ export function DashboardPage() {
                   ) : (
                     <Stack gap={3}>
                       {recentMedia.map((m) => (
-                        <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "0.5rem", minWidth: 0 }}>
                           {m.type === "video" ? <VideoIcon size={16} /> : <ImageIcon size={16} />}
-                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {m.title || m.file}
                           </span>
-                          <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)", whiteSpace: "nowrap" }}>
+                          <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)", whiteSpace: "nowrap", flexShrink: 0 }}>
                             {relativeTime(m.created)}
                           </span>
                         </div>
                       ))}
                     </Stack>
                   )}
-                </Column>
-                <Column sm={4} md={8} lg={8} style={{ marginBottom: "1rem" }}>
+                </div>
+                <div style={{ flex: "1 1 320px", minWidth: 0 }}>
                   <p className="cds--productive-heading-02" style={{ marginBottom: "0.75rem" }}>
                     Recent Approvals
                   </p>
@@ -356,22 +356,22 @@ export function DashboardPage() {
                   ) : (
                     <Stack gap={3}>
                       {recentApprovals.map((a) => (
-                        <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "0.5rem", minWidth: 0 }}>
                           <Tag type={a.status === "approved" ? "green" : "red"} size="sm">
                             {a.status}
                           </Tag>
-                          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {a.expand?.media?.title || a.expand?.media?.file || "Deleted item"}
                           </span>
-                          <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)", whiteSpace: "nowrap" }}>
+                          <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)", whiteSpace: "nowrap", flexShrink: 0 }}>
                             {a.reviewedAt ? relativeTime(a.reviewedAt) : ""}
                           </span>
                         </div>
                       ))}
                     </Stack>
                   )}
-                </Column>
-              </Grid>
+                </div>
+              </div>
             )}
 
             {/* Quick actions */}
