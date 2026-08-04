@@ -295,8 +295,14 @@ impl<'ttf> Renderer<'ttf> {
         // value if the driver reports 0 (unknown).
         let renderer_info = canvas.info();
         let max_texture_dim = {
-            let reported = renderer_info.max_texture_width.min(renderer_info.max_texture_height);
-            if reported == 0 { 4096 } else { reported }
+            let reported = renderer_info
+                .max_texture_width
+                .min(renderer_info.max_texture_height);
+            if reported == 0 {
+                4096
+            } else {
+                reported
+            }
         };
         tracing::info!("Max GPU texture dimension: {}", max_texture_dim);
 
@@ -794,15 +800,27 @@ impl<'ttf> Renderer<'ttf> {
                 // Use sensible default ratios when sizes are not yet loaded.
                 let r_p = {
                     let (pw, ph) = sizes[0].unwrap_or((2, 3)); // typical portrait
-                    if ph == 0 { 0.667_f64 } else { pw as f64 / ph as f64 }
+                    if ph == 0 {
+                        0.667_f64
+                    } else {
+                        pw as f64 / ph as f64
+                    }
                 };
                 let r1 = {
                     let (w, h) = sizes[1].unwrap_or((3, 2)); // typical landscape
-                    if h == 0 { 1.5_f64 } else { w as f64 / h as f64 }
+                    if h == 0 {
+                        1.5_f64
+                    } else {
+                        w as f64 / h as f64
+                    }
                 };
                 let r2 = {
                     let (w, h) = sizes[2].unwrap_or((3, 2));
-                    if h == 0 { 1.5_f64 } else { w as f64 / h as f64 }
+                    if h == 0 {
+                        1.5_f64
+                    } else {
+                        w as f64 / h as f64
+                    }
                 };
 
                 let sum_inv_r = 1.0 / r1 + 1.0 / r2;
@@ -810,8 +828,8 @@ impl<'ttf> Renderer<'ttf> {
                 //   col_w = sw - GAP - total_col_h * r_p
                 //   h_top + h_bot + GAP = total_col_h  (landscapes fill column naturally)
                 // => total_col_h * (1 + r_p * sum_inv_r) = (sw - GAP) * sum_inv_r + GAP
-                let natural_h = ((sw as f64 - GAP as f64) * sum_inv_r + GAP as f64)
-                    / (1.0 + r_p * sum_inv_r);
+                let natural_h =
+                    ((sw as f64 - GAP as f64) * sum_inv_r + GAP as f64) / (1.0 + r_p * sum_inv_r);
 
                 // Clamp: scale down to sh if too tall; scale up if unused > 25%, with 1.2× cap.
                 let target_h = if natural_h > sh as f64 {
@@ -843,8 +861,8 @@ impl<'ttf> Renderer<'ttf> {
 
                 let total_col_h = target_h.round() as u32;
                 // Always derive portrait_w and col_w from total_col_h so their sum = sw - GAP.
-                let portrait_w = ((target_h * r_p).round() as i32)
-                    .clamp(1, sw as i32 - GAP as i32 - 1) as u32;
+                let portrait_w =
+                    ((target_h * r_p).round() as i32).clamp(1, sw as i32 - GAP as i32 - 1) as u32;
                 let col_w = (sw as i32 - GAP as i32 - portrait_w as i32).max(1) as u32;
                 // Row heights: scale natural heights to fill total_col_h - GAP.
                 let h_top_n = (col_w as f64 / r1).max(1.0);
@@ -865,12 +883,22 @@ impl<'ttf> Renderer<'ttf> {
 
                 // Helper: cover-mode preferred; center-aligned contain as fallback.
                 // Centering ensures no directional bias when the image ratio doesn't match the cell.
-                let place = |iw: u32, ih: u32, bx: i32, by: i32, bw: u32, bh: u32| -> (Rect, Option<Rect>) {
-                    if let Some((dst, src)) = Self::fit_cover(iw, ih, bx, by, bw, bh, MAX_SCALE, MAX_CROP) {
+                let place = |iw: u32,
+                             ih: u32,
+                             bx: i32,
+                             by: i32,
+                             bw: u32,
+                             bh: u32|
+                 -> (Rect, Option<Rect>) {
+                    if let Some((dst, src)) =
+                        Self::fit_cover(iw, ih, bx, by, bw, bh, MAX_SCALE, MAX_CROP)
+                    {
                         return (dst, Some(src));
                     }
                     // Center-aligned contain: equal letterbox on both axes.
-                    if iw == 0 || ih == 0 { return (Rect::new(bx, by, bw.max(1), bh.max(1)), None); }
+                    if iw == 0 || ih == 0 {
+                        return (Rect::new(bx, by, bw.max(1), bh.max(1)), None);
+                    }
                     let img_r = iw as f64 / ih as f64;
                     let box_r = bw as f64 / bh as f64;
                     let (fw, fh) = if img_r > box_r {
@@ -889,7 +917,14 @@ impl<'ttf> Renderer<'ttf> {
                 let (land1_iw, land1_ih) = sizes[1].unwrap_or((col_w, h_top));
                 let (land2_iw, land2_ih) = sizes[2].unwrap_or((col_w, h_bot));
 
-                let portrait_rect = place(portrait_iw, portrait_ih, portrait_x, layout_y, portrait_w, total_col_h);
+                let portrait_rect = place(
+                    portrait_iw,
+                    portrait_ih,
+                    portrait_x,
+                    layout_y,
+                    portrait_w,
+                    total_col_h,
+                );
                 let land1 = place(land1_iw, land1_ih, col_x, layout_y, col_w, h_top);
                 let land2 = place(land2_iw, land2_ih, col_x, by_, col_w, h_bot);
 
@@ -910,7 +945,11 @@ impl<'ttf> Renderer<'ttf> {
 
                 let ratio = |i: usize| -> f64 {
                     let (w, h) = sizes[i].unwrap_or((1, 1));
-                    if h == 0 { 1.0 } else { w as f64 / h as f64 }
+                    if h == 0 {
+                        1.0
+                    } else {
+                        w as f64 / h as f64
+                    }
                 };
                 let r_tl = ratio(tl);
                 let r_bl = ratio(bl);
@@ -920,7 +959,8 @@ impl<'ttf> Renderer<'ttf> {
                 // Natural column widths proportional to geometric mean of each column's ratios.
                 let r_left = (r_tl * r_bl).sqrt();
                 let r_right = (r_tr * r_br).sqrt();
-                let w_left = ((sw as f64 - GAP as f64) * r_left / (r_left + r_right)).round() as u32;
+                let w_left =
+                    ((sw as f64 - GAP as f64) * r_left / (r_left + r_right)).round() as u32;
                 let w_right = sw.saturating_sub(GAP).saturating_sub(w_left);
 
                 // Natural row heights: average of each image's natural height at its column width.
@@ -937,10 +977,16 @@ impl<'ttf> Renderer<'ttf> {
                         // Scale up, capped at 1.2× for any image.
                         let cap = |h_natural: f64, slot: usize| -> f64 {
                             let ih = sizes[slot].map(|s| s.1 as f64).unwrap_or(h_natural);
-                            if ih == 0.0 { f64::MAX } else { MAX_SCALE as f64 * ih / h_natural }
+                            if ih == 0.0 {
+                                f64::MAX
+                            } else {
+                                MAX_SCALE as f64 * ih / h_natural
+                            }
                         };
-                        let max_s = cap(h_top_f, tl).min(cap(h_top_f, tr))
-                            .min(cap(h_bot_f, bl)).min(cap(h_bot_f, br))
+                        let max_s = cap(h_top_f, tl)
+                            .min(cap(h_top_f, tr))
+                            .min(cap(h_bot_f, bl))
+                            .min(cap(h_bot_f, br))
                             .min((sh as f64 - GAP as f64) / (h_top_f + h_bot_f));
                         max_s.max(1.0)
                     } else {
@@ -957,30 +1003,35 @@ impl<'ttf> Renderer<'ttf> {
                 let by_ = layout_y + h_top as i32 + GAP as i32;
 
                 // Helper: cover-mode preferred; center-aligned contain as fallback.
-                let place_cell = |slot: usize, bx: i32, by: i32, bw: u32, bh: u32| -> (Rect, Option<Rect>) {
-                    let (iw, ih) = sizes[slot].unwrap_or((bw, bh));
-                    if let Some((dst, src)) = Self::fit_cover(iw, ih, bx, by, bw, bh, MAX_SCALE, MAX_CROP) {
-                        return (dst, Some(src));
-                    }
-                    if iw == 0 || ih == 0 { return (Rect::new(bx, by, bw.max(1), bh.max(1)), None); }
-                    let img_r = iw as f64 / ih as f64;
-                    let box_r = bw as f64 / bh as f64;
-                    let (fw, fh) = if img_r > box_r {
-                        let fw = bw;
-                        (fw, ((bw as f64 / img_r).round() as u32).max(1))
-                    } else {
-                        let fh = bh;
-                        (((bh as f64 * img_r).round() as u32).max(1), fh)
+                let place_cell =
+                    |slot: usize, bx: i32, by: i32, bw: u32, bh: u32| -> (Rect, Option<Rect>) {
+                        let (iw, ih) = sizes[slot].unwrap_or((bw, bh));
+                        if let Some((dst, src)) =
+                            Self::fit_cover(iw, ih, bx, by, bw, bh, MAX_SCALE, MAX_CROP)
+                        {
+                            return (dst, Some(src));
+                        }
+                        if iw == 0 || ih == 0 {
+                            return (Rect::new(bx, by, bw.max(1), bh.max(1)), None);
+                        }
+                        let img_r = iw as f64 / ih as f64;
+                        let box_r = bw as f64 / bh as f64;
+                        let (fw, fh) = if img_r > box_r {
+                            let fw = bw;
+                            (fw, ((bw as f64 / img_r).round() as u32).max(1))
+                        } else {
+                            let fh = bh;
+                            (((bh as f64 * img_r).round() as u32).max(1), fh)
+                        };
+                        let x = bx + (bw as i32 - fw as i32) / 2;
+                        let y = by + (bh as i32 - fh as i32) / 2;
+                        (Rect::new(x, y, fw, fh), None)
                     };
-                    let x = bx + (bw as i32 - fw as i32) / 2;
-                    let y = by + (bh as i32 - fh as i32) / 2;
-                    (Rect::new(x, y, fw, fh), None)
-                };
 
-                let r_tl_rect = place_cell(tl, 0,   layout_y, w_left,  h_top);
-                let r_bl_rect = place_cell(bl, 0,   by_,      w_left,  h_bot);
-                let r_tr_rect = place_cell(tr, rx,  layout_y, w_right, h_top);
-                let r_br_rect = place_cell(br, rx,  by_,      w_right, h_bot);
+                let r_tl_rect = place_cell(tl, 0, layout_y, w_left, h_top);
+                let r_bl_rect = place_cell(bl, 0, by_, w_left, h_bot);
+                let r_tr_rect = place_cell(tr, rx, layout_y, w_right, h_top);
+                let r_br_rect = place_cell(br, rx, by_, w_right, h_bot);
 
                 // Return in slot order (0,1,2,3)
                 let mut result = [(Rect::new(0, 0, 1, 1), None); 4];
