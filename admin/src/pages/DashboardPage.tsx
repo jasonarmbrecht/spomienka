@@ -1,4 +1,4 @@
-import { ReactNode, useCallback, useEffect, useState } from "react";
+import { Fragment, ReactNode, useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { pb } from "../pb/client";
 import { useAuth } from "../pb/auth";
@@ -422,19 +422,25 @@ export function DashboardPage() {
                   {recentMedia.length === 0 ? (
                     <EmptyState message="No uploads yet." />
                   ) : (
-                    <Stack gap={3}>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1.25rem 1fr 9rem 4.5rem",
+                        columnGap: "0.75rem",
+                        rowGap: "0.625rem",
+                        alignItems: "center",
+                      }}
+                    >
                       {recentMedia.map((m) => (
-                        <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "0.75rem", minWidth: 0 }}>
+                        <Fragment key={m.id}>
                           {m.type === "video" ? <VideoIcon size={16} /> : <ImageIcon size={16} />}
-                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {m.title || m.file}
                           </span>
                           <span
                             className="cds--helper-text-01"
                             style={{
                               color: "var(--cds-text-secondary)",
-                              width: "9rem",
-                              flexShrink: 0,
                               overflow: "hidden",
                               textOverflow: "ellipsis",
                               whiteSpace: "nowrap",
@@ -442,12 +448,12 @@ export function DashboardPage() {
                           >
                             {uploaderLabel(m)}
                           </span>
-                          <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)", whiteSpace: "nowrap", flexShrink: 0 }}>
+                          <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)", whiteSpace: "nowrap" }}>
                             {relativeTime(m.created)}
                           </span>
-                        </div>
+                        </Fragment>
                       ))}
-                    </Stack>
+                    </div>
                   )}
                 </div>
                 <div style={{ flex: "1 1 260px", minWidth: 0 }}>
@@ -457,21 +463,29 @@ export function DashboardPage() {
                   {recentApprovals.length === 0 ? (
                     <EmptyState message="No approval activity yet." />
                   ) : (
-                    <Stack gap={3}>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "auto 1fr 4.5rem",
+                        columnGap: "0.75rem",
+                        rowGap: "0.625rem",
+                        alignItems: "center",
+                      }}
+                    >
                       {recentApprovals.map((a) => (
-                        <div key={a.id} style={{ display: "flex", alignItems: "center", gap: "0.5rem", minWidth: 0 }}>
+                        <Fragment key={a.id}>
                           <Tag type={a.status === "approved" ? "green" : "red"} size="sm">
                             {a.status}
                           </Tag>
-                          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {a.expand?.media?.title || a.expand?.media?.file || "Deleted item"}
                           </span>
-                          <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)", whiteSpace: "nowrap", flexShrink: 0 }}>
+                          <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)", whiteSpace: "nowrap" }}>
                             {a.reviewedAt ? relativeTime(a.reviewedAt) : ""}
                           </span>
-                        </div>
+                        </Fragment>
                       ))}
-                    </Stack>
+                    </div>
                   )}
                 </div>
               </div>
