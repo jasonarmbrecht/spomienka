@@ -119,6 +119,8 @@ fn is_supported_image_file(path: &Path) -> bool {
     bytes.starts_with(&[0xff, 0xd8, 0xff])
         || bytes.starts_with(b"\x89PNG\r\n\x1a\n")
         || bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")
+        || bytes.starts_with(b"GIF87a")
+        || bytes.starts_with(b"GIF89a")
 }
 
 /// Manages asset loading and preloading.
@@ -297,7 +299,15 @@ impl AssetManager {
                             textures.display_size = Some((width, height));
                         }
                         Err(e) => {
-                            tracing::warn!("Failed to load display texture: {}", e);
+                            let dims = image::image_dimensions(path)
+                                .map(|(w, h)| format!("{}x{}", w, h))
+                                .unwrap_or_else(|_| "unknown".to_string());
+                            tracing::warn!(
+                                "Failed to load display texture ({:?}, {}): {}",
+                                path,
+                                dims,
+                                e
+                            );
                         }
                     }
                 }

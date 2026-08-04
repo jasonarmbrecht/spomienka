@@ -149,7 +149,8 @@
         "values": [
           "pending",
           "published",
-          "rejected"
+          "rejected",
+          "unpublished"
         ]
       },
       {
@@ -363,6 +364,102 @@
         "hidden": false,
         "onlyDomains": [],
         "exceptDomains": []
+      },
+      {
+        "id": "text_description",
+        "name": "description",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "text_location",
+        "name": "location",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "text_camera_make",
+        "name": "cameraMake",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "text_camera_model",
+        "name": "cameraModel",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "text_focal_length",
+        "name": "focalLength",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "text_f_number",
+        "name": "fNumber",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "text_exposure_time",
+        "name": "exposureTime",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "text_iso",
+        "name": "iso",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
       }
     ],
     "indexes": [
@@ -739,6 +836,18 @@
         "min": null,
         "max": 64,
         "pattern": ""
+      },
+      {
+        "id": "pd_repair",
+        "name": "repairDeviceId",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": 64,
+        "pattern": ""
       }
     ],
     "indexes": [
@@ -813,5 +922,53 @@
     "createRule": null,
     "updateRule": null,
     "deleteRule": null
+  },
+  {
+    "id": "di7k2m9p4q1r6nx",
+    "name": "device_inbox",
+    "type": "base",
+    "system": false,
+    "fields": [
+      {
+        "id": "di_device_id",
+        "name": "device_id",
+        "type": "text",
+        "system": false,
+        "required": true,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "di_type",
+        "name": "type",
+        "type": "text",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "min": null,
+        "max": null,
+        "pattern": ""
+      },
+      {
+        "id": "di_payload",
+        "name": "payload",
+        "type": "json",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "maxSize": 1048576
+      }
+    ],
+    "indexes": [],
+    "listRule": "",
+    "viewRule": "",
+    "createRule": "@request.auth.role = 'admin'",
+    "updateRule": null,
+    "deleteRule": "@request.auth.role = 'admin'"
   }
 ]

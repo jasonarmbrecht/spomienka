@@ -760,6 +760,15 @@ def main() -> None:
             run(["sudo", "chown", f"{os.environ['USER']}:{os.environ['USER']}", "/opt/pocketbase", PB_DATA_DIR])
             run(["sudo", "mkdir", "-p", f"{PB_DATA_DIR}/pb_migrations"])
             run(["sudo", "chown", f"{os.environ['USER']}:{os.environ['USER']}", f"{PB_DATA_DIR}/pb_migrations"])
+            # Media processing writes temp files here, then renames them into
+            # PB_DATA_DIR/storage. rename() cannot cross filesystem boundaries,
+            # so this MUST live under PB_DATA_DIR (same filesystem as storage) —
+            # never the default /tmp, which is a different mount when PB_DATA_DIR
+            # is on external/USB storage. Every image/video hit "invalid
+            # cross-device link" and silently failed to get a display/thumb
+            # image until this was fixed.
+            run(["sudo", "mkdir", "-p", f"{PB_DATA_DIR}/pb_processing"])
+            run(["sudo", "chown", f"{os.environ['USER']}:{os.environ['USER']}", f"{PB_DATA_DIR}/pb_processing"])
         step_ok("Directories ready")
 
         # Redirect PocketBase's built-in backups to the separate backup
@@ -826,6 +835,7 @@ After=network-online.target
 Wants=network-online.target{pb_requires_mounts}
 
 [Service]
+Environment=PB_PROCESS_DIR={PB_DATA_DIR}/pb_processing
 ExecStart={PB_BIN_PATH} serve --http=0.0.0.0:{PB_PORT_DEFAULT} --dir "{PB_DATA_DIR}" --migrationsDir "{PB_DATA_DIR}/pb_migrations" --hooksDir "{PB_DATA_DIR}/pb_hooks"
 WorkingDirectory=/opt/pocketbase
 Restart=on-failure

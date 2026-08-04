@@ -109,6 +109,16 @@ struct AppConfig {
     #[serde(default = "default_show_clock")]
     pub show_clock: bool,
 
+    /// Clock horizontal offset in pixels, shifting it left of its default
+    /// bottom-right position (default: 0).
+    #[serde(default)]
+    pub clock_offset_x: i32,
+
+    /// Clock vertical offset in pixels, shifting it up from its default
+    /// bottom-right position (default: 0).
+    #[serde(default)]
+    pub clock_offset_y: i32,
+
     /// Start with the full media info overlay visible (default: false).
     #[serde(default)]
     pub show_info: bool,
@@ -523,7 +533,15 @@ async fn main() -> Result<()> {
     // Discovery mode: when no device_id is configured, show a PIN screen and wait
     // for an admin to register this viewer via the Settings page.
     if config.device_id.is_none() {
-        return run_discovery_mode(&config).await;
+        return run_discovery_mode(&config, None).await;
+    }
+
+    // Repair mode: device_id is known but its api_key was cleared (see
+    // RealtimeEvent::RepairRequested) — re-pair the same device via a fresh PIN
+    // instead of creating a brand-new device record.
+    if config.device_api_key.is_none() {
+        let existing_device_id = config.device_id.clone();
+        return run_discovery_mode(&config, existing_device_id).await;
     }
 
     tracing::info!("Starting frame-viewer");
@@ -576,6 +594,12 @@ async fn main() -> Result<()> {
                 }
                 if let Some(v) = cfg.get("showClock").and_then(|v| v.as_bool()) {
                     config.show_clock = v;
+                }
+                if let Some(v) = cfg.get("clockOffsetX").and_then(|v| v.as_i64()) {
+                    config.clock_offset_x = v as i32;
+                }
+                if let Some(v) = cfg.get("clockOffsetY").and_then(|v| v.as_i64()) {
+                    config.clock_offset_y = v as i32;
                 }
                 if let Some(v) = cfg.get("showInfo").and_then(|v| v.as_bool()) {
                     config.show_info = v;
@@ -673,7 +697,9 @@ async fn main() -> Result<()> {
     }
 
     // Periodic heartbeat — keeps lastSeen fresh so the admin UI can show live status.
-    // Runs every 90 seconds; errors are silently dropped so a network blip never crashes the viewer.
+    // Runs every 90 seconds; a network blip never crashes the viewer, but the
+    // outcome is always logged so a stale/rotated key is diagnosable from the
+    // Pi's logs instead of just silently going "offline" with no explanation.
     if let (Some(device_id), Some(api_key)) = (
         state.config.device_id.clone(),
         state.config.device_api_key.clone(),
@@ -686,11 +712,28 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(90)).await;
-                let _ = hb_client
+                match hb_client
                     .post(format!("{}/api/spomienka/device-heartbeat", pb_url))
                     .json(&serde_json::json!({ "device_id": device_id, "api_key": api_key }))
                     .send()
-                    .await;
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        tracing::debug!("Heartbeat OK");
+                    }
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        tracing::warn!(
+                            "Heartbeat rejected: HTTP {} — {} (stored device_api_key may be stale; use \"Re-pair Device\" in the Admin SPA)",
+                            status,
+                            body
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Heartbeat request failed: {}", e);
+                    }
+                }
             }
         });
     }
@@ -713,17 +756,29 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Discovery mode render loop — shown when no device_id is configured.
+/// Discovery mode render loop — shown when no device_id is configured, or
+/// when re-pairing a known device (`repair_device_id` set) that lost its
+/// api_key.
 ///
 /// Displays a PIN on screen, announces to the backend, and polls for a registration
 /// claim. On success, writes credentials to config.toml and exits (systemd restarts).
-async fn run_discovery_mode(config: &AppConfig) -> Result<()> {
-    let state = discovery::DiscoveryState::new()?;
-    tracing::info!(
-        "Discovery mode — PIN: {}  Session: {}",
-        state.pin,
-        state.session_id
-    );
+async fn run_discovery_mode(config: &AppConfig, repair_device_id: Option<String>) -> Result<()> {
+    let is_repair = repair_device_id.is_some();
+    let state = discovery::DiscoveryState::new_with_repair(repair_device_id)?;
+    if is_repair {
+        tracing::info!(
+            "Repair mode for device {} — PIN: {}  Session: {}",
+            state.repair_device_id.as_deref().unwrap_or("?"),
+            state.pin,
+            state.session_id
+        );
+    } else {
+        tracing::info!(
+            "Discovery mode — PIN: {}  Session: {}",
+            state.pin,
+            state.session_id
+        );
+    }
     tracing::info!("Local IP: {}  Hostname: {}", state.local_ip, state.hostname);
     tracing::info!("Announcing to {}", config.pb_url);
 
@@ -786,6 +841,8 @@ async fn run_discovery_mode(config: &AppConfig) -> Result<()> {
         config.fullscreen,
         false,
         false,
+        0,
+        0,
         SlideLayout::Single,
     )?;
 
@@ -798,17 +855,7 @@ async fn run_discovery_mode(config: &AppConfig) -> Result<()> {
             }
             std::thread::sleep(Duration::from_secs(1));
             // Re-exec this binary in-place so env vars (AUTH_EMAIL etc.) are inherited.
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                let exe = std::env::current_exe()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("frame-viewer"));
-                let err = std::process::Command::new(&exe)
-                    .args(std::env::args_os().skip(1))
-                    .exec();
-                tracing::error!("Re-exec failed: {} — falling back to exit", err);
-            }
-            std::process::exit(0);
+            reexec_self();
         }
 
         // Handle quit key
@@ -839,6 +886,8 @@ async fn run_render_loop(
         state.config.fullscreen,
         state.config.blur_background,
         state.config.show_clock,
+        state.config.clock_offset_x,
+        state.config.clock_offset_y,
         SlideLayout::Single, // initial layout; dynamic mode picks per-slide
     )?;
 
@@ -2230,6 +2279,22 @@ async fn go_to_previous<'a>(
     Ok(())
 }
 
+/// Replace the running process with a fresh invocation of the same binary,
+/// so restart picks up config/credentials re-read from scratch on startup.
+fn reexec_self() -> ! {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let exe =
+            std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("frame-viewer"));
+        let err = std::process::Command::new(&exe)
+            .args(std::env::args_os().skip(1))
+            .exec();
+        tracing::error!("Re-exec failed: {} — falling back to exit", err);
+    }
+    std::process::exit(0);
+}
+
 /// Handle a realtime event.
 async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
     match event {
@@ -2300,17 +2365,16 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
         }
         RealtimeEvent::ConfigChanged => {
             tracing::info!("Device config changed — restarting to apply new settings");
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                let exe = std::env::current_exe()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("frame-viewer"));
-                let err = std::process::Command::new(&exe)
-                    .args(std::env::args_os().skip(1))
-                    .exec();
-                tracing::error!("Re-exec failed: {} — falling back to exit", err);
+            reexec_self();
+        }
+        RealtimeEvent::RepairRequested => {
+            tracing::info!(
+                "Re-pair requested from Admin SPA — clearing stored api_key and restarting into pairing mode"
+            );
+            if let Err(e) = discovery::clear_device_api_key() {
+                tracing::error!("Failed to clear device_api_key for repair: {}", e);
             }
-            std::process::exit(0);
+            reexec_self();
         }
         // Remote control events are handled inline in the render loop, not here.
         RealtimeEvent::RemoteNext

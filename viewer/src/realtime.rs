@@ -23,6 +23,7 @@ pub enum RealtimeEvent {
     MediaDeleted(String),
     RefreshNeeded,
     ConfigChanged,
+    RepairRequested,
     RemoteNext,
     RemotePrev,
     RemoteRandom,
@@ -233,6 +234,7 @@ impl RealtimeManager {
                 RealtimeEvent::RemoteTagFilter { tags, mode }
             }
             "tag-filter-clear" => RealtimeEvent::RemoteTagFilterClear,
+            "repair_request" => RealtimeEvent::RepairRequested,
             _ => RealtimeEvent::ConfigChanged,
         }
     }

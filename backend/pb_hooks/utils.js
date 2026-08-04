@@ -22,6 +22,10 @@ const FFMPEG   = findBinary(["/opt/homebrew/bin/ffmpeg",   "/usr/bin/ffmpeg",   
 const FFPROBE  = findBinary(["/opt/homebrew/bin/ffprobe",  "/usr/bin/ffprobe",  "/usr/local/bin/ffprobe",  "ffprobe"]);
 const EXIFTOOL = findBinary(["/opt/homebrew/bin/exiftool", "/usr/bin/exiftool", "/usr/local/bin/exiftool", "exiftool"]);
 
+// heif-convert (from libheif-examples on Debian/Raspbian) decodes HEIC more
+// reliably than ffmpeg on Linux, where ffmpeg often lacks HEIF support.
+const HEIF_CONVERT = findBinary(["/usr/bin/heif-convert", "/usr/local/bin/heif-convert", "heif-convert"]);
+
 // sha256sum is Linux-only; macOS ships shasum instead.
 const SHA256_CMD  = findBinary(["/usr/bin/sha256sum", "/opt/homebrew/bin/shasum", "/usr/bin/shasum", "sha256sum"]);
 const SHA256_ARGS = SHA256_CMD.includes("shasum") ? ["-a", "256"] : [];
@@ -227,11 +231,22 @@ function processImage(record, originalPath, procDir, storagePath) {
     const recordId = record.id;
     const collectionId = record.collection().id;
 
-    // HEIC/HEIF: ffmpeg on macOS (VideoToolbox) can decode HEIC directly.
+    // HEIC/HEIF: prefer heif-convert (works reliably on Linux), fall back to
+    // ffmpeg (works on macOS via VideoToolbox, unreliable for HEIF on Linux).
     const isHeic = /\.heic$/i.test(originalPath);
     if (isHeic) {
         const tmpPng = procDir + "/original.png";
-        execCommand(FFMPEG, ["-y", "-i", originalPath, "-frames:v", "1", "-update", "1", tmpPng]);
+        // Note: $os.stat does not exist in this PocketBase JSVM build (throws
+        // "Object has no member 'stat'" unconditionally) — do not use it here.
+        // execCommand already throws reliably on real command failures, which
+        // is a sufficient success/failure signal on its own.
+        try {
+            const out = execCommand(HEIF_CONVERT, [originalPath, tmpPng]);
+            console.log("heif-convert succeeded:", out);
+        } catch (err) {
+            console.error("heif-convert failed, falling back to ffmpeg:", err.message || err);
+            execCommand(FFMPEG, ["-y", "-i", originalPath, "-frames:v", "1", "-update", "1", tmpPng]);
+        }
         originalPath = tmpPng;
     }
 
@@ -279,9 +294,11 @@ function processVideo(record, originalPath, procDir, storagePath) {
     let posterCreated = false;
     try {
         const posterPath = procDir + "/poster.png";
+        // Note: $os.stat does not exist in this PocketBase JSVM build (throws
+        // "Object has no member 'stat'" unconditionally) — do not use it here.
+        // execCommand already throws reliably on real command failures.
         execCommand(FFMPEG, ["-y", "-i", originalPath, "-ss", "00:00:01", "-vframes", "1",
             "-vf", FFMPEG_DISPLAY_SCALE, posterPath]);
-        try { $os.stat(posterPath); } catch (_) { throw new Error("Poster file not created"); }
         const name = "poster_" + recordId + ".png";
         $os.rename(posterPath, storagePath + "/" + name);
         record.set("posterUrl", buildFileUrl(collectionId, recordId, name));

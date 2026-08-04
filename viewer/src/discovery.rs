@@ -19,6 +19,10 @@ pub struct DiscoveryState {
     pub pin_hash: String,
     pub local_ip: String,
     pub hostname: String,
+    /// Set when re-pairing an already-known device that lost its api_key
+    /// (see repair discovery mode in main.rs). Tells the backend to update
+    /// this existing device record instead of creating a new one.
+    pub repair_device_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,7 +32,10 @@ pub struct ClaimResult {
 }
 
 impl DiscoveryState {
-    pub fn new() -> Result<Self> {
+    /// When `repair_device_id` is set, the resulting announce/register cycle
+    /// updates that existing device's api_key in place instead of creating a
+    /// brand-new device record.
+    pub fn new_with_repair(repair_device_id: Option<String>) -> Result<Self> {
         let session_id = generate_session_id();
         let pin = generate_pin();
         let pin_hash = compute_pin_hash(&session_id, &pin);
@@ -40,6 +47,7 @@ impl DiscoveryState {
             pin_hash,
             local_ip,
             hostname,
+            repair_device_id,
         })
     }
 }
@@ -82,6 +90,7 @@ pub async fn announce(client: &Client, pb_url: &str, state: &DiscoveryState) -> 
             "pin_hash": state.pin_hash,
             "hostname": state.hostname,
             "ip": state.local_ip,
+            "repair_device_id": state.repair_device_id,
         }))
         .send()
         .await?;
@@ -156,5 +165,35 @@ pub fn write_device_credentials(device_id: &str, api_key: &str) -> Result<()> {
 
     std::fs::write(config_path, new_content)?;
     tracing::info!("Wrote device credentials to {}", config_path);
+    Ok(())
+}
+
+/// Remove the device_api_key line from the viewer's config file, leaving
+/// device_id untouched. Used when a repair is requested: on the next start
+/// the viewer finds device_id present but no api_key and re-enters discovery
+/// mode to get a fresh key for that same device (see `run_discovery_mode`'s
+/// repair branch in main.rs).
+pub fn clear_device_api_key() -> Result<()> {
+    let config_path = if std::path::Path::new("/etc/frame-viewer/config.toml").exists() {
+        "/etc/frame-viewer/config.toml"
+    } else {
+        "config.toml"
+    };
+
+    let existing = std::fs::read_to_string(config_path).unwrap_or_default();
+
+    let filtered: String = existing
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("device_api_key"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut new_content = filtered;
+    if !new_content.is_empty() && !new_content.ends_with('\n') {
+        new_content.push('\n');
+    }
+
+    std::fs::write(config_path, new_content)?;
+    tracing::info!("Cleared device_api_key in {} for repair", config_path);
     Ok(())
 }
