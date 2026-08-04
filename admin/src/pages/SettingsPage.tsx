@@ -5,7 +5,7 @@ import { SecureApiKeyDisplay } from "../components/SecureApiKeyDisplay";
 import { Modal } from "../components/Modal";
 import { Notification } from "../components/Notification";
 import { PAGINATION } from "../constants";
-import { generateApiKey } from "../utils";
+import { generateApiKey, getDeviceStatus } from "../utils";
 import { useNotification } from "../hooks/useNotification";
 import {
   Grid,
@@ -28,40 +28,8 @@ import {
 } from "@carbon/react";
 import { Edit, Renew, TrashCan, Link as LinkIcon } from "@carbon/icons-react";
 
-function getViewerStatus(lastSeen?: string): { label: string; color: string; detail: string } {
-  if (!lastSeen) return { label: "Never seen", color: "var(--cds-text-disabled)", detail: "" };
-  const diffMs = Date.now() - new Date(lastSeen).getTime();
-  const diffMin = diffMs / 60_000;
-
-  let label: string;
-  let color: string;
-  if (diffMin < 3) {
-    label = "Online";
-    color = "var(--cds-support-success)";
-  } else if (diffMin < 60) {
-    label = "Recently online";
-    color = "var(--cds-support-warning)";
-  } else {
-    label = "Offline";
-    color = "var(--cds-support-error)";
-  }
-
-  let detail: string;
-  if (diffMin < 1) {
-    detail = "just now";
-  } else if (diffMin < 60) {
-    detail = `${Math.floor(diffMin)}m ago`;
-  } else if (diffMin < 60 * 24) {
-    detail = `${Math.floor(diffMin / 60)}h ago`;
-  } else {
-    detail = new Date(lastSeen).toLocaleDateString();
-  }
-
-  return { label, color, detail };
-}
-
 function DeviceStatus({ lastSeen }: { lastSeen?: string }) {
-  const { label, color, detail } = getViewerStatus(lastSeen);
+  const { label, color, detail } = getDeviceStatus(lastSeen);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.25rem" }}>
       <span style={{ color, fontSize: "0.6rem", lineHeight: 1 }}>●</span>

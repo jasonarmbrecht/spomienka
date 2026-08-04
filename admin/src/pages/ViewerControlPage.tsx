@@ -23,14 +23,9 @@ import {
   FilterRemove,
 } from "@carbon/icons-react";
 import type { DeviceRecord } from "../types/pocketbase";
+import { isDeviceOnline } from "../utils";
 
-const ACTIVE_THRESHOLD_MS = 3 * 60 * 1000;
 const PAUSE_SECS = 300; // 5 minutes
-
-function isOnline(device: DeviceRecord): boolean {
-  if (!device.lastSeen) return false;
-  return Date.now() - new Date(device.lastSeen).getTime() < ACTIVE_THRESHOLD_MS;
-}
 
 function formatCountdown(secs: number): string {
   const m = Math.floor(secs / 60);
@@ -176,7 +171,7 @@ export function ViewerControlPage() {
   };
 
   const selectedDevice = devices.find((d) => d.id === selectedId);
-  const online = selectedDevice ? isOnline(selectedDevice) : false;
+  const online = selectedDevice ? isDeviceOnline(selectedDevice.lastSeen) : false;
   const isPaused = pauseSecs !== null;
 
   return (

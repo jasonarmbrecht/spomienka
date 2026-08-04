@@ -50,6 +50,7 @@ export default function App() {
   }, []);
 
   const navLinks = [
+    { to: "/", label: "Dashboard", always: true },
     { to: "/library", label: "Library", always: true },
     { to: "/upload", label: "Upload", always: true },
     { to: "/viewer-control", label: "Viewer Control", adminOnly: true },
