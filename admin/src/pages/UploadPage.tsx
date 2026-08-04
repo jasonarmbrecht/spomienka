@@ -204,7 +204,10 @@ export function UploadPage() {
                           ? "uploading"
                           : "edit";
                       return (
-                        <div key={id} style={{ marginBottom: "0.5rem" }}>
+                        // Carbon's FileUploaderItem hardcodes max-inline-size: 20rem on
+                        // its root element (.cds--file__selected-file); cap this wrapper
+                        // to match so the ProgressBar below it doesn't stretch wider.
+                        <div key={id} style={{ marginBottom: "0.5rem", maxWidth: "20rem" }}>
                           <FileUploaderItem
                             name={file.name}
                             status={uploaderStatus}

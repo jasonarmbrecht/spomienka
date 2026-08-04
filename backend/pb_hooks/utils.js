@@ -236,12 +236,24 @@ function processImage(record, originalPath, procDir, storagePath) {
     const isHeic = /\.heic$/i.test(originalPath);
     if (isHeic) {
         const tmpPng = procDir + "/original.png";
+        console.log("HEIC convert: tool=" + HEIF_CONVERT + " input=" + originalPath + " output=" + tmpPng);
         try {
-            execCommand(HEIF_CONVERT, [originalPath, tmpPng]);
-        } catch (_) {
-            execCommand(FFMPEG, ["-y", "-i", originalPath, "-frames:v", "1", "-update", "1", tmpPng]);
+            const out = execCommand(HEIF_CONVERT, [originalPath, tmpPng]);
+            console.log("heif-convert reported success, output: " + out);
+        } catch (err) {
+            console.error("heif-convert failed, falling back to ffmpeg:", err.message || err);
+            const out2 = execCommand(FFMPEG, ["-y", "-i", originalPath, "-frames:v", "1", "-update", "1", tmpPng]);
+            console.log("ffmpeg fallback reported success, output: " + out2);
         }
-        try { $os.stat(tmpPng); } catch (_) { throw new Error("HEIC conversion produced no output"); }
+        try {
+            $os.stat(tmpPng);
+            console.log("HEIC output confirmed on disk at " + tmpPng);
+        } catch (statErr) {
+            let listing = "?";
+            try { listing = JSON.stringify($os.readdir(procDir)); } catch (_) {}
+            console.error("HEIC output missing at " + tmpPng + " — procDir (" + procDir + ") contents: " + listing + " — stat error: " + statErr);
+            throw new Error("HEIC conversion produced no output");
+        }
         originalPath = tmpPng;
     }
 
