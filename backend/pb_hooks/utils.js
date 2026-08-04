@@ -30,6 +30,8 @@ const HEIF_CONVERT = findBinary(["/usr/bin/heif-convert", "/usr/local/bin/heif-c
 const SHA256_CMD  = findBinary(["/usr/bin/sha256sum", "/opt/homebrew/bin/shasum", "/usr/bin/shasum", "sha256sum"]);
 const SHA256_ARGS = SHA256_CMD.includes("shasum") ? ["-a", "256"] : [];
 
+const CP_CMD = findBinary(["/bin/cp", "/usr/bin/cp", "cp"]);
+
 const RATE_LIMITS = {
     login:    { max: 5,   windowMs: 60000 },
     upload:   { max: 100, windowMs: 60000 },
@@ -225,6 +227,12 @@ function generateChecksum(filePath) {
 
 const FFMPEG_DISPLAY_SCALE = "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease";
 const FFMPEG_THUMB_SCALE   = "scale=300:-1";
+// Bounding-box scale (not a fixed width) so portrait video isn't blown up:
+// ffmpeg auto-rotates portrait phone footage before this filter runs, which
+// swaps its effective width/height — a fixed "scale=1920:-2" then forces the
+// now-short dimension up to 1920, upscaling a 1080p portrait clip to ~1920x3414.
+// force_divisible_by=2 keeps dimensions even, required by libx264's yuv420p.
+const FFMPEG_VIDEO_SCALE = "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2";
 
 
 function processImage(record, originalPath, procDir, storagePath) {
@@ -283,8 +291,8 @@ function processVideo(record, originalPath, procDir, storagePath) {
 
     try {
         const videoPath = procDir + "/video.mp4";
-        execCommand(FFMPEG, ["-y", "-i", originalPath, "-vf", "scale=1920:-2",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "22",
+        execCommand(FFMPEG, ["-y", "-i", originalPath, "-vf", FFMPEG_VIDEO_SCALE,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
             "-c:a", "aac", "-movflags", "+faststart", videoPath]);
         const name = "video_" + recordId + ".mp4";
         $os.rename(videoPath, storagePath + "/" + name);
@@ -313,6 +321,37 @@ function processVideo(record, originalPath, procDir, storagePath) {
         $os.rename(thumbPath, storagePath + "/" + name);
         record.set("thumbUrl", buildFileUrl(collectionId, recordId, name));
     } catch (err) { console.error("Video thumbnail failed:", err); }
+}
+
+// Copies derived files (display/thumb/poster/video) from an existing
+// duplicate record instead of re-running ffmpeg/exiftool. Returns false
+// (and leaves the record untouched) if anything's missing, so the caller
+// falls back to full processing.
+function reuseDuplicateProcessing(record, existing, mediaType, collectionId, storagePath) {
+    const existingStoragePath = $app.dataDir() + "/storage/" + collectionId + "/" + existing.id;
+    const recordId = record.id;
+
+    const fileSpecs = mediaType === "video"
+        ? [["video_", ".mp4", "videoUrl"], ["poster_", ".png", "posterUrl"], ["thumb_", ".png", "thumbUrl"]]
+        : [["display_", ".png", "displayUrl"], ["thumb_", ".png", "thumbUrl"]];
+
+    for (const [prefix, ext, field] of fileSpecs) {
+        const srcPath = existingStoragePath + "/" + prefix + existing.id + ext;
+        const dstPath = storagePath + "/" + prefix + recordId + ext;
+        try {
+            execCommand(CP_CMD, [srcPath, dstPath]);
+            record.set(field, buildFileUrl(collectionId, recordId, prefix + recordId + ext));
+        } catch (err) {
+            console.error("Failed to copy derived file for duplicate", recordId, ":", err.message || err);
+            return false;
+        }
+    }
+
+    ["width", "height", "orientation", "duration"].forEach((f) => {
+        const v = existing.get(f);
+        if (v) record.set(f, v);
+    });
+    return true;
 }
 
 function processMediaRecord(record) {
@@ -357,6 +396,7 @@ function processMediaRecord(record) {
         }
 
         const checksum = generateChecksum(originalPath);
+        let reused = false;
         if (checksum) {
             record.set("checksum", checksum);
             try {
@@ -364,12 +404,19 @@ function processMediaRecord(record) {
                     "media",
                     "checksum='" + escapeFilterValue(checksum) + "' && id!='" + escapeFilterValue(recordId) + "'"
                 );
-                if (existing) console.log("Duplicate media detected:", recordId, "matches:", existing.id);
+                if (existing) {
+                    console.log("Duplicate media detected:", recordId, "matches:", existing.id);
+                    if (existing.get("processingStatus") === "completed") {
+                        reused = reuseDuplicateProcessing(record, existing, mediaType, collectionId, storagePath);
+                    }
+                }
             } catch (_) {}
         }
 
-        if (mediaType === "image") processImage(record, originalPath, procDir, storagePath);
-        else if (mediaType === "video") processVideo(record, originalPath, procDir, storagePath);
+        if (!reused) {
+            if (mediaType === "image") processImage(record, originalPath, procDir, storagePath);
+            else if (mediaType === "video") processVideo(record, originalPath, procDir, storagePath);
+        }
 
         try { record.set("processingStatus", "completed"); record.set("processingError", null); } catch (_) {}
         $app.save(record);
