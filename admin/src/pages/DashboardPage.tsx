@@ -29,6 +29,9 @@ type MediaSummary = {
   file: string;
   type: "image" | "video";
   created: string;
+  expand?: {
+    owner?: { id: string; email: string; name?: string };
+  };
 };
 
 type ApprovalSummary = {
@@ -73,6 +76,12 @@ function relativeTime(iso: string): string {
   if (diffMin < 60) return `${Math.floor(diffMin)}m ago`;
   if (diffMin < 60 * 24) return `${Math.floor(diffMin / 60)}h ago`;
   return new Date(iso).toLocaleDateString();
+}
+
+function uploaderLabel(m: MediaSummary): string {
+  const owner = m.expand?.owner;
+  if (!owner) return "—";
+  return owner.name || owner.email;
 }
 
 function configSummary(cfg?: DeviceConfig): string {
@@ -207,7 +216,7 @@ export function DashboardPage() {
             pb.collection("media").getList(1, 1, { filter: "status='pending'", requestKey: null }),
             pb.collection("users").getList(1, 1, { requestKey: null }),
             pb.send("/api/spomienka/pending", { method: "GET" }).catch(() => []),
-            pb.collection("media").getList<MediaSummary>(1, 6, { sort: "-created", requestKey: null }),
+            pb.collection("media").getList<MediaSummary>(1, 6, { sort: "-created", expand: "owner", requestKey: null }),
             pb.collection("approvals").getList<ApprovalSummary>(1, 6, {
               sort: "-reviewedAt",
               expand: "media",
@@ -406,7 +415,7 @@ export function DashboardPage() {
             {/* Recent activity */}
             {isAdmin && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: "2rem" }}>
-                <div style={{ flex: "1 1 320px", minWidth: 0 }}>
+                <div style={{ flex: "2 1 420px", minWidth: 0 }}>
                   <p className="cds--productive-heading-02" style={{ marginBottom: "0.75rem" }}>
                     Recent Uploads
                   </p>
@@ -415,10 +424,23 @@ export function DashboardPage() {
                   ) : (
                     <Stack gap={3}>
                       {recentMedia.map((m) => (
-                        <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "0.5rem", minWidth: 0 }}>
+                        <div key={m.id} style={{ display: "flex", alignItems: "center", gap: "0.75rem", minWidth: 0 }}>
                           {m.type === "video" ? <VideoIcon size={16} /> : <ImageIcon size={16} />}
                           <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {m.title || m.file}
+                          </span>
+                          <span
+                            className="cds--helper-text-01"
+                            style={{
+                              color: "var(--cds-text-secondary)",
+                              width: "9rem",
+                              flexShrink: 0,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {uploaderLabel(m)}
                           </span>
                           <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)", whiteSpace: "nowrap", flexShrink: 0 }}>
                             {relativeTime(m.created)}
@@ -428,7 +450,7 @@ export function DashboardPage() {
                     </Stack>
                   )}
                 </div>
-                <div style={{ flex: "1 1 320px", minWidth: 0 }}>
+                <div style={{ flex: "1 1 260px", minWidth: 0 }}>
                   <p className="cds--productive-heading-02" style={{ marginBottom: "0.75rem" }}>
                     Recent Approvals
                   </p>
