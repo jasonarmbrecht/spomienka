@@ -148,14 +148,15 @@ export function UploadPage() {
             <div>
               <FileUploaderDropContainer
                 labelText={
-                  <>
-                    <Upload size={32} style={{ display: "block", margin: "0 auto 0.5rem" }} />
-                    Drag and drop files here, or click to select
-                    <br />
+                  <span style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.375rem" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
+                      <Upload size={20} />
+                      Drag and drop files here, or click to select
+                    </span>
                     <span style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}>
                       Supports images and videos (max {MAX_FILE_SIZE_DISPLAY} per file)
                     </span>
-                  </>
+                  </span>
                 }
                 multiple
                 accept={[...ALLOWED_IMAGE_TYPES, ...ALLOWED_VIDEO_TYPES]}
