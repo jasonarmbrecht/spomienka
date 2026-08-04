@@ -182,7 +182,7 @@ export function ViewerControlPage() {
   return (
     <Grid>
       <Column sm={4} md={8} lg={8}>
-        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem", padding: "1.5rem 0" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
           <Heading>Viewer Control</Heading>
 
           {error && (

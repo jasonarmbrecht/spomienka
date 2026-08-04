@@ -160,7 +160,7 @@ export function UploadPage() {
                 multiple
                 accept={[...ALLOWED_IMAGE_TYPES, ...ALLOWED_VIDEO_TYPES]}
                 onAddFiles={(_e, { addedFiles }) => handleFiles(addedFiles)}
-                style={{ width: "100%", minHeight: "120px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                style={{ width: "100%", maxWidth: "none", minHeight: "120px", display: "flex", alignItems: "center", justifyContent: "center" }}
               />
               <input
                 ref={fileInputRef}
