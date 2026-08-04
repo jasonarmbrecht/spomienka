@@ -344,8 +344,17 @@ export function DashboardPage() {
                 <p className="cds--productive-heading-02" style={{ marginBottom: "0.75rem" }}>
                   System
                 </p>
-                <Tile style={{ marginBottom: "1rem" }}>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "2rem" }}>
+                <Tile>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: "2rem",
+                      paddingBottom: "1rem",
+                      marginBottom: "0.5rem",
+                      borderBottom: "1px solid var(--cds-border-subtle-01)",
+                    }}
+                  >
                     <div>
                       <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
                         Storage used
@@ -363,31 +372,32 @@ export function DashboardPage() {
                       </div>
                     </div>
                   </div>
+                  {(
+                    [
+                      ["Admin SPA", import.meta.env.VITE_APP_VERSION || "—"],
+                      ["PocketBase", systemStatus.software.pocketbase || "—"],
+                      ["ffmpeg", systemStatus.software.ffmpeg || "—"],
+                      ["exiftool", systemStatus.software.exiftool || "—"],
+                      ["Backend host OS", systemStatus.software.hostOs || "—"],
+                    ] as [string, string][]
+                  ).map(([label, value], i, arr) => (
+                    <div
+                      key={label}
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: "1rem",
+                        padding: "0.375rem 0",
+                        borderBottom: i < arr.length - 1 ? "1px solid var(--cds-border-subtle-01)" : undefined,
+                      }}
+                    >
+                      <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
+                        {label}
+                      </span>
+                      <span>{value}</span>
+                    </div>
+                  ))}
                 </Tile>
-                <StructuredListWrapper>
-                  <StructuredListBody>
-                    <StructuredListRow>
-                      <StructuredListCell>Admin SPA</StructuredListCell>
-                      <StructuredListCell>{import.meta.env.VITE_APP_VERSION || "—"}</StructuredListCell>
-                    </StructuredListRow>
-                    <StructuredListRow>
-                      <StructuredListCell>PocketBase</StructuredListCell>
-                      <StructuredListCell>{systemStatus.software.pocketbase || "—"}</StructuredListCell>
-                    </StructuredListRow>
-                    <StructuredListRow>
-                      <StructuredListCell>ffmpeg</StructuredListCell>
-                      <StructuredListCell>{systemStatus.software.ffmpeg || "—"}</StructuredListCell>
-                    </StructuredListRow>
-                    <StructuredListRow>
-                      <StructuredListCell>exiftool</StructuredListCell>
-                      <StructuredListCell>{systemStatus.software.exiftool || "—"}</StructuredListCell>
-                    </StructuredListRow>
-                    <StructuredListRow>
-                      <StructuredListCell>Backend host OS</StructuredListCell>
-                      <StructuredListCell>{systemStatus.software.hostOs || "—"}</StructuredListCell>
-                    </StructuredListRow>
-                  </StructuredListBody>
-                </StructuredListWrapper>
               </div>
             )}
 
