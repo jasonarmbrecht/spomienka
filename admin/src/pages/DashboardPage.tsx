@@ -428,56 +428,79 @@ export function DashboardPage() {
               </div>
             )}
 
-            {/* System: storage, backups, software versions */}
+            {/* Backend: database, media processing, and admin UI — each a distinct
+                concern kept in its own section rather than one catch-all "System" */}
             {isAdmin && systemStatus && (
-              <div>
-                <p className="cds--productive-heading-02" style={{ marginBottom: "0.75rem" }}>
-                  System
-                </p>
-                <Tile>
-                  <div
-                    style={{
-                      display: "flex",
-                      flexWrap: "wrap",
-                      gap: "2rem",
-                      paddingBottom: "1rem",
-                      marginBottom: "0.5rem",
-                      borderBottom: "1px solid var(--cds-border-subtle-01)",
-                    }}
-                  >
-                    <div>
-                      <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
-                        Storage used
-                      </span>
-                      <div style={{ fontWeight: 600 }}>{formatBytes(systemStatus.storageBytes)}</div>
-                    </div>
-                    <div>
-                      <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
-                        Backups
-                      </span>
-                      <div style={{ fontWeight: 600 }}>
-                        {systemStatus.backups.length === 0
-                          ? "Not configured"
-                          : `${systemStatus.backups.length} kept · last ${relativeTime(systemStatus.backups[0].timestamp || "")}`}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "1.5rem" }}>
+                <div style={{ flex: "2 1 320px", minWidth: 0 }}>
+                  <p className="cds--productive-heading-02" style={{ marginBottom: "0.75rem" }}>
+                    Database
+                  </p>
+                  <Tile>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: "2rem",
+                        paddingBottom: "1rem",
+                        marginBottom: "0.5rem",
+                        borderBottom: "1px solid var(--cds-border-subtle-01)",
+                      }}
+                    >
+                      <div>
+                        <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
+                          Storage used
+                        </span>
+                        <div style={{ fontWeight: 600 }}>{formatBytes(systemStatus.storageBytes)}</div>
+                      </div>
+                      <div>
+                        <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
+                          Backups
+                        </span>
+                        <div style={{ fontWeight: 600 }}>
+                          {systemStatus.backups.length === 0
+                            ? "Not configured"
+                            : `${systemStatus.backups.length} kept · last ${relativeTime(systemStatus.backups[0].timestamp || "")}`}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <KeyValueTable
-                    rows={[
-                      ["Admin SPA", import.meta.env.VITE_APP_VERSION || "—"],
-                      ["PocketBase", systemStatus.software.pocketbase || "—"],
-                      ["ffmpeg", systemStatus.software.ffmpeg || "—"],
-                      ["exiftool", systemStatus.software.exiftool || "—"],
-                      ["Backend host OS", systemStatus.software.hostOs || "—"],
-                    ]}
-                  />
-                  {/* Admin UI's own status, kept separate from the viewer sections above —
-                      unlike PocketBase/frame-viewer, it isn't tied to any specific viewer and
-                      could theoretically be hosted on a different machine. */}
-                  <div style={{ paddingTop: "1rem" }}>
-                    <ServiceLight label="Admin UI" service={serviceByName(systemStatus.services, "frame-admin")} />
-                  </div>
-                </Tile>
+                    <KeyValueTable
+                      rows={[
+                        ["PocketBase", systemStatus.software.pocketbase || "—"],
+                        ["Host OS", systemStatus.software.hostOs || "—"],
+                      ]}
+                    />
+                  </Tile>
+                </div>
+
+                <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                  <p className="cds--productive-heading-02" style={{ marginBottom: "0.75rem" }}>
+                    Media Processing
+                  </p>
+                  <Tile>
+                    <KeyValueTable
+                      rows={[
+                        ["ffmpeg", systemStatus.software.ffmpeg || "—"],
+                        ["exiftool", systemStatus.software.exiftool || "—"],
+                      ]}
+                    />
+                  </Tile>
+                </div>
+
+                <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                  <p className="cds--productive-heading-02" style={{ marginBottom: "0.75rem" }}>
+                    Admin UI
+                  </p>
+                  <Tile>
+                    <KeyValueTable rows={[["Version", import.meta.env.VITE_APP_VERSION || "—"]]} />
+                    {/* Kept separate from the viewer sections above — unlike PocketBase/
+                        frame-viewer, this isn't tied to any specific viewer and could
+                        theoretically be hosted on a different machine. */}
+                    <div style={{ paddingTop: "0.75rem" }}>
+                      <ServiceLight label="Status" service={serviceByName(systemStatus.services, "frame-admin")} />
+                    </div>
+                  </Tile>
+                </div>
               </div>
             )}
 
