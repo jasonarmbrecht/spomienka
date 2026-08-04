@@ -11,7 +11,7 @@ import {
   Button,
   FileUploaderDropContainer,
   FileUploaderItem,
-  ProgressBar,
+  InlineLoading,
   Stack,
 } from "@carbon/react";
 import { Upload } from "@carbon/icons-react";
@@ -23,7 +23,6 @@ type FileWithId = {
 
 type UploadProgress = {
   file: File;
-  progress: number;
   status: "pending" | "uploading" | "success" | "error";
   error?: string;
 };
@@ -76,7 +75,7 @@ export function UploadPage() {
       setUploadProgress((prev) => {
         const next = { ...prev };
         validFilesWithIds.forEach(({ id, file }) => {
-          next[id] = { file, progress: 0, status: "pending" };
+          next[id] = { file, status: "pending" };
         });
         return next;
       });
@@ -85,9 +84,8 @@ export function UploadPage() {
 
   const uploadFile = async (fileWithId: FileWithId): Promise<void> => {
     const { id, file } = fileWithId;
-    let progressInterval: ReturnType<typeof setInterval> | null = null;
 
-    setUploadProgress((prev) => ({ ...prev, [id]: { ...prev[id], status: "uploading", progress: 0 } }));
+    setUploadProgress((prev) => ({ ...prev, [id]: { ...prev[id], status: "uploading" } }));
 
     const form = new FormData();
     form.append("file", file);
@@ -96,28 +94,18 @@ export function UploadPage() {
     form.append("owner", user?.id ?? "");
 
     try {
-      progressInterval = setInterval(() => {
-        setUploadProgress((prev) => {
-          const current = prev[id];
-          if (current && current.progress < 90) {
-            return { ...prev, [id]: { ...current, progress: current.progress + 10 } };
-          }
-          return prev;
-        });
-      }, 200);
-
+      // This request doesn't resolve until the server finishes processing the
+      // file (thumbnail/poster generation, video transcode, etc. all run
+      // synchronously server-side) — for video that can take a while, so
+      // there's no meaningful progress percentage to show in the meantime.
       await pb.collection("media").create(form);
-
-      clearInterval(progressInterval);
-      setUploadProgress((prev) => ({ ...prev, [id]: { ...prev[id], status: "success", progress: 100 } }));
+      setUploadProgress((prev) => ({ ...prev, [id]: { ...prev[id], status: "success" } }));
     } catch (err) {
       setUploadProgress((prev) => ({
         ...prev,
         [id]: { ...prev[id], status: "error", error: err instanceof Error ? err.message : "Upload failed" },
       }));
       throw err;
-    } finally {
-      if (progressInterval) clearInterval(progressInterval);
     }
   };
 
@@ -216,12 +204,13 @@ export function UploadPage() {
                             uuid={id}
                           />
                           {progress?.status === "uploading" && (
-                            <ProgressBar
-                              value={progress.progress}
-                              max={100}
-                              label={file.name}
-                              hideLabel
-                              size="sm"
+                            <InlineLoading
+                              status="active"
+                              description={
+                                file.type.startsWith("video/")
+                                  ? "Processing video — this can take a few minutes on this device..."
+                                  : "Processing..."
+                              }
                             />
                           )}
                         </div>
