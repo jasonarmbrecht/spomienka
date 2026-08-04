@@ -541,33 +541,47 @@ impl<'ttf> Renderer<'ttf> {
     pub fn screen_size(&self) -> (u32, u32) {
         (self.screen_width, self.screen_height)
     }
-    /// Create a texture from raw RGBA pixels (for video frames).
-    pub fn create_texture_from_pixels<'a>(
+    /// Create a streaming YUV (I420) texture for video frames. The GPU does
+    /// YUV->RGB conversion during render, instead of paying for it in
+    /// software every frame like an RGBA texture fed from CPU-converted
+    /// pixels would.
+    pub fn create_yuv_texture<'a>(
         &self,
         texture_creator: &'a TextureCreator<WindowContext>,
-        pixels: &[u8],
         width: u32,
         height: u32,
     ) -> Result<Texture<'a>> {
         let mut texture = texture_creator
-            .create_texture_streaming(PixelFormatEnum::ABGR8888, width, height)
-            .context("Failed to create texture")?;
-
-        texture
-            .with_lock(None, |buffer: &mut [u8], pitch: usize| {
-                for y in 0..height as usize {
-                    let src_offset = y * (width as usize) * 4;
-                    let dst_offset = y * pitch;
-                    let row_bytes = (width as usize) * 4;
-                    buffer[dst_offset..dst_offset + row_bytes]
-                        .copy_from_slice(&pixels[src_offset..src_offset + row_bytes]);
-                }
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to update texture: {}", e))?;
+            .create_texture_streaming(PixelFormatEnum::IYUV, width, height)
+            .context("Failed to create YUV texture")?;
 
         texture.set_blend_mode(sdl2::render::BlendMode::Blend);
 
         Ok(texture)
+    }
+
+    /// Update an existing YUV streaming texture's planes in place (for video
+    /// frames). Avoids the GPU alloc/free churn of creating a brand-new
+    /// texture every frame — call this instead of `create_yuv_texture`
+    /// whenever the texture's dimensions already match the incoming frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_yuv_texture(
+        &self,
+        texture: &mut Texture,
+        y_plane: &[u8],
+        y_stride: usize,
+        u_plane: &[u8],
+        u_stride: usize,
+        v_plane: &[u8],
+        v_stride: usize,
+    ) -> Result<()> {
+        texture
+            .update_yuv(
+                None, y_plane, y_stride, u_plane, u_stride, v_plane, v_stride,
+            )
+            .map_err(|e| anyhow::anyhow!("Failed to update YUV texture: {}", e))?;
+
+        Ok(())
     }
 
     /// Calculate aspect-fit rectangle for displaying an image on the full screen.

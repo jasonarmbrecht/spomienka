@@ -59,7 +59,6 @@ Configuration is loaded from (in order of precedence):
 | `auth_password` | `AUTH_PASSWORD` | (none) | PocketBase user password |
 | `auth_token` | `AUTH_TOKEN` | (none) | Direct PocketBase auth token |
 | `enable_realtime` | `ENABLE_REALTIME` | `true` | Enable SSE sync |
-| `video_loop_threshold_sec` | `VIDEO_LOOP_THRESHOLD_SEC` | `30` | Videos shorter than this loop |
 | `shuffle` | `SHUFFLE` | `false` | Shuffle playlist order |
 
 ### Example config.toml
@@ -75,9 +74,11 @@ device_id = "living-room-frame"
 auth_email = "viewer@example.com"
 auth_password = "secure-password"
 enable_realtime = true
-video_loop_threshold_sec = 30
 shuffle = true
 ```
+
+Note: `interval_ms` only paces photo slides. Videos always play once at
+their own natural length and advance immediately when they finish.
 
 ## Architecture
 

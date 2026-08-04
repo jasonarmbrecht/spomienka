@@ -232,7 +232,17 @@ const FFMPEG_THUMB_SCALE   = "scale=300:-1";
 // swaps its effective width/height — a fixed "scale=1920:-2" then forces the
 // now-short dimension up to 1920, upscaling a 1080p portrait clip to ~1920x3414.
 // force_divisible_by=2 keeps dimensions even, required by libx264's yuv420p.
-const FFMPEG_VIDEO_SCALE = "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2";
+//
+// format=yuv420p + setparams force standard 8-bit BT.709 output regardless of
+// the source's bit depth/colorimetry. iPhone HDR video is 10-bit with
+// bt2100-hlg tagging; without this, ffmpeg carries that tagging through to
+// the encoded output (even though it's already been crushed to 8-bit), and
+// the Raspberry Pi's hardware H.264 decoder (v4l2h264dec) flatly rejects
+// bt2100-hlg -- its caps template only advertises bt709/bt601/smpte240m/
+// bt2020 -- so the video fails to decode at all on-device.
+const FFMPEG_VIDEO_SCALE =
+    "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2," +
+    "format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709";
 
 
 function processImage(record, originalPath, procDir, storagePath) {
@@ -292,6 +302,7 @@ function processVideo(record, originalPath, procDir, storagePath) {
     try {
         const videoPath = procDir + "/video.mp4";
         execCommand(FFMPEG, ["-y", "-i", originalPath, "-vf", FFMPEG_VIDEO_SCALE,
+            "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
             "-c:a", "aac", "-movflags", "+faststart", videoPath]);
         const name = "video_" + recordId + ".mp4";

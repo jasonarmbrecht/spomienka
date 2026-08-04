@@ -154,10 +154,20 @@ impl AssetManager {
     ) -> Result<Option<PathBuf>> {
         let processed_url = media.url_for_asset(asset_type);
 
-        // Fall back to the raw original file for still images and for video playback
-        // when backend processing has not produced derived URLs yet. A missing video
-        // poster should remain missing; caching the MP4 as a JPEG only produces
-        // blank textures and noisy image-load warnings.
+        // Fall back to the raw original file for still images when backend
+        // processing has not produced derived URLs yet. Video deliberately
+        // has no such fallback: the raw upload is whatever the user's device
+        // produced (arbitrary resolution/orientation/HDR encoding) and is
+        // frequently undecodable by the Pi's hardware decoder. Since our
+        // backend's transcode is synchronous but takes real time, a video's
+        // videoUrl is routinely still empty when the viewer first learns
+        // about a newly-created record via realtime -- if we cached the raw
+        // file at that moment we'd be stuck with it (this function only
+        // downloads once and reuses whatever's cached, so a bad cache never
+        // self-corrects). Returning None here instead means: play nothing
+        // for this video yet (poster still shows), and retry on the next
+        // time this item comes up in rotation, by which point processing
+        // has normally finished and videoUrl is populated.
         let fallback;
         let url = match processed_url {
             Some(u) => u,
@@ -178,11 +188,11 @@ impl AssetManager {
                     }
                 }
                 AssetType::Video if media.is_video() => {
-                    fallback = media.raw_file_url();
-                    match fallback.as_deref() {
-                        Some(u) => u,
-                        None => return Ok(None),
-                    }
+                    tracing::debug!(
+                        "videoUrl not yet available for {} (still processing?), skipping for now",
+                        media.id
+                    );
+                    return Ok(None);
                 }
                 AssetType::Display | AssetType::Video | AssetType::Poster => {
                     return Ok(None);

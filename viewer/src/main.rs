@@ -85,10 +85,6 @@ struct AppConfig {
     #[serde(default = "default_enable_realtime")]
     enable_realtime: bool,
 
-    /// Video loop threshold in seconds (default: 30)
-    #[serde(default = "default_video_loop_threshold_sec")]
-    video_loop_threshold_sec: f32,
-
     /// Shuffle playlist order
     #[serde(default)]
     shuffle: bool,
@@ -160,10 +156,6 @@ fn default_enable_realtime() -> bool {
     true
 }
 
-fn default_video_loop_threshold_sec() -> f32 {
-    30.0
-}
-
 fn default_fullscreen() -> bool {
     true
 }
@@ -198,10 +190,6 @@ impl AppConfig {
             .set_default("cache_dir", default_cache_dir())?
             .set_default("cache_size_limit_gb", default_cache_size_limit_gb() as i64)?
             .set_default("enable_realtime", default_enable_realtime())?
-            .set_default(
-                "video_loop_threshold_sec",
-                default_video_loop_threshold_sec() as f64,
-            )?
             .set_default("show_clock", default_show_clock())?
             .add_source(File::with_name("/etc/frame-viewer/config").required(false))
             .add_source(File::with_name("config").required(false));
@@ -892,7 +880,7 @@ async fn run_render_loop(
     )?;
 
     // Initialize video manager
-    let mut video_manager = VideoManager::new(state.config.video_loop_threshold_sec);
+    let mut video_manager = VideoManager::new();
 
     // Create texture creator
     let texture_creator = renderer.texture_creator();
@@ -918,6 +906,13 @@ async fn run_render_loop(
 
     // Track if we're showing video
     let mut is_video_playing = false;
+
+    // Dimensions of the currently-held video YUV texture in
+    // current_textures.display, if any. Distinct from display_size (which
+    // is shared with photo textures) so we never mistake a leftover poster
+    // texture (RGBA) for a reusable video texture (YUV) -- update_yuv_texture
+    // would silently fail on a non-YUV texture otherwise.
+    let mut video_texture_dims: Option<(u32, u32)> = None;
 
     // Overlay state
     let mut overlay_visible = false;
@@ -1252,23 +1247,45 @@ async fn run_render_loop(
             }
         }
 
+        // A video texture is only valid to reuse while its video is still
+        // the one playing; once playback stops (ended, advanced away from,
+        // etc.) current_textures.display will next hold a new item's poster
+        // (RGBA), not a video (YUV) texture.
+        if !is_video_playing {
+            video_texture_dims = None;
+        }
+
         // Update video frame if playing and not paused
         if is_video_playing && !is_paused {
             if let Some(frame) = video_manager.current_frame() {
-                // Update display texture with video frame
-                if let Ok(tex) = renderer.create_texture_from_pixels(
-                    &texture_creator,
-                    &frame.pixels,
-                    frame.width,
-                    frame.height,
-                ) {
+                // Reuse the existing texture in place when its dimensions
+                // already match (the common case, every frame after the
+                // first) instead of allocating a new GPU texture per frame.
+                let same_size = video_texture_dims == Some((frame.width, frame.height));
+                if same_size {
+                    if let Some(tex) = current_textures.display.as_mut() {
+                        let _ = renderer.update_yuv_texture(
+                            tex,
+                            &frame.y_plane,
+                            frame.y_stride,
+                            &frame.u_plane,
+                            frame.u_stride,
+                            &frame.v_plane,
+                            frame.v_stride,
+                        );
+                    }
+                } else if let Ok(tex) =
+                    renderer.create_yuv_texture(&texture_creator, frame.width, frame.height)
+                {
                     current_textures.display = Some(tex);
                     current_textures.display_size = Some((frame.width, frame.height));
+                    video_texture_dims = Some((frame.width, frame.height));
                 }
             }
 
-            // Check if non-looping video ended
-            if video_manager.is_ended() && !video_manager.is_looping() {
+            // Every video plays once, at its own length -- advance as soon
+            // as it ends rather than waiting on the fixed photo interval.
+            if video_manager.is_ended() {
                 tracing::debug!("Video ended, advancing to next");
                 is_video_playing = false;
                 advance_to_next(
@@ -1298,6 +1315,11 @@ async fn run_render_loop(
         if should_swap {
             if let Some(next) = next_textures.take() {
                 current_textures = next;
+                // current_textures.display is now a brand-new texture object
+                // (the next item's poster, RGBA) -- any video YUV texture we
+                // were tracking for reuse no longer applies, even if its
+                // dimensions happen to coincidentally match.
+                video_texture_dims = None;
             }
             if let Some(next) = next_right_textures.take() {
                 right_textures = next;
@@ -1310,12 +1332,14 @@ async fn run_render_loop(
             }
         }
 
-        // Check if it's time to advance (for images or looping videos)
-        // Don't auto-advance if paused
+        // Check if it's time to advance (for images, on the fixed interval).
+        // Video advances via its own EOS check above instead, not this timer
+        // -- so gate this out entirely while a video is playing.
+        // Don't auto-advance if paused.
         let should_advance = !is_paused
             && !renderer.is_transitioning()
-            && last_advance.elapsed() >= slide_duration
-            && (!is_video_playing || video_manager.is_looping());
+            && !is_video_playing
+            && last_advance.elapsed() >= slide_duration;
 
         if should_advance {
             advance_to_next(
@@ -1436,11 +1460,11 @@ async fn run_render_loop(
             }
         }
 
-        // Present everything (image + clock + any overlays) in one call
+        // Present everything (image + clock + any overlays) in one call.
+        // The canvas was created with present_vsync(), which already blocks
+        // until the display's next refresh -- an additional fixed sleep here
+        // stacked on top and roughly halved the achievable frame rate.
         renderer.present();
-
-        // Frame delay
-        renderer.frame_delay();
     }
 
     // Cleanup
@@ -2360,8 +2384,11 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
             let mut playlist = state.playlist.write().await;
             playlist.retain(|m| m.id != id);
 
-            let cache = state.cache.read().await;
+            let mut cache = state.cache.write().await;
             let _ = cache.save_playlist(&playlist);
+            // Remove this item's cached files immediately rather than
+            // waiting for the next periodic RefreshNeeded cleanup pass.
+            cache.cleanup_orphans(&playlist);
         }
         RealtimeEvent::ConfigChanged => {
             tracing::info!("Device config changed — restarting to apply new settings");
