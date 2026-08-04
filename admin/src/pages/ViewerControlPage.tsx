@@ -181,9 +181,9 @@ export function ViewerControlPage() {
 
   return (
     <Grid>
-      <Column sm={4} md={8} lg={8} xlg={6}>
+      <Column sm={4} md={8} lg={8}>
         <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem", padding: "1.5rem 0" }}>
-          <Heading style={{ fontSize: "1.5rem" }}>Viewer Control</Heading>
+          <Heading>Viewer Control</Heading>
 
           {error && (
             <InlineNotification
@@ -306,11 +306,7 @@ export function ViewerControlPage() {
                 onClick={handleToggleInfo}
                 disabled={!selectedId || sending === "toggle-info"}
               >
-                {sending === "toggle-info"
-                  ? "…"
-                  : infoOverlayOn
-                  ? "Hide All Details"
-                  : "Show All Details"}
+                {sending === "toggle-info" ? "…" : "Show All Details"}
               </Button>
               <Button
                 kind={locationOverlayOn ? "primary" : "secondary"}
@@ -319,11 +315,7 @@ export function ViewerControlPage() {
                 onClick={handleToggleLocationInfo}
                 disabled={!selectedId || sending === "toggle-location-info"}
               >
-                {sending === "toggle-location-info"
-                  ? "…"
-                  : locationOverlayOn
-                  ? "Hide Location & Date"
-                  : "Show Location & Date"}
+                {sending === "toggle-location-info" ? "…" : "Show Location & Date"}
               </Button>
             </div>
           </Tile>
