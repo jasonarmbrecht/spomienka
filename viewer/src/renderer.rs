@@ -229,6 +229,7 @@ const FONT_PATHS: &[&str] = &[
 ];
 
 impl<'ttf> Renderer<'ttf> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ttf_context: &'ttf Sdl2TtfContext,
         transition: Transition,
