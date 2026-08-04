@@ -93,6 +93,20 @@ export interface DeviceConfig {
 }
 
 /**
+ * Self-reported viewer telemetry, updated on each heartbeat (~90s cadence).
+ * cpuPercent is a delta since the previous heartbeat, not instantaneous, and
+ * is null on the first heartbeat after a viewer (re)start.
+ */
+export interface DeviceTelemetry {
+  version?: string;
+  uptimeSecs?: number;
+  osVersion?: string;
+  cpuPercent?: number | null;
+  rssBytes?: number;
+  memAvailableBytes?: number;
+}
+
+/**
  * Device record from the devices collection
  */
 export interface DeviceRecord extends BaseRecord {
@@ -100,6 +114,7 @@ export interface DeviceRecord extends BaseRecord {
   apiKey: string;
   lastSeen?: string;
   config?: DeviceConfig;
+  telemetry?: DeviceTelemetry;
 }
 
 /**

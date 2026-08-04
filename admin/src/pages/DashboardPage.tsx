@@ -21,7 +21,7 @@ import {
   StructuredListCell,
 } from "@carbon/react";
 import { Image as ImageIcon, Video as VideoIcon } from "@carbon/icons-react";
-import type { DeviceRecord, DeviceConfig } from "../types/pocketbase";
+import type { DeviceRecord, DeviceConfig, DeviceTelemetry } from "../types/pocketbase";
 
 type MediaSummary = {
   id: string;
@@ -52,10 +52,13 @@ type MediaStats = {
 
 type BackupInfo = { name: string; timestamp: string | null };
 
+type ServiceStatus = { name: string; active: boolean; state: string; since: string | null };
+
 type SystemStatus = {
   storageBytes: number | null;
   backups: BackupInfo[];
   software: { pocketbase?: string; ffmpeg?: string; exiftool?: string; hostOs?: string };
+  services: ServiceStatus[];
 };
 
 function formatBytes(bytes: number | null): string {
@@ -68,6 +71,27 @@ function formatBytes(bytes: number | null): string {
     unitIndex++;
   }
   return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function formatDuration(totalSeconds: number): string {
+  if (totalSeconds < 60) return `${Math.floor(totalSeconds)}s`;
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function telemetrySummary(t?: DeviceTelemetry): string {
+  if (!t || Object.keys(t).length === 0) return "No telemetry yet";
+  const parts: string[] = [];
+  if (t.version) parts.push(`v${t.version}`);
+  if (t.osVersion) parts.push(t.osVersion);
+  if (typeof t.uptimeSecs === "number") parts.push(`up ${formatDuration(t.uptimeSecs)}`);
+  if (typeof t.cpuPercent === "number") parts.push(`CPU ${t.cpuPercent.toFixed(0)}%`);
+  if (typeof t.rssBytes === "number") parts.push(`RAM ${formatBytes(t.rssBytes)}`);
+  return parts.length > 0 ? parts.join(" · ") : "No telemetry yet";
 }
 
 function relativeTime(iso: string): string {
@@ -338,6 +362,11 @@ export function DashboardPage() {
                                 {configSummary(d.config)}
                               </span>
                             </StructuredListCell>
+                            <StructuredListCell>
+                              <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
+                                {telemetrySummary(d.telemetry)}
+                              </span>
+                            </StructuredListCell>
                           </StructuredListRow>
                         );
                       })}
@@ -388,6 +417,16 @@ export function DashboardPage() {
                       ["ffmpeg", systemStatus.software.ffmpeg || "—"],
                       ["exiftool", systemStatus.software.exiftool || "—"],
                       ["Backend host OS", systemStatus.software.hostOs || "—"],
+                      ...devices
+                        .filter((d) => d.telemetry?.version)
+                        .map(
+                          (d): [string, string] => [
+                            `Viewer — ${d.name}`,
+                            [d.telemetry?.version && `v${d.telemetry.version}`, d.telemetry?.osVersion]
+                              .filter(Boolean)
+                              .join(" · "),
+                          ]
+                        ),
                     ] as [string, string][]
                   ).map(([label, value], i, arr) => (
                     <div
@@ -408,6 +447,30 @@ export function DashboardPage() {
                       <span>{value}</span>
                     </div>
                   ))}
+                  {systemStatus.services.length > 0 && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: "1.5rem", paddingTop: "1rem" }}>
+                      {systemStatus.services.map((s) => {
+                        const uptimeSecs = s.since ? (Date.now() - new Date(s.since).getTime()) / 1000 : null;
+                        return (
+                          <div key={s.name} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                            <span
+                              style={{
+                                color: s.active ? "var(--cds-support-success)" : "var(--cds-support-error)",
+                                fontSize: "0.6rem",
+                                lineHeight: 1,
+                              }}
+                            >
+                              ●
+                            </span>
+                            <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
+                              {s.name} — {s.active ? "active" : s.state}
+                              {uptimeSecs !== null ? ` · up ${formatDuration(uptimeSecs)}` : ""}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </Tile>
               </div>
             )}
