@@ -90,7 +90,8 @@ function telemetrySummary(t?: DeviceTelemetry): string {
   if (t.osVersion) parts.push(t.osVersion);
   if (typeof t.uptimeSecs === "number") parts.push(`up ${formatDuration(t.uptimeSecs)}`);
   if (typeof t.cpuPercent === "number") parts.push(`CPU ${t.cpuPercent.toFixed(0)}%`);
-  if (typeof t.rssBytes === "number") parts.push(`RAM ${formatBytes(t.rssBytes)}`);
+  if (typeof t.rssBytes === "number") parts.push(`Viewer RAM ${formatBytes(t.rssBytes)}`);
+  if (typeof t.memAvailableBytes === "number") parts.push(`${formatBytes(t.memAvailableBytes)} free on device`);
   return parts.length > 0 ? parts.join(" · ") : "No telemetry yet";
 }
 
