@@ -7,21 +7,9 @@ import { Notification } from "../components/Notification";
 import { EmptyState } from "../components/EmptyState";
 import { LoadingSpinner } from "../components/LoadingSpinner";
 import { useNotification } from "../hooks/useNotification";
-import {
-  Grid,
-  Column,
-  Heading,
-  Tile,
-  ClickableTile,
-  Tag,
-  Stack,
-  StructuredListWrapper,
-  StructuredListBody,
-  StructuredListRow,
-  StructuredListCell,
-} from "@carbon/react";
+import { Grid, Column, Heading, Tile, ClickableTile, Tag, Stack } from "@carbon/react";
 import { Image as ImageIcon, Video as VideoIcon } from "@carbon/icons-react";
-import type { DeviceRecord, DeviceConfig, DeviceTelemetry } from "../types/pocketbase";
+import type { DeviceRecord } from "../types/pocketbase";
 
 type MediaSummary = {
   id: string;
@@ -83,16 +71,8 @@ function formatDuration(totalSeconds: number): string {
   return `${minutes}m`;
 }
 
-function telemetrySummary(t?: DeviceTelemetry): string {
-  if (!t || Object.keys(t).length === 0) return "No telemetry yet";
-  const parts: string[] = [];
-  if (t.version) parts.push(`v${t.version}`);
-  if (t.osVersion) parts.push(t.osVersion);
-  if (typeof t.uptimeSecs === "number") parts.push(`up ${formatDuration(t.uptimeSecs)}`);
-  if (typeof t.cpuPercent === "number") parts.push(`CPU ${t.cpuPercent.toFixed(0)}%`);
-  if (typeof t.rssBytes === "number") parts.push(`Viewer RAM ${formatBytes(t.rssBytes)}`);
-  if (typeof t.memAvailableBytes === "number") parts.push(`${formatBytes(t.memAvailableBytes)} free on device`);
-  return parts.length > 0 ? parts.join(" · ") : "No telemetry yet";
+function serviceByName(services: ServiceStatus[], name: string): ServiceStatus | undefined {
+  return services.find((s) => s.name === name);
 }
 
 function relativeTime(iso: string): string {
@@ -109,13 +89,48 @@ function uploaderLabel(m: MediaSummary): string {
   return owner.name || owner.email;
 }
 
-function configSummary(cfg?: DeviceConfig): string {
-  if (!cfg) return "default settings";
-  const interval = cfg.interval ?? 8000;
-  const transition = cfg.transition ?? "fade";
-  const shuffle = cfg.shuffle ? "shuffle on" : "shuffle off";
-  const mode = cfg.displayMode === "dynamic" ? "dynamic layout" : "single image";
-  return `${Math.round(interval / 1000)}s · ${transition} · ${shuffle} · ${mode}`;
+function StatusDot({ color }: { color: string }) {
+  return <span style={{ color, fontSize: "0.6rem", lineHeight: 1 }}>●</span>;
+}
+
+function ServiceLight({ label, service }: { label: string; service?: ServiceStatus }) {
+  const active = service?.active ?? false;
+  const uptimeSecs = service?.since ? (Date.now() - new Date(service.since).getTime()) / 1000 : null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+      <StatusDot color={active ? "var(--cds-support-success)" : "var(--cds-support-error)"} />
+      <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
+        {label} — {service ? (active ? "active" : service.state) : "unknown"}
+        {uptimeSecs !== null ? ` · up ${formatDuration(uptimeSecs)}` : ""}
+      </span>
+    </div>
+  );
+}
+
+function KeyValueTable({ rows }: { rows: [string, ReactNode][] }) {
+  return (
+    <div>
+      {rows.map(([label, value], i) => (
+        <div
+          key={label}
+          style={{
+            display: "flex",
+            gap: "1.5rem",
+            padding: "0.375rem 0",
+            borderBottom: i < rows.length - 1 ? "1px solid var(--cds-border-subtle-01)" : undefined,
+          }}
+        >
+          <span
+            className="cds--helper-text-01"
+            style={{ color: "var(--cds-text-secondary)", width: "8rem", flexShrink: 0 }}
+          >
+            {label}
+          </span>
+          <span>{value}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function StatTile({
@@ -331,7 +346,7 @@ export function DashboardPage() {
               </Tile>
             )}
 
-            {/* Viewers panel */}
+            {/* Viewers — one independent section per device */}
             {isAdmin && (
               <div>
                 <p className="cds--productive-heading-02" style={{ marginBottom: "0.75rem" }}>
@@ -340,39 +355,75 @@ export function DashboardPage() {
                 {devices.length === 0 ? (
                   <EmptyState message="No devices configured yet." />
                 ) : (
-                  <StructuredListWrapper>
-                    <StructuredListBody>
-                      {devices.map((d) => {
-                        const status = getDeviceStatus(d.lastSeen);
-                        return (
-                          <StructuredListRow key={d.id}>
-                            <StructuredListCell>
-                              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                                <span style={{ color: status.color, fontSize: "0.6rem", lineHeight: 1 }}>●</span>
-                                <strong>{d.name}</strong>
-                              </div>
-                            </StructuredListCell>
-                            <StructuredListCell>
+                  <Stack gap={4}>
+                    {devices.map((d) => {
+                      const status = getDeviceStatus(d.lastSeen);
+                      const cfg = d.config;
+                      const t = d.telemetry;
+                      return (
+                        <Tile key={d.id}>
+                          <div
+                            style={{
+                              display: "flex",
+                              flexWrap: "wrap",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: "1rem",
+                              paddingBottom: "0.75rem",
+                              marginBottom: "0.75rem",
+                              borderBottom: "1px solid var(--cds-border-subtle-01)",
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                              <StatusDot color={status.color} />
+                              <strong className="cds--productive-heading-03">{d.name}</strong>
                               <span className="cds--helper-text-01" style={{ color: status.color }}>
                                 {status.label}
                                 {status.detail ? ` — ${status.detail}` : ""}
                               </span>
-                            </StructuredListCell>
-                            <StructuredListCell>
-                              <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
-                                {configSummary(d.config)}
-                              </span>
-                            </StructuredListCell>
-                            <StructuredListCell>
-                              <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
-                                {telemetrySummary(d.telemetry)}
-                              </span>
-                            </StructuredListCell>
-                          </StructuredListRow>
-                        );
-                      })}
-                    </StructuredListBody>
-                  </StructuredListWrapper>
+                            </div>
+                            <div style={{ display: "flex", gap: "1.5rem" }}>
+                              <ServiceLight label="PocketBase" service={serviceByName(systemStatus?.services ?? [], "pocketbase")} />
+                              <ServiceLight label="Viewer process" service={serviceByName(systemStatus?.services ?? [], "frame-viewer")} />
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "2rem" }}>
+                            <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                              <p style={{ fontWeight: 600, marginBottom: "0.375rem" }}>Versions</p>
+                              <KeyValueTable
+                                rows={[
+                                  ["App", t?.version ? `v${t.version}` : "—"],
+                                  ["Host OS", t?.osVersion || "—"],
+                                ]}
+                              />
+                            </div>
+                            <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                              <p style={{ fontWeight: 600, marginBottom: "0.375rem" }}>Resources</p>
+                              <KeyValueTable
+                                rows={[
+                                  ["CPU", typeof t?.cpuPercent === "number" ? `${t.cpuPercent.toFixed(0)}%` : "—"],
+                                  ["Viewer RAM", typeof t?.rssBytes === "number" ? formatBytes(t.rssBytes) : "—"],
+                                  ["Free on device", typeof t?.memAvailableBytes === "number" ? formatBytes(t.memAvailableBytes) : "—"],
+                                  ["Uptime", typeof t?.uptimeSecs === "number" ? formatDuration(t.uptimeSecs) : "—"],
+                                ]}
+                              />
+                            </div>
+                            <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                              <p style={{ fontWeight: 600, marginBottom: "0.375rem" }}>Settings</p>
+                              <KeyValueTable
+                                rows={[
+                                  ["Interval", `${Math.round((cfg?.interval ?? 8000) / 1000)}s`],
+                                  ["Transition", cfg?.transition ?? "fade"],
+                                  ["Shuffle", cfg?.shuffle ? "On" : "Off"],
+                                  ["Layout", cfg?.displayMode === "dynamic" ? "Dynamic" : "Single image"],
+                                ]}
+                              />
+                            </div>
+                          </div>
+                        </Tile>
+                      );
+                    })}
+                  </Stack>
                 )}
               </div>
             )}
@@ -411,67 +462,21 @@ export function DashboardPage() {
                       </div>
                     </div>
                   </div>
-                  {(
-                    [
+                  <KeyValueTable
+                    rows={[
                       ["Admin SPA", import.meta.env.VITE_APP_VERSION || "—"],
                       ["PocketBase", systemStatus.software.pocketbase || "—"],
                       ["ffmpeg", systemStatus.software.ffmpeg || "—"],
                       ["exiftool", systemStatus.software.exiftool || "—"],
                       ["Backend host OS", systemStatus.software.hostOs || "—"],
-                      ...devices
-                        .filter((d) => d.telemetry?.version)
-                        .map(
-                          (d): [string, string] => [
-                            `Viewer — ${d.name}`,
-                            [d.telemetry?.version && `v${d.telemetry.version}`, d.telemetry?.osVersion]
-                              .filter(Boolean)
-                              .join(" · "),
-                          ]
-                        ),
-                    ] as [string, string][]
-                  ).map(([label, value], i, arr) => (
-                    <div
-                      key={label}
-                      style={{
-                        display: "flex",
-                        gap: "2rem",
-                        padding: "0.375rem 0",
-                        borderBottom: i < arr.length - 1 ? "1px solid var(--cds-border-subtle-01)" : undefined,
-                      }}
-                    >
-                      <span
-                        className="cds--helper-text-01"
-                        style={{ color: "var(--cds-text-secondary)", width: "9rem", flexShrink: 0 }}
-                      >
-                        {label}
-                      </span>
-                      <span>{value}</span>
-                    </div>
-                  ))}
-                  {systemStatus.services.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: "1.5rem", paddingTop: "1rem" }}>
-                      {systemStatus.services.map((s) => {
-                        const uptimeSecs = s.since ? (Date.now() - new Date(s.since).getTime()) / 1000 : null;
-                        return (
-                          <div key={s.name} style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                            <span
-                              style={{
-                                color: s.active ? "var(--cds-support-success)" : "var(--cds-support-error)",
-                                fontSize: "0.6rem",
-                                lineHeight: 1,
-                              }}
-                            >
-                              ●
-                            </span>
-                            <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
-                              {s.name} — {s.active ? "active" : s.state}
-                              {uptimeSecs !== null ? ` · up ${formatDuration(uptimeSecs)}` : ""}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                    ]}
+                  />
+                  {/* Admin UI's own status, kept separate from the viewer sections above —
+                      unlike PocketBase/frame-viewer, it isn't tied to any specific viewer and
+                      could theoretically be hosted on a different machine. */}
+                  <div style={{ paddingTop: "1rem" }}>
+                    <ServiceLight label="Admin UI" service={serviceByName(systemStatus.services, "frame-admin")} />
+                  </div>
                 </Tile>
               </div>
             )}
