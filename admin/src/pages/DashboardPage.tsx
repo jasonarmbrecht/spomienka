@@ -13,7 +13,6 @@ import {
   Heading,
   Tile,
   ClickableTile,
-  Button,
   Tag,
   Stack,
   StructuredListWrapper,
@@ -21,13 +20,7 @@ import {
   StructuredListRow,
   StructuredListCell,
 } from "@carbon/react";
-import {
-  Upload as UploadIcon,
-  Checkmark,
-  Settings as SettingsIcon,
-  Image as ImageIcon,
-  Video as VideoIcon,
-} from "@carbon/icons-react";
+import { Image as ImageIcon, Video as VideoIcon } from "@carbon/icons-react";
 import type { DeviceRecord, DeviceConfig } from "../types/pocketbase";
 
 type MediaSummary = {
@@ -161,7 +154,6 @@ export function DashboardPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const { error, showError } = useNotification();
-  const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
   const [mediaStats, setMediaStats] = useState<MediaStats | null>(null);
@@ -373,23 +365,6 @@ export function DashboardPage() {
                 </div>
               </div>
             )}
-
-            {/* Quick actions */}
-            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-              <Button kind="tertiary" renderIcon={UploadIcon} onClick={() => navigate("/upload")}>
-                Upload
-              </Button>
-              {isAdmin && (
-                <Button kind="tertiary" renderIcon={Checkmark} onClick={() => navigate("/approvals")}>
-                  Approvals
-                </Button>
-              )}
-              {isAdmin && (
-                <Button kind="tertiary" renderIcon={SettingsIcon} onClick={() => navigate("/settings")}>
-                  Settings
-                </Button>
-              )}
-            </div>
           </Stack>
         )}
       </Column>
