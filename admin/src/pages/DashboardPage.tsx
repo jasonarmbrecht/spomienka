@@ -385,13 +385,15 @@ export function DashboardPage() {
                       key={label}
                       style={{
                         display: "flex",
-                        justifyContent: "space-between",
-                        gap: "1rem",
+                        gap: "2rem",
                         padding: "0.375rem 0",
                         borderBottom: i < arr.length - 1 ? "1px solid var(--cds-border-subtle-01)" : undefined,
                       }}
                     >
-                      <span className="cds--helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
+                      <span
+                        className="cds--helper-text-01"
+                        style={{ color: "var(--cds-text-secondary)", width: "9rem", flexShrink: 0 }}
+                      >
                         {label}
                       </span>
                       <span>{value}</span>
