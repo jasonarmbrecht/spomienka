@@ -1167,6 +1167,20 @@ device_api_key = "{device_key}"
 
     viewer_requires_mounts = f'\nRequiresMountsFor="{primary_mount}"' if primary_mount else ""
 
+    # After=pocketbase.service only orders unit *start*, not readiness — PocketBase
+    # can still be mid-startup (loading migrations, opening its DB) when frame-viewer
+    # makes its first device-auth call, which has no retry and silently falls back
+    # to compiled-in defaults on failure. Block here until PocketBase actually answers,
+    # bounded so a genuinely broken PocketBase still surfaces as a failed unit (which
+    # Restart=on-failure retries) rather than hanging forever.
+    viewer_exec_start_pre = ""
+    if pb_on_pi:
+        viewer_exec_start_pre = (
+            f'ExecStartPre=/bin/sh -c \'i=0; '
+            f'until curl -sf http://localhost:{PB_PORT_DEFAULT}/api/health >/dev/null 2>&1; do '
+            f'i=$((i+1)); [ "$i" -ge 30 ] && exit 1; sleep 1; done\'\n'
+        )
+
     viewer_service = f"""[Unit]
 Description=Frame Viewer
 After={viewer_after}
@@ -1176,7 +1190,7 @@ Wants=network-online.target{viewer_requires_mounts}
 Environment=RUST_LOG=info
 Environment=SDL_VIDEODRIVER=kmsdrm
 EnvironmentFile=/etc/spomienka/viewer-credentials
-ExecStart=/usr/local/bin/{VIEWER_BIN_NAME}
+{viewer_exec_start_pre}ExecStart=/usr/local/bin/{VIEWER_BIN_NAME}
 WorkingDirectory={Path.home()}
 SupplementaryGroups=video render input
 Restart=on-failure

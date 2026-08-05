@@ -567,6 +567,74 @@ async fn device_auth(
     Ok(res.json::<DeviceAuthResponse>().await?)
 }
 
+/// Apply the admin-controlled config fields (from a fresh device-auth response,
+/// or a cached one) onto the running `AppConfig`.
+fn apply_device_config(config: &mut AppConfig, cfg: &serde_json::Value) {
+    if let Some(v) = cfg.get("interval").and_then(|v| v.as_u64()) {
+        config.interval_ms = v;
+    }
+    if let Some(v) = cfg.get("transition").and_then(|v| v.as_str()) {
+        config.transition = v.to_string();
+    }
+    if let Some(v) = cfg.get("transitionDuration").and_then(|v| v.as_u64()) {
+        config.transition_duration_ms = v as u32;
+    }
+    if let Some(v) = cfg.get("shuffle").and_then(|v| v.as_bool()) {
+        config.shuffle = v;
+    }
+    if let Some(v) = cfg.get("blur").and_then(|v| v.as_bool()) {
+        config.blur_background = v;
+    }
+    if let Some(v) = cfg.get("showClock").and_then(|v| v.as_bool()) {
+        config.show_clock = v;
+    }
+    if let Some(v) = cfg.get("clockOffsetX").and_then(|v| v.as_i64()) {
+        config.clock_offset_x = v as i32;
+    }
+    if let Some(v) = cfg.get("clockOffsetY").and_then(|v| v.as_i64()) {
+        config.clock_offset_y = v as i32;
+    }
+    if let Some(v) = cfg.get("showInfo").and_then(|v| v.as_bool()) {
+        config.show_info = v;
+    }
+    if let Some(v) = cfg.get("showLocationInfo").and_then(|v| v.as_bool()) {
+        config.show_location_info = v;
+    }
+    if let Some(v) = cfg.get("displayMode").and_then(|v| v.as_str()) {
+        config.display_mode = v.to_string();
+    }
+}
+
+fn device_config_cache_path(cache_dir: &str) -> std::path::PathBuf {
+    std::path::Path::new(cache_dir).join("device_config.json")
+}
+
+/// Load the last successfully-applied device config, if any was ever cached.
+fn load_cached_device_config(cache_dir: &str) -> Option<serde_json::Value> {
+    let json = std::fs::read_to_string(device_config_cache_path(cache_dir)).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+/// Persist a freshly-fetched device config so it can be used as a fallback the
+/// next time device-auth fails (e.g. PocketBase not yet listening on cold boot).
+fn save_cached_device_config(cache_dir: &str, cfg: &serde_json::Value) {
+    let path = device_config_cache_path(cache_dir);
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!("Failed to create cache dir for device config: {}", e);
+            return;
+        }
+    }
+    match serde_json::to_string_pretty(cfg) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                tracing::warn!("Failed to cache device config: {}", e);
+            }
+        }
+        Err(e) => tracing::warn!("Failed to serialize device config for caching: {}", e),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Captured as early as possible so the heartbeat's uptimeSecs reflects true
@@ -628,40 +696,8 @@ async fn main() -> Result<()> {
     {
         match device_auth(&pre_client, &config.pb_url, id, key).await {
             Ok(resp) => {
-                let cfg = &resp.config;
-                if let Some(v) = cfg.get("interval").and_then(|v| v.as_u64()) {
-                    config.interval_ms = v;
-                }
-                if let Some(v) = cfg.get("transition").and_then(|v| v.as_str()) {
-                    config.transition = v.to_string();
-                }
-                if let Some(v) = cfg.get("transitionDuration").and_then(|v| v.as_u64()) {
-                    config.transition_duration_ms = v as u32;
-                }
-                if let Some(v) = cfg.get("shuffle").and_then(|v| v.as_bool()) {
-                    config.shuffle = v;
-                }
-                if let Some(v) = cfg.get("blur").and_then(|v| v.as_bool()) {
-                    config.blur_background = v;
-                }
-                if let Some(v) = cfg.get("showClock").and_then(|v| v.as_bool()) {
-                    config.show_clock = v;
-                }
-                if let Some(v) = cfg.get("clockOffsetX").and_then(|v| v.as_i64()) {
-                    config.clock_offset_x = v as i32;
-                }
-                if let Some(v) = cfg.get("clockOffsetY").and_then(|v| v.as_i64()) {
-                    config.clock_offset_y = v as i32;
-                }
-                if let Some(v) = cfg.get("showInfo").and_then(|v| v.as_bool()) {
-                    config.show_info = v;
-                }
-                if let Some(v) = cfg.get("showLocationInfo").and_then(|v| v.as_bool()) {
-                    config.show_location_info = v;
-                }
-                if let Some(v) = cfg.get("displayMode").and_then(|v| v.as_str()) {
-                    config.display_mode = v.to_string();
-                }
+                apply_device_config(&mut config, &resp.config);
+                save_cached_device_config(&config.cache_dir, &resp.config);
                 tracing::info!("Device authenticated — applied config from PocketBase");
                 Some(resp.token)
             }
@@ -670,6 +706,23 @@ async fn main() -> Result<()> {
                     "Device auth failed: {} — is this device still registered?",
                     e
                 );
+                // PocketBase can still be starting up when this races it at boot
+                // (After= only orders unit start, not readiness) — fall back to the
+                // last successfully-applied config instead of silently reverting
+                // every admin setting to compiled-in defaults for the whole run.
+                match load_cached_device_config(&config.cache_dir) {
+                    Some(cached_cfg) => {
+                        apply_device_config(&mut config, &cached_cfg);
+                        tracing::warn!(
+                            "Applied last-known-good device config from cache (PocketBase unreachable)"
+                        );
+                    }
+                    None => {
+                        tracing::warn!(
+                            "No cached device config available — using compiled-in defaults"
+                        );
+                    }
+                }
                 None
             }
         }
