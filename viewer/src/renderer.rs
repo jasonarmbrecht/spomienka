@@ -201,6 +201,11 @@ pub struct Renderer<'ttf> {
     transition_start: Option<Instant>,
     pub blur_background: bool,
     pub current_layout: SlideLayout,
+    /// Layout for the incoming slide during a transition — `None` when idle.
+    /// `current_layout` continues to describe the outgoing panels (still on
+    /// screen, fading out) until the swap point, at which point it's set to
+    /// this value and this is cleared.
+    incoming_layout: Option<SlideLayout>,
     show_clock: bool,
     clock_offset_x: i32,
     clock_offset_y: i32,
@@ -373,6 +378,7 @@ impl<'ttf> Renderer<'ttf> {
             transition_start: None,
             blur_background,
             current_layout: initial_layout,
+            incoming_layout: None,
             show_clock,
             clock_offset_x,
             clock_offset_y,
@@ -1064,6 +1070,7 @@ impl<'ttf> Renderer<'ttf> {
         &mut self,
         _tc: &'a TextureCreator<WindowContext>,
         panels: &mut [&mut MediaTextures<'a>],
+        layout: SlideLayout,
         alpha: u8,
     ) -> Result<()> {
         const GAP: u32 = 8;
@@ -1076,7 +1083,7 @@ impl<'ttf> Renderer<'ttf> {
             sizes[i] = p.display_size;
         }
 
-        let rects = Self::compute_panel_rects(self.current_layout, sw, sh, &sizes);
+        let rects = Self::compute_panel_rects(layout, sw, sh, &sizes);
         let n = rects.len();
 
         // Record rects for info overlay
@@ -1499,16 +1506,23 @@ impl<'ttf> Renderer<'ttf> {
             (_, TransitionState::TransitioningIn { progress }) => (progress * 255.0) as u8,
         };
 
+        // The outgoing panels always use current_layout (unchanged until the
+        // swap point below flips it). The incoming panels use whatever layout
+        // was picked for the next slide, which may have a different shape
+        // (e.g. Single -> DualPortrait) — using the wrong one here is what
+        // caused stale/mismatched panels to flash during a transition.
+        let incoming_layout = self.incoming_layout.unwrap_or(self.current_layout);
+
         if self.transition_type == Transition::Crossfade {
             if let TransitionState::TransitioningOut { progress } = self.transition_state {
                 let next_alpha = (progress * 255.0) as u8;
                 if let Some(np) = next_panels {
-                    self.render_layout_panels(tc, np, next_alpha)?;
+                    self.render_layout_panels(tc, np, incoming_layout, next_alpha)?;
                 }
             }
         }
 
-        self.render_layout_panels(tc, panels, alpha)?;
+        self.render_layout_panels(tc, panels, self.current_layout, alpha)?;
 
         if self.show_clock {
             self.render_clock(tc)?;
@@ -1517,15 +1531,24 @@ impl<'ttf> Renderer<'ttf> {
         Ok(())
     }
 
-    /// Start a transition to the next image.
-    pub fn start_transition(&mut self) {
+    /// Start a transition to the next image, which may use a different
+    /// layout than the one currently on screen. `current_layout` keeps
+    /// describing the outgoing panels until `update_transition` flips it at
+    /// the swap point.
+    pub fn start_transition(&mut self, incoming_layout: SlideLayout) {
         self.transition_state = TransitionState::TransitioningOut { progress: 0.0 };
         self.transition_start = Some(Instant::now());
+        self.incoming_layout = Some(incoming_layout);
     }
 
     /// Check if a transition is currently in progress.
     pub fn is_transitioning(&self) -> bool {
         self.transition_state != TransitionState::Idle
+    }
+
+    /// Layout for the incoming slide during a transition, if one is pending.
+    pub fn incoming_layout(&self) -> Option<SlideLayout> {
+        self.incoming_layout
     }
 
     /// Update transition state based on elapsed time.
@@ -1548,6 +1571,13 @@ impl<'ttf> Renderer<'ttf> {
             TransitionState::TransitioningOut { .. } => {
                 let progress = (elapsed / out_duration).min(1.0);
                 if progress >= 1.0 {
+                    // Swap point: flip current_layout to the incoming slide's
+                    // layout in lockstep with the texture swap the caller
+                    // performs on this same `true` return, so the two never
+                    // observe different layouts on the same frame.
+                    if let Some(incoming) = self.incoming_layout.take() {
+                        self.current_layout = incoming;
+                    }
                     if is_crossfade {
                         // Crossfade is done — swap and go idle immediately.
                         self.transition_state = TransitionState::Idle;
