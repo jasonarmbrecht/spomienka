@@ -1641,7 +1641,15 @@ impl<'ttf> Renderer<'ttf> {
         let query = texture.query();
 
         let base_margin = (self.screen_width.min(self.screen_height) as f32 * 0.035).round() as i32;
-        let x = self.screen_width as i32 - query.width as i32 - base_margin - self.clock_offset_x;
+        // The raw corner margin sat the clock too close to the edge in practice —
+        // this is the horizontal inset admins converged on via clockOffsetX before
+        // it became the default resting position (clockOffsetX now adjusts from here).
+        let default_x_inset = 101;
+        let x = self.screen_width as i32
+            - query.width as i32
+            - base_margin
+            - default_x_inset
+            - self.clock_offset_x;
         let y = self.screen_height as i32 - query.height as i32 - base_margin - self.clock_offset_y;
         let dest = Rect::new(x, y, query.width, query.height);
 
