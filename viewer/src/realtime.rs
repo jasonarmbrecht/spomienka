@@ -29,8 +29,6 @@ pub enum RealtimeEvent {
     RemoteRandom,
     RemotePause { secs: u64 },
     RemoteResume,
-    RemoteToggleInfo,
-    RemoteToggleLocationInfo,
     RemoteTagFilter { tags: Vec<String>, mode: String },
     RemoteTagFilterClear,
 }
@@ -214,8 +212,6 @@ impl RealtimeManager {
                     .min(300),
             },
             "resume" => RealtimeEvent::RemoteResume,
-            "toggle-info" => RealtimeEvent::RemoteToggleInfo,
-            "toggle-location-info" => RealtimeEvent::RemoteToggleLocationInfo,
             "tag-filter" => {
                 let tags = payload
                     .get("tags")

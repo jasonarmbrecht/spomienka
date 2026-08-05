@@ -18,7 +18,6 @@ import {
   PreviousFilled,
   NextFilled,
   Shuffle,
-  InformationFilled,
   Filter,
   FilterRemove,
 } from "@carbon/icons-react";
@@ -43,10 +42,6 @@ export function ViewerControlPage() {
   // Pause countdown
   const [pauseSecs, setPauseSecs] = useState<number | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Info overlay local state (mirrors viewer state optimistically)
-  const [infoOverlayOn, setInfoOverlayOn] = useState(false);
-  const [locationOverlayOn, setLocationOverlayOn] = useState(false);
 
   // Tag filter
   const [tagInput, setTagInput] = useState("");
@@ -135,18 +130,6 @@ export function ViewerControlPage() {
     setPauseSecs(null);
   };
 
-  const handleToggleInfo = async () => {
-    await sendCommand("toggle-info");
-    setInfoOverlayOn((v) => !v);
-    if (!infoOverlayOn) setLocationOverlayOn(false);
-  };
-
-  const handleToggleLocationInfo = async () => {
-    await sendCommand("toggle-location-info");
-    setLocationOverlayOn((v) => !v);
-    if (!locationOverlayOn) setInfoOverlayOn(false);
-  };
-
   const addTag = () => {
     const tag = tagInput.trim();
     if (tag && !selectedTags.includes(tag)) {
@@ -200,8 +183,6 @@ export function ViewerControlPage() {
                 onChange={(e) => {
                   setSelectedId(e.target.value);
                   setPauseSecs(null);
-                  setInfoOverlayOn(false);
-                  setLocationOverlayOn(false);
                   setFilterApplied(false);
                   setSelectedTags([]);
                 }}
@@ -286,31 +267,6 @@ export function ViewerControlPage() {
                 disabled={!selectedId || sending === "random"}
               >
                 {sending === "random" ? "Jumping…" : "Random"}
-              </Button>
-            </div>
-          </Tile>
-
-          {/* Info overlay */}
-          <Tile>
-            <Heading style={{ fontSize: "1rem", marginBottom: "1rem" }}>Info Overlay</Heading>
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-              <Button
-                kind={infoOverlayOn ? "primary" : "secondary"}
-                renderIcon={InformationFilled}
-                style={{ minHeight: 64, width: "100%" }}
-                onClick={handleToggleInfo}
-                disabled={!selectedId || sending === "toggle-info"}
-              >
-                {sending === "toggle-info" ? "…" : "Show All Details"}
-              </Button>
-              <Button
-                kind={locationOverlayOn ? "primary" : "secondary"}
-                renderIcon={InformationFilled}
-                style={{ minHeight: 64, width: "100%" }}
-                onClick={handleToggleLocationInfo}
-                disabled={!selectedId || sending === "toggle-location-info"}
-              >
-                {sending === "toggle-location-info" ? "…" : "Show Location & Date"}
               </Button>
             </div>
           </Tile>
