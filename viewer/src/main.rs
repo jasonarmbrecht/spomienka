@@ -259,6 +259,10 @@ struct AppState {
     is_offline: RwLock<bool>,
     /// Active tag filter: (tags, mode) where mode is "whitelist" or "blacklist".
     tag_filter: RwLock<Option<(Vec<String>, String)>>,
+    /// Media ids shown most recently, oldest first. Used by dynamic-layout
+    /// reordering to avoid immediately re-showing an image right after a
+    /// cycle boundary reshuffle.
+    recent_shown: RwLock<VecDeque<String>>,
 }
 
 impl AppState {
@@ -283,7 +287,24 @@ impl AppState {
             asset_manager,
             is_offline: RwLock::new(false),
             tag_filter: RwLock::new(None),
+            recent_shown: RwLock::new(VecDeque::new()),
         })
+    }
+
+    /// Record media ids as just shown, for dynamic-layout reshuffle boundary
+    /// avoidance. Caps history so small libraries don't exclude everything.
+    async fn note_shown(&self, ids: &[String]) {
+        let playlist_len = self.playlist.read().await.len();
+        let cap = playlist_len.saturating_sub(2).clamp(1, 8);
+        let mut recent = self.recent_shown.write().await;
+        for id in ids {
+            if recent.back() != Some(id) {
+                recent.push_back(id.clone());
+            }
+        }
+        while recent.len() > cap {
+            recent.pop_front();
+        }
     }
 
     /// Get the current auth token.
@@ -765,7 +786,7 @@ async fn main() -> Result<()> {
         if state.config.display_mode == "dynamic" {
             // In dynamic mode always reorder into layout-compatible groups so that
             // multi-image layouts (quad-landscape, portrait+2-landscape, etc.) fire reliably.
-            reorder_for_dynamic_layouts(&mut playlist);
+            reorder_for_dynamic_layouts(&mut playlist, &VecDeque::new());
         } else if state.config.shuffle {
             use rand::seq::SliceRandom;
             playlist.shuffle(&mut rand::thread_rng());
@@ -1906,10 +1927,23 @@ fn media_visual_orientation(m: &assets::Media) -> ImageOrientation {
 /// Images are separated by orientation, each bucket is independently shuffled, then groups
 /// are drawn greedily in random weighted order until all images are placed. This guarantees
 /// that consecutive runs of the same orientation always exist, enabling every layout type.
-fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>) {
+///
+/// `recent_shown` lists media ids shown just before this reorder (oldest first); if an
+/// orientation bucket's shuffle happens to land one of them in the leading slot, it's
+/// swapped further back so the new cycle doesn't immediately repeat what's still on screen.
+fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>, recent_shown: &VecDeque<String>) {
     use rand::seq::SliceRandom;
     use rand::Rng;
     let mut rng = rand::thread_rng();
+
+    fn avoid_leading_repeat(bucket: &mut [assets::Media], recent_shown: &VecDeque<String>) {
+        if bucket.len() < 2 || !recent_shown.contains(&bucket[0].id) {
+            return;
+        }
+        if let Some(swap_idx) = (1..bucket.len()).find(|&i| !recent_shown.contains(&bucket[i].id)) {
+            bucket.swap(0, swap_idx);
+        }
+    }
 
     // Drain into orientation buckets
     let mut landscapes: std::collections::VecDeque<assets::Media> = Default::default();
@@ -1931,6 +1965,9 @@ fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>) {
     lv.shuffle(&mut rng);
     pv.shuffle(&mut rng);
     sv.shuffle(&mut rng);
+    avoid_leading_repeat(&mut lv, recent_shown);
+    avoid_leading_repeat(&mut pv, recent_shown);
+    avoid_leading_repeat(&mut sv, recent_shown);
     let mut l = std::collections::VecDeque::from(lv);
     let mut p = std::collections::VecDeque::from(pv);
     let mut s = std::collections::VecDeque::from(sv);
@@ -2053,6 +2090,19 @@ async fn pick_dynamic_layout(
     // multi-image layout is rejected outright if a video would land in any of its
     // slots (including slot 0).
     let is_video_at = |idx: usize| -> bool { playlist[idx % n].is_video() };
+    // Defense-in-depth against duplicate playlist entries (e.g. a media id pushed
+    // twice by a racing realtime event): never offer a multi-image layout whose
+    // slots would show the same media id more than once.
+    let ids_distinct = |idxs: &[usize]| -> bool {
+        for i in 0..idxs.len() {
+            for j in (i + 1)..idxs.len() {
+                if playlist[idxs[i] % n].id == playlist[idxs[j] % n].id {
+                    return false;
+                }
+            }
+        }
+        true
+    };
 
     // Helper: build valid layout candidates for a given start index.
     let candidates_at =
@@ -2073,7 +2123,12 @@ async fn pick_dynamic_layout(
             if o0 == ImageOrientation::Landscape || v0 {
                 c.push((SlideLayout::Single, 3.0));
             }
-            if o0 == ImageOrientation::Portrait && o1 == ImageOrientation::Portrait && !v0 && !v1 {
+            if o0 == ImageOrientation::Portrait
+                && o1 == ImageOrientation::Portrait
+                && !v0
+                && !v1
+                && ids_distinct(&[start, start + 1])
+            {
                 c.push((SlideLayout::DualPortrait { flipped: rng.gen() }, 2.0));
             }
             if o0 == ImageOrientation::Portrait
@@ -2082,6 +2137,7 @@ async fn pick_dynamic_layout(
                 && !v0
                 && !v1
                 && !v2
+                && ids_distinct(&[start, start + 1, start + 2])
             {
                 c.push((
                     SlideLayout::PortraitDualLandscape {
@@ -2098,13 +2154,24 @@ async fn pick_dynamic_layout(
                 && !v1
                 && !v2
                 && !v3
+                && ids_distinct(&[start, start + 1, start + 2, start + 3])
             {
                 c.push((SlideLayout::QuadLandscape { flipped: rng.gen() }, 4.0));
             }
-            if o0 == ImageOrientation::Square && o1 == ImageOrientation::Square && !v0 && !v1 {
+            if o0 == ImageOrientation::Square
+                && o1 == ImageOrientation::Square
+                && !v0
+                && !v1
+                && ids_distinct(&[start, start + 1])
+            {
                 c.push((SlideLayout::DualSquare { flipped: rng.gen() }, 2.0));
             }
-            if o0 == ImageOrientation::Square && o1 == ImageOrientation::Portrait && !v0 && !v1 {
+            if o0 == ImageOrientation::Square
+                && o1 == ImageOrientation::Portrait
+                && !v0
+                && !v1
+                && ids_distinct(&[start, start + 1])
+            {
                 c.push((
                     SlideLayout::SquarePortrait {
                         square_right: rng.gen(),
@@ -2250,8 +2317,9 @@ async fn advance_to_next<'a>(
     // In dynamic mode, regroup the playlist whenever we complete a full cycle so that
     // each new pass shows images in a freshly randomised layout-compatible order.
     if is_dynamic && next_start_raw >= n {
+        let recent = state.recent_shown.read().await.clone();
         let mut playlist = state.playlist.write().await;
-        reorder_for_dynamic_layouts(&mut playlist);
+        reorder_for_dynamic_layouts(&mut playlist, &recent);
         tracing::debug!("Dynamic mode: reordered playlist for new cycle");
     }
 
@@ -2279,6 +2347,20 @@ async fn advance_to_next<'a>(
 
     let step = next_layout.image_count();
     *state.current_index.write().await = next_index;
+
+    if is_dynamic {
+        let ids: Vec<String> = {
+            let pl = state.playlist.read().await;
+            if pl.is_empty() {
+                Vec::new()
+            } else {
+                (0..step)
+                    .map(|i| pl[(next_index + i) % pl.len()].id.clone())
+                    .collect()
+            }
+        };
+        state.note_shown(&ids).await;
+    }
 
     let playlist = state.playlist.read().await;
     if playlist.is_empty() {
@@ -2589,7 +2671,8 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
                             let idx = *state.current_index.read().await;
                             old_playlist.get(idx).map(|m| m.id.clone())
                         };
-                        reorder_for_dynamic_layouts(&mut playlist);
+                        let recent = state.recent_shown.read().await.clone();
+                        reorder_for_dynamic_layouts(&mut playlist, &recent);
                         if let Some(id) = current_id {
                             if let Some(new_idx) = playlist.iter().position(|m| m.id == id) {
                                 *state.current_index.write().await = new_idx;
@@ -2607,7 +2690,15 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
         RealtimeEvent::MediaCreated(media) => {
             tracing::info!("Media created: {}", media.id);
             let mut playlist = state.playlist.write().await;
-            playlist.push(media);
+            // Guard against duplicate entries: a MediaCreated event can race with a
+            // RefreshNeeded full re-fetch that already picked up the same record,
+            // which previously left the same media id in the playlist twice and let
+            // it land in more than one slot of the same dynamic multi-image layout.
+            if let Some(pos) = playlist.iter().position(|m| m.id == media.id) {
+                playlist[pos] = media;
+            } else {
+                playlist.push(media);
+            }
 
             let cache = state.cache.read().await;
             let _ = cache.save_playlist(&playlist);
