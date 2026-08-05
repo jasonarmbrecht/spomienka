@@ -2073,11 +2073,7 @@ async fn pick_dynamic_layout(
             if o0 == ImageOrientation::Landscape || v0 {
                 c.push((SlideLayout::Single, 3.0));
             }
-            if o0 == ImageOrientation::Portrait
-                && o1 == ImageOrientation::Portrait
-                && !v0
-                && !v1
-            {
+            if o0 == ImageOrientation::Portrait && o1 == ImageOrientation::Portrait && !v0 && !v1 {
                 c.push((SlideLayout::DualPortrait { flipped: rng.gen() }, 2.0));
             }
             if o0 == ImageOrientation::Portrait
@@ -2108,11 +2104,7 @@ async fn pick_dynamic_layout(
             if o0 == ImageOrientation::Square && o1 == ImageOrientation::Square && !v0 && !v1 {
                 c.push((SlideLayout::DualSquare { flipped: rng.gen() }, 2.0));
             }
-            if o0 == ImageOrientation::Square
-                && o1 == ImageOrientation::Portrait
-                && !v0
-                && !v1
-            {
+            if o0 == ImageOrientation::Square && o1 == ImageOrientation::Portrait && !v0 && !v1 {
                 c.push((
                     SlideLayout::SquarePortrait {
                         square_right: rng.gen(),
