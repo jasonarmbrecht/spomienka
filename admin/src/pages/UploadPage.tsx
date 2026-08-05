@@ -111,12 +111,13 @@ export function UploadPage() {
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (files.length === 0) return;
+    const pendingFiles = files.filter((f) => uploadProgress[f.id]?.status !== "success");
+    if (pendingFiles.length === 0) return;
 
     showMessage("Uploading...");
     setError(null);
 
-    for (const fileWithId of files) {
+    for (const fileWithId of pendingFiles) {
       try {
         await uploadFile(fileWithId);
       } catch (err) {
@@ -138,6 +139,7 @@ export function UploadPage() {
   };
 
   const isUploading = Object.values(uploadProgress).some((p) => p.status === "uploading");
+  const pendingFiles = files.filter((f) => uploadProgress[f.id]?.status !== "success");
 
   return (
     <Grid>
@@ -178,15 +180,17 @@ export function UploadPage() {
             {files.length > 0 && (
               <div>
                 <p style={{ marginBottom: "0.5rem", fontWeight: 500 }}>
-                  Selected Files ({files.length})
+                  Selected Files ({files.length}
+                  {pendingFiles.length > 0 && pendingFiles.length !== files.length
+                    ? `, ${pendingFiles.length} pending`
+                    : ""}
+                  )
                 </p>
                 {files.map(({ id, file }) => {
                   const progress = uploadProgress[id];
                   const uploaderStatus =
                     progress?.status === "success"
                       ? "complete"
-                      : progress?.status === "error"
-                      ? "edit"
                       : progress?.status === "uploading"
                       ? "uploading"
                       : "edit";
@@ -198,10 +202,16 @@ export function UploadPage() {
                       <FileUploaderItem
                         name={file.name}
                         status={uploaderStatus}
+                        invalid={progress?.status === "error"}
                         errorSubject={progress?.error}
                         onDelete={() => removeFile(id)}
                         uuid={id}
                       />
+                      {progress?.status === "success" && (
+                        <span style={{ fontSize: "0.75rem", color: "var(--cds-support-success, #24a148)" }}>
+                          Uploaded
+                        </span>
+                      )}
                       {progress?.status === "uploading" && (
                         <InlineLoading
                           status="active"
@@ -221,11 +231,11 @@ export function UploadPage() {
             <Button
               type="submit"
               kind="primary"
-              disabled={files.length === 0 || isUploading}
+              disabled={pendingFiles.length === 0 || isUploading}
             >
               {isUploading
                 ? "Uploading..."
-                : `Upload${files.length > 0 ? ` ${files.length} file${files.length > 1 ? "s" : ""}` : ""}`}
+                : `Upload${pendingFiles.length > 0 ? ` ${pendingFiles.length} file${pendingFiles.length > 1 ? "s" : ""}` : ""}`}
             </Button>
           </Stack>
         </form>
