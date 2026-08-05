@@ -1540,34 +1540,44 @@ async fn run_render_loop(
             last_advance = Instant::now();
         }
 
-        // Render image + clock (no present yet)
-        if renderer.current_layout.is_multi() {
-            let n = renderer.current_layout.image_count();
+        // Render image + clock (no present yet).
+        //
+        // The outgoing (current_layout) and incoming (incoming_layout, only set
+        // mid-transition) layouts can have different shapes -- e.g. a Single slide
+        // transitioning into a DualPortrait one. Each side's panel count must come
+        // from its own layout, not a single shared `n`, or the outgoing panels get
+        // built with the incoming count (or vice versa): pushing stale textures from
+        // an unrelated older slide, or dropping panels that are still fading out.
+        let outgoing_layout = renderer.current_layout;
+        let incoming_layout = renderer.incoming_layout().unwrap_or(outgoing_layout);
+        if outgoing_layout.is_multi() || incoming_layout.is_multi() {
+            let old_n = outgoing_layout.image_count();
             let mut p: Vec<&mut MediaTextures> = vec![&mut current_textures];
-            if n >= 2 {
+            if old_n >= 2 {
                 p.push(&mut right_textures);
             }
-            if n >= 3 {
+            if old_n >= 3 {
                 p.push(&mut panel2_textures);
             }
-            if n >= 4 {
+            if old_n >= 4 {
                 p.push(&mut panel3_textures);
             }
+            let new_n = incoming_layout.image_count();
             let mut np: Vec<&mut MediaTextures> = Vec::new();
             if let Some(ref mut t) = next_textures {
                 np.push(t);
             }
-            if n >= 2 {
+            if new_n >= 2 {
                 if let Some(ref mut t) = next_right_textures {
                     np.push(t);
                 }
             }
-            if n >= 3 {
+            if new_n >= 3 {
                 if let Some(ref mut t) = next_panel2_textures {
                     np.push(t);
                 }
             }
-            if n >= 4 {
+            if new_n >= 4 {
                 if let Some(ref mut t) = next_panel3_textures {
                     np.push(t);
                 }
@@ -2036,6 +2046,13 @@ async fn pick_dynamic_layout(
 
     let orient_of =
         |idx: usize| -> ImageOrientation { media_visual_orientation(&playlist[idx % n]) };
+    // Only one video can ever be decoded/played at a time, and only the primary
+    // (slot 0) panel receives decoded frames -- a video placed in any other panel
+    // would just sit there showing its poster frame forever. So videos are never
+    // combined with other media: they're only ever candidates for Single, and any
+    // multi-image layout is rejected outright if a video would land in any of its
+    // slots (including slot 0).
+    let is_video_at = |idx: usize| -> bool { playlist[idx % n].is_video() };
 
     // Helper: build valid layout candidates for a given start index.
     let candidates_at =
@@ -2044,16 +2061,27 @@ async fn pick_dynamic_layout(
             let o1 = orient_of(start + 1);
             let o2 = orient_of(start + 2);
             let o3 = orient_of(start + 3);
+            let (v0, v1, v2, v3) = (
+                is_video_at(start),
+                is_video_at(start + 1),
+                is_video_at(start + 2),
+                is_video_at(start + 3),
+            );
             let mut c: Vec<(SlideLayout, f32)> = Vec::new();
-            if o0 == ImageOrientation::Landscape {
+            // Landscape photos may be shown alone; so may any video (regardless of
+            // its orientation), since Single is the only layout a video can appear in.
+            if o0 == ImageOrientation::Landscape || v0 {
                 c.push((SlideLayout::Single, 3.0));
             }
-            if o0 == ImageOrientation::Portrait && o1 == ImageOrientation::Portrait {
+            if o0 == ImageOrientation::Portrait && o1 == ImageOrientation::Portrait && !v0 && !v1 {
                 c.push((SlideLayout::DualPortrait { flipped: rng.gen() }, 2.0));
             }
             if o0 == ImageOrientation::Portrait
                 && o1 == ImageOrientation::Landscape
                 && o2 == ImageOrientation::Landscape
+                && !v0
+                && !v1
+                && !v2
             {
                 c.push((
                     SlideLayout::PortraitDualLandscape {
@@ -2066,13 +2094,17 @@ async fn pick_dynamic_layout(
                 && o1 == ImageOrientation::Landscape
                 && o2 == ImageOrientation::Landscape
                 && o3 == ImageOrientation::Landscape
+                && !v0
+                && !v1
+                && !v2
+                && !v3
             {
                 c.push((SlideLayout::QuadLandscape { flipped: rng.gen() }, 4.0));
             }
-            if o0 == ImageOrientation::Square && o1 == ImageOrientation::Square {
+            if o0 == ImageOrientation::Square && o1 == ImageOrientation::Square && !v0 && !v1 {
                 c.push((SlideLayout::DualSquare { flipped: rng.gen() }, 2.0));
             }
-            if o0 == ImageOrientation::Square && o1 == ImageOrientation::Portrait {
+            if o0 == ImageOrientation::Square && o1 == ImageOrientation::Portrait && !v0 && !v1 {
                 c.push((
                     SlideLayout::SquarePortrait {
                         square_right: rng.gen(),
@@ -2225,22 +2257,27 @@ async fn advance_to_next<'a>(
 
     let next_start = next_start_raw % n;
 
-    // Pick layout for the next slide, peeking from next_start.
+    // Pick layout for the next slide, peeking from next_start. This is kept in a
+    // local variable rather than written to renderer.current_layout right away --
+    // that field describes what's currently on screen (the outgoing panels, still
+    // fading out during an animated transition), and must not change shape until
+    // the swap actually happens. Renderer::start_transition below stashes this as
+    // the incoming layout instead; update_transition() flips current_layout to it
+    // at the exact frame the texture swap occurs.
     // pick_dynamic_layout acquires the playlist lock internally — don't hold it here.
-    let next_index = if is_dynamic {
+    let (next_index, mut next_layout) = if is_dynamic {
         let (layout, actual_start) =
             pick_dynamic_layout(state, layout_history, warmup, next_start).await;
-        renderer.current_layout = layout;
         layout_history.push_back(layout.kind());
         if layout_history.len() > 20 {
             layout_history.pop_front();
         }
-        actual_start
+        (actual_start, layout)
     } else {
-        next_start
+        (next_start, renderer.current_layout)
     };
 
-    let step = renderer.current_layout.image_count();
+    let step = next_layout.image_count();
     *state.current_index.write().await = next_index;
 
     let playlist = state.playlist.read().await;
@@ -2323,7 +2360,7 @@ async fn advance_to_next<'a>(
     // would be too small (e.g. a landscape image incorrectly placed in a portrait slot
     // making the sibling column only a few pixels wide), fall back to Single so the first
     // image is shown full-screen and the others are deferred to subsequent slides.
-    if renderer.current_layout.is_multi() {
+    if next_layout.is_multi() {
         let (sw, sh) = renderer.screen_size();
         let min_w = sw / 5;
         let min_h = sh / 5;
@@ -2333,16 +2370,16 @@ async fn advance_to_next<'a>(
             next_panel2_textures.as_ref().and_then(|t| t.display_size),
             next_panel3_textures.as_ref().and_then(|t| t.display_size),
         ];
-        let rects = Renderer::compute_panel_rects(renderer.current_layout, sw, sh, &sizes);
+        let rects = Renderer::compute_panel_rects(next_layout, sw, sh, &sizes);
         let too_small = rects
             .iter()
             .any(|(r, _)| r.width() < min_w || r.height() < min_h);
         if too_small {
             tracing::warn!(
                 "Layout {:?} produced image smaller than 20% of screen — falling back to Single",
-                renderer.current_layout.kind()
+                next_layout.kind()
             );
-            renderer.current_layout = SlideLayout::Single;
+            next_layout = SlideLayout::Single;
             // Clear the extra-panel textures; they will be shown on subsequent slides.
             *next_right_textures = None;
             *next_panel2_textures = None;
@@ -2353,6 +2390,7 @@ async fn advance_to_next<'a>(
     let transition = Transition::from_str(&state.config.transition);
     match transition {
         Transition::Cut => {
+            renderer.current_layout = next_layout;
             if let Some(next) = next_textures.take() {
                 *current_textures = next;
             }
@@ -2367,7 +2405,7 @@ async fn advance_to_next<'a>(
             }
         }
         _ => {
-            renderer.start_transition();
+            renderer.start_transition(next_layout);
         }
     }
 
@@ -2518,7 +2556,7 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
         RealtimeEvent::RefreshNeeded => {
             tracing::info!("Refreshing playlist...");
             match state.fetch_playlist().await {
-                Ok(playlist) => {
+                Ok(mut playlist) => {
                     // Save playlist to cache
                     {
                         let cache = state.cache.read().await;
@@ -2537,6 +2575,26 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
                             stats.current_size as f64 / 1024.0 / 1024.0,
                             stats.item_count
                         );
+                    }
+
+                    if state.config.display_mode == "dynamic" {
+                        // This refresh fires often (e.g. every realtime reconnect) --
+                        // without reordering here, dynamic mode's grouping only ever
+                        // survives until the next refresh, which replaces the playlist
+                        // with the server's plain fetch order and silently undoes it.
+                        // Remember what's on screen right now by id first, since the
+                        // reorder below scrambles positions out from under current_index.
+                        let current_id = {
+                            let old_playlist = state.playlist.read().await;
+                            let idx = *state.current_index.read().await;
+                            old_playlist.get(idx).map(|m| m.id.clone())
+                        };
+                        reorder_for_dynamic_layouts(&mut playlist);
+                        if let Some(id) = current_id {
+                            if let Some(new_idx) = playlist.iter().position(|m| m.id == id) {
+                                *state.current_index.write().await = new_idx;
+                            }
+                        }
                     }
 
                     *state.playlist.write().await = playlist;
