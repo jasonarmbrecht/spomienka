@@ -2564,7 +2564,7 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
         RealtimeEvent::RefreshNeeded => {
             tracing::info!("Refreshing playlist...");
             match state.fetch_playlist().await {
-                Ok(playlist) => {
+                Ok(mut playlist) => {
                     // Save playlist to cache
                     {
                         let cache = state.cache.read().await;
@@ -2583,6 +2583,26 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
                             stats.current_size as f64 / 1024.0 / 1024.0,
                             stats.item_count
                         );
+                    }
+
+                    if state.config.display_mode == "dynamic" {
+                        // This refresh fires often (e.g. every realtime reconnect) --
+                        // without reordering here, dynamic mode's grouping only ever
+                        // survives until the next refresh, which replaces the playlist
+                        // with the server's plain fetch order and silently undoes it.
+                        // Remember what's on screen right now by id first, since the
+                        // reorder below scrambles positions out from under current_index.
+                        let current_id = {
+                            let old_playlist = state.playlist.read().await;
+                            let idx = *state.current_index.read().await;
+                            old_playlist.get(idx).map(|m| m.id.clone())
+                        };
+                        reorder_for_dynamic_layouts(&mut playlist);
+                        if let Some(id) = current_id {
+                            if let Some(new_idx) = playlist.iter().position(|m| m.id == id) {
+                                *state.current_index.write().await = new_idx;
+                            }
+                        }
                     }
 
                     *state.playlist.write().await = playlist;
