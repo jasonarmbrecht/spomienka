@@ -2097,16 +2097,24 @@ impl<'ttf> Renderer<'ttf> {
         // Technical line: focal length · f-number · exposure · ISO
         let mut tech_parts: Vec<String> = Vec::new();
         if let Some(fl) = &info.focal_length {
-            tech_parts.push(fl.clone());
+            if !fl.is_empty() {
+                tech_parts.push(fl.clone());
+            }
         }
         if let Some(fn_) = &info.f_number {
-            tech_parts.push(fn_.clone());
+            if !fn_.is_empty() {
+                tech_parts.push(fn_.clone());
+            }
         }
         if let Some(et) = &info.exposure_time {
-            tech_parts.push(et.clone());
+            if !et.is_empty() {
+                tech_parts.push(et.clone());
+            }
         }
         if let Some(iso) = &info.iso {
-            tech_parts.push(format!("ISO {}", iso));
+            if !iso.is_empty() {
+                tech_parts.push(format!("ISO {}", iso));
+            }
         }
         if !tech_parts.is_empty() {
             lines.push(tech_parts.join("  ·  "));

@@ -1096,8 +1096,8 @@ async fn run_render_loop(
 
     // Overlay state
     let mut overlay_visible = false;
-    let mut info_overlay_visible = state.config.show_info;
-    let mut location_overlay_visible = state.config.show_location_info;
+    let info_overlay_visible = state.config.show_info;
+    let location_overlay_visible = state.config.show_location_info;
     let mut is_paused = false;
     let mut pause_until: Option<Instant> = None;
     let mut is_realtime_connected = false;
@@ -1377,20 +1377,6 @@ async fn run_render_loop(
                         if is_video_playing {
                             video_manager.resume();
                         }
-                    }
-                    RealtimeEvent::RemoteToggleInfo => {
-                        info_overlay_visible = !info_overlay_visible;
-                        if info_overlay_visible {
-                            location_overlay_visible = false;
-                        }
-                        tracing::debug!("Remote: info overlay {}", info_overlay_visible);
-                    }
-                    RealtimeEvent::RemoteToggleLocationInfo => {
-                        location_overlay_visible = !location_overlay_visible;
-                        if location_overlay_visible {
-                            info_overlay_visible = false;
-                        }
-                        tracing::debug!("Remote: location overlay {}", location_overlay_visible);
                     }
                     RealtimeEvent::RemoteTagFilter { tags, mode } => {
                         tracing::info!("Remote: tag filter {:?} ({})", tags, mode);
@@ -2745,8 +2731,6 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
         | RealtimeEvent::RemoteRandom
         | RealtimeEvent::RemotePause { .. }
         | RealtimeEvent::RemoteResume
-        | RealtimeEvent::RemoteToggleInfo
-        | RealtimeEvent::RemoteToggleLocationInfo
         | RealtimeEvent::RemoteTagFilter { .. }
         | RealtimeEvent::RemoteTagFilterClear => {}
     }
