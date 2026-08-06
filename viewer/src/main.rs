@@ -245,6 +245,8 @@ impl AuthCreds {
 #[derive(Debug, Deserialize)]
 struct ListResponse<T> {
     items: Vec<T>,
+    #[serde(rename = "totalPages")]
+    total_pages: u32,
 }
 
 /// Application state shared across tasks.
@@ -319,20 +321,36 @@ impl AppState {
             .await
     }
 
-    /// Fetch playlist from PocketBase.
+    /// Fetch playlist from PocketBase, paging through all results (PocketBase
+    /// caps perPage at 500, so a library larger than that needs multiple requests).
     async fn fetch_playlist(&self) -> Result<Vec<Media>> {
         let creds = self.config.to_auth_creds();
         let mut token = self.auth_token.write().await;
 
         // Build filter with device scope and optional tag filter
         let filter = self.build_filter().await;
-        let url = format!(
-            "{}/api/collections/media/records?filter={}&perPage=500&sort=-created",
-            self.config.pb_url,
-            urlencoding::encode(&filter)
-        );
+        let encoded_filter = urlencoding::encode(&filter);
 
-        let result = self.fetch_with_retry(&url, &mut token, &creds).await;
+        let result = async {
+            let mut media = Vec::new();
+            let mut page = 1u32;
+            loop {
+                let url = format!(
+                    "{}/api/collections/media/records?filter={}&perPage=500&sort=-created&page={}",
+                    self.config.pb_url, encoded_filter, page
+                );
+                let mut response = self.fetch_with_retry(&url, &mut token, &creds).await?;
+                let total_pages = response.total_pages;
+                media.append(&mut response.items);
+
+                if page >= total_pages {
+                    break;
+                }
+                page += 1;
+            }
+            Ok(media)
+        }
+        .await;
 
         match result {
             Ok(media) => {
@@ -394,7 +412,7 @@ impl AppState {
         url: &str,
         token: &mut Option<String>,
         creds: &AuthCreds,
-    ) -> Result<Vec<Media>> {
+    ) -> Result<ListResponse<Media>> {
         let (status, res) = self.send_request(url, token.as_deref()).await?;
 
         if status != StatusCode::UNAUTHORIZED {
@@ -431,9 +449,8 @@ impl AppState {
         Ok((status, res))
     }
 
-    async fn parse_list(&self, res: reqwest::Response) -> Result<Vec<Media>> {
-        let parsed: ListResponse<Media> = res.json().await?;
-        Ok(parsed.items)
+    async fn parse_list(&self, res: reqwest::Response) -> Result<ListResponse<Media>> {
+        Ok(res.json().await?)
     }
 
     async fn refresh_token(&self, creds: &AuthCreds) -> Result<Option<String>> {
