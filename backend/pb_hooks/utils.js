@@ -245,7 +245,7 @@ const FFMPEG_VIDEO_SCALE =
     "format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709";
 
 
-function processImage(record, originalPath, procDir, storagePath) {
+function processImage(record, originalPath, procDir, storagePath, steps) {
     const recordId = record.id;
     const collectionId = record.collection().id;
 
@@ -261,9 +261,11 @@ function processImage(record, originalPath, procDir, storagePath) {
         try {
             const out = execCommand(HEIF_CONVERT, [originalPath, tmpPng]);
             console.log("heif-convert succeeded:", out);
+            steps.push("Converted HEIC → PNG");
         } catch (err) {
             console.error("heif-convert failed, falling back to ffmpeg:", err.message || err);
             execCommand(FFMPEG, ["-y", "-i", originalPath, "-frames:v", "1", "-update", "1", tmpPng]);
+            steps.push("Converted HEIC → PNG (ffmpeg fallback)");
         }
         originalPath = tmpPng;
     }
@@ -274,7 +276,11 @@ function processImage(record, originalPath, procDir, storagePath) {
         const name = "display_" + recordId + ".png";
         $os.rename(displayPath, storagePath + "/" + name);
         record.set("displayUrl", buildFileUrl(collectionId, recordId, name));
-    } catch (err) { console.error("Display image failed:", err); }
+        steps.push("Display image generated");
+    } catch (err) {
+        console.error("Display image failed:", err);
+        steps.push("Display image generation failed: " + (err.message || err));
+    }
 
     try {
         const thumbPath = procDir + "/thumb.png";
@@ -282,10 +288,14 @@ function processImage(record, originalPath, procDir, storagePath) {
         const name = "thumb_" + recordId + ".png";
         $os.rename(thumbPath, storagePath + "/" + name);
         record.set("thumbUrl", buildFileUrl(collectionId, recordId, name));
-    } catch (err) { console.error("Thumbnail failed:", err); }
+        steps.push("Thumbnail generated");
+    } catch (err) {
+        console.error("Thumbnail failed:", err);
+        steps.push("Thumbnail generation failed: " + (err.message || err));
+    }
 }
 
-function processVideo(record, originalPath, procDir, storagePath) {
+function processVideo(record, originalPath, procDir, storagePath, steps) {
     const recordId = record.id;
     const collectionId = record.collection().id;
 
@@ -295,9 +305,17 @@ function processVideo(record, originalPath, procDir, storagePath) {
         ]);
         if (output) {
             const duration = parseFloat(output.trim());
-            if (Number.isFinite(duration)) record.set("duration", duration);
+            if (Number.isFinite(duration)) {
+                record.set("duration", duration);
+                steps.push("Duration: " + duration.toFixed(1) + "s");
+            } else {
+                steps.push("Duration: could not be parsed");
+            }
         }
-    } catch (err) { console.error("Duration extraction failed:", err); }
+    } catch (err) {
+        console.error("Duration extraction failed:", err);
+        steps.push("Duration extraction failed: " + (err.message || err));
+    }
 
     try {
         const videoPath = procDir + "/video.mp4";
@@ -308,7 +326,11 @@ function processVideo(record, originalPath, procDir, storagePath) {
         const name = "video_" + recordId + ".mp4";
         $os.rename(videoPath, storagePath + "/" + name);
         record.set("videoUrl", buildFileUrl(collectionId, recordId, name));
-    } catch (err) { console.error("Video transcode failed:", err); }
+        steps.push("Video transcoded (H.264/AAC)");
+    } catch (err) {
+        console.error("Video transcode failed:", err);
+        steps.push("Video transcode failed: " + (err.message || err));
+    }
 
     let posterCreated = false;
     try {
@@ -322,7 +344,11 @@ function processVideo(record, originalPath, procDir, storagePath) {
         $os.rename(posterPath, storagePath + "/" + name);
         record.set("posterUrl", buildFileUrl(collectionId, recordId, name));
         posterCreated = true;
-    } catch (err) { console.error("Poster extraction failed:", err); }
+        steps.push("Poster frame extracted");
+    } catch (err) {
+        console.error("Poster extraction failed:", err);
+        steps.push("Poster extraction failed: " + (err.message || err));
+    }
 
     try {
         const thumbPath = procDir + "/thumb.png";
@@ -331,7 +357,11 @@ function processVideo(record, originalPath, procDir, storagePath) {
         const name = "thumb_" + recordId + ".png";
         $os.rename(thumbPath, storagePath + "/" + name);
         record.set("thumbUrl", buildFileUrl(collectionId, recordId, name));
-    } catch (err) { console.error("Video thumbnail failed:", err); }
+        steps.push("Thumbnail generated");
+    } catch (err) {
+        console.error("Video thumbnail failed:", err);
+        steps.push("Thumbnail generation failed: " + (err.message || err));
+    }
 }
 
 // Copies derived files (display/thumb/poster/video) from an existing
@@ -374,6 +404,11 @@ function processMediaRecord(record) {
     const storagePath = $app.dataDir() + "/storage/" + collectionId + "/" + recordId;
     const originalPath = storagePath + "/" + fileName;
     let processingFailed = false;
+    const startedAt = Date.now();
+    // Step-by-step processing log surfaced back to the client via the
+    // processingLog field — the create() response the uploader already
+    // awaits includes it, so no extra polling/realtime plumbing is needed.
+    const steps = [];
 
     console.log("processMediaRecord start:", recordId, mediaType, fileName);
     console.log("  tools: ffmpeg=" + FFMPEG + " exiftool=" + EXIFTOOL + " sha256=" + SHA256_CMD);
@@ -397,19 +432,38 @@ function processMediaRecord(record) {
         if (exifData.exposureTime) record.set("exposureTime", exifData.exposureTime);
         if (exifData.iso) record.set("iso", exifData.iso);
 
+        if (exifData.width && exifData.height) {
+            const camera = [exifData.cameraMake, exifData.cameraModel].filter(Boolean).join(" ");
+            steps.push(
+                "EXIF: " + exifData.width + "×" + exifData.height +
+                (exifData.takenAt ? ", taken " + exifData.takenAt.slice(0, 10) : "") +
+                (camera ? ", " + camera : "")
+            );
+        } else {
+            steps.push("EXIF: no metadata found");
+        }
+
         // Reverse-geocode GPS to suburb/city/country if location not already set
         const existingLocation = record.get("location");
         if (!existingLocation && exifData.gpsLat !== null && exifData.gpsLng !== null) {
             try {
                 const geocoded = geocodeGps(exifData.gpsLat, exifData.gpsLng);
-                if (geocoded) record.set("location", geocoded);
-            } catch (_) {}
+                if (geocoded) {
+                    record.set("location", geocoded);
+                    steps.push("Location: reverse-geocoded to " + geocoded);
+                } else {
+                    steps.push("Location: reverse-geocode returned no result");
+                }
+            } catch (_) {
+                steps.push("Location: reverse-geocode failed");
+            }
         }
 
         const checksum = generateChecksum(originalPath);
         let reused = false;
         if (checksum) {
             record.set("checksum", checksum);
+            steps.push("Checksum: " + checksum.slice(0, 12) + "…");
             try {
                 const existing = $app.findFirstRecordByFilter(
                     "media",
@@ -419,26 +473,38 @@ function processMediaRecord(record) {
                     console.log("Duplicate media detected:", recordId, "matches:", existing.id);
                     if (existing.get("processingStatus") === "completed") {
                         reused = reuseDuplicateProcessing(record, existing, mediaType, collectionId, storagePath);
+                        if (reused) {
+                            steps.push("Duplicate of existing photo (" + existing.id + ") — reused thumbnail/display");
+                        }
                     }
                 }
             } catch (_) {}
+        } else {
+            steps.push("Checksum: failed to compute");
         }
 
         if (!reused) {
-            if (mediaType === "image") processImage(record, originalPath, procDir, storagePath);
-            else if (mediaType === "video") processVideo(record, originalPath, procDir, storagePath);
+            if (mediaType === "image") processImage(record, originalPath, procDir, storagePath, steps);
+            else if (mediaType === "video") processVideo(record, originalPath, procDir, storagePath, steps);
         }
 
-        try { record.set("processingStatus", "completed"); record.set("processingError", null); } catch (_) {}
+        steps.push("Done in " + ((Date.now() - startedAt) / 1000).toFixed(1) + "s");
+        try {
+            record.set("processingStatus", "completed");
+            record.set("processingError", null);
+            record.set("processingLog", steps);
+        } catch (_) {}
         $app.save(record);
 
     } catch (err) {
         processingFailed = true;
         const msg = err.message || String(err);
         console.error("Media processing failed for", recordId, ":", msg);
+        steps.push("Processing failed: " + msg);
         try {
             record.set("processingStatus", "failed");
             record.set("processingError", msg);
+            record.set("processingLog", steps);
             $app.save(record);
         } catch (_) {}
     } finally {

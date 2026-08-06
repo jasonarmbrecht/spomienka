@@ -5,7 +5,7 @@ import { MAX_FILE_SIZE_DISPLAY, ALLOWED_IMAGE_TYPES, ALLOWED_VIDEO_TYPES } from 
 import { Notification } from "../components/Notification";
 import { useNotification } from "../hooks/useNotification";
 import { FileWithId, UploadProgress, generateFileId, validateFile, uploadOneFile } from "../uploadUtils";
-import type { DeviceRecord } from "../types/pocketbase";
+import type { DeviceRecord, MediaRecord } from "../types/pocketbase";
 import {
   Grid,
   Column,
@@ -24,7 +24,9 @@ import { Upload } from "@carbon/icons-react";
 // this is set to a sensible value for typical Raspberry Pi core counts.
 const BULK_UPLOAD_CONCURRENCY = 4;
 
-const MAX_ADMIN_LOG_LINES = 100;
+// Each file now produces several log lines (upload + one per processing
+// step), not just one — sized generously since it's just a browser div.
+const MAX_ADMIN_LOG_LINES = 2000;
 const MAX_DEVICE_LOG_LINES = 15;
 const PROGRESS_BROADCAST_MIN_INTERVAL_MS = 1500;
 const PROGRESS_BROADCAST_MIN_FILES = 10;
@@ -173,11 +175,11 @@ export function BulkUploadPage() {
     file: File,
     ownerId: string,
     role: string | undefined
-  ): Promise<{ ok: true } | { ok: false; error: unknown }> => {
+  ): Promise<{ ok: true; record: MediaRecord } | { ok: false; error: unknown }> => {
     for (let attempt = 0; attempt < RETRY_DELAYS_MS.length + 1; attempt++) {
       try {
-        await uploadOneFile(file, { ownerId, role, bulkUpload: true });
-        return { ok: true };
+        const record = await uploadOneFile(file, { ownerId, role, bulkUpload: true });
+        return { ok: true, record };
       } catch (err) {
         if (attempt < RETRY_DELAYS_MS.length) {
           await sleep(RETRY_DELAYS_MS[attempt]);
@@ -251,7 +253,19 @@ export function BulkUploadPage() {
           statsRef.current.done++;
           uploadedKeysRef.current.add(fileKey(item.file));
           persistUploadedKeys();
-          statsRef.current.lines.push(`${item.file.name} uploaded`);
+
+          // The upload itself (HTTP 200) can still succeed while server-side
+          // processing behind it failed — after-create hook errors never turn
+          // into a 4xx/5xx response, so processingStatus is the real signal.
+          // processingLog already ends with a "Processing failed: ..." step
+          // in that case (set by the backend's catch block), so no separate
+          // line is needed here.
+          const processingFailed = result.record.processingStatus === "failed";
+          statsRef.current.lines.push(`${item.file.name}${processingFailed ? " uploaded (processing failed)" : " uploaded"}`);
+          for (const step of result.record.processingLog ?? []) {
+            statsRef.current.lines.push(`  ${step}`);
+          }
+
           setUploadProgress((prev) => ({ ...prev, [item.id]: { ...prev[item.id], status: "success" } }));
         } else {
           statsRef.current.failed++;
@@ -394,6 +408,7 @@ export function BulkUploadPage() {
                     fontFamily: "monospace",
                     fontSize: "0.75rem",
                     lineHeight: 1.6,
+                    whiteSpace: "pre-wrap",
                   }}
                 >
                   {logLines.length === 0 ? (

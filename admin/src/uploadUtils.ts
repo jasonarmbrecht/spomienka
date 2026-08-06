@@ -1,5 +1,6 @@
 import { pb } from "./pb/client";
 import { MAX_FILE_SIZE, MAX_FILE_SIZE_DISPLAY, ALLOWED_IMAGE_TYPES, ALLOWED_VIDEO_TYPES } from "./constants";
+import type { MediaRecord } from "./types/pocketbase";
 
 export type FileWithId = {
   id: string;
@@ -34,7 +35,9 @@ export function validateFile(file: File): string | null {
 /**
  * Uploads a single file to the media collection. The returned promise doesn't
  * resolve until the server finishes processing the file (thumbnail/poster
- * generation, video transcode, etc. all run synchronously server-side).
+ * generation, video transcode, etc. all run synchronously server-side) —
+ * the resolved record's `processingLog` reflects everything that happened
+ * (EXIF, checksum/dedup, thumbnail/display or video transcode steps).
  *
  * `bulkUpload: true` is only honored by the backend when the requester is
  * also an admin — it scopes the upload-rate-limit bypass to the Bulk Upload
@@ -43,7 +46,7 @@ export function validateFile(file: File): string | null {
 export async function uploadOneFile(
   file: File,
   opts: { ownerId: string; role?: string; bulkUpload?: boolean }
-): Promise<void> {
+): Promise<MediaRecord> {
   const form = new FormData();
   form.append("file", file);
   form.append("type", file.type.startsWith("video/") ? "video" : "image");
@@ -55,5 +58,5 @@ export async function uploadOneFile(
   // of concurrent requests to the same endpoint — without it, the Bulk Upload
   // page's parallel worker pool has each new create() cancel the previous
   // still-in-flight one.
-  await pb.collection("media").create(form, { requestKey: null });
+  return pb.collection("media").create<MediaRecord>(form, { requestKey: null });
 }

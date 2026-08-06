@@ -320,6 +320,16 @@
         "pattern": ""
       },
       {
+        "id": "json_processing_log",
+        "name": "processingLog",
+        "type": "json",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "maxSize": 1048576
+      },
+      {
         "id": "f_disp",
         "name": "displayUrl",
         "type": "text",
