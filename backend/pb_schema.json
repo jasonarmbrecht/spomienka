@@ -154,6 +154,15 @@
         ]
       },
       {
+        "id": "bool_bulk_upload",
+        "name": "bulkUpload",
+        "type": "bool",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false
+      },
+      {
         "id": "f_title",
         "name": "title",
         "type": "text",
@@ -309,6 +318,16 @@
         "min": null,
         "max": null,
         "pattern": ""
+      },
+      {
+        "id": "json_processing_log",
+        "name": "processingLog",
+        "type": "json",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false,
+        "maxSize": 1048576
       },
       {
         "id": "f_disp",

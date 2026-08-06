@@ -6,6 +6,7 @@ import App from "./App";
 import { LoginPage } from "./pages/LoginPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { UploadPage } from "./pages/UploadPage";
+import { BulkUploadPage } from "./pages/BulkUploadPage";
 import { ApprovalsPage } from "./pages/ApprovalsPage";
 import { LibraryPage } from "./pages/LibraryPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -21,6 +22,7 @@ const router = createBrowserRouter([
     children: [
       { path: "/", element: <RequireAuth redirect="/login"><DashboardPage /></RequireAuth> },
       { path: "/upload", element: <RequireAuth redirect="/login"><UploadPage /></RequireAuth> },
+      { path: "/bulk-upload", element: <RequireAdmin redirect="/login"><BulkUploadPage /></RequireAdmin> },
       { path: "/approvals", element: <RequireAdmin redirect="/login"><ApprovalsPage /></RequireAdmin> },
       { path: "/library", element: <RequireAuth redirect="/login"><LibraryPage /></RequireAuth> },
       { path: "/settings", element: <RequireAdmin redirect="/login"><SettingsPage /></RequireAdmin> },

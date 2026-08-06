@@ -53,6 +53,7 @@ export default function App() {
     { to: "/", label: "Dashboard", always: true },
     { to: "/library", label: "Library", always: true },
     { to: "/upload", label: "Upload", always: true },
+    { to: "/bulk-upload", label: "Bulk Upload", adminOnly: true },
     { to: "/viewer-control", label: "Viewer Control", adminOnly: true },
     { to: "/approvals", label: "Approvals", adminOnly: true },
     { to: "/users", label: "Users", adminOnly: true },

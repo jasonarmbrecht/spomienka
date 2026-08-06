@@ -1038,6 +1038,50 @@ async fn run_discovery_mode(config: &AppConfig, repair_device_id: Option<String>
     Ok(())
 }
 
+/// Screen state while an admin-triggered bulk upload is in progress. The
+/// slideshow is suspended and a log/progress screen is shown instead; see
+/// the BulkUploadStart/Progress/End handling in run_render_loop below.
+struct BulkUploadState {
+    log: VecDeque<String>,
+    done: u32,
+    total: u32,
+    failed: u32,
+    last_update: Instant,
+}
+
+impl BulkUploadState {
+    const MAX_LOG_LINES: usize = 15;
+
+    fn new() -> Self {
+        Self {
+            log: VecDeque::with_capacity(Self::MAX_LOG_LINES),
+            done: 0,
+            total: 0,
+            failed: 0,
+            last_update: Instant::now(),
+        }
+    }
+
+    fn apply_progress(&mut self, done: u32, total: u32, failed: u32, lines: Vec<String>) {
+        self.done = done;
+        self.total = total;
+        self.failed = failed;
+        for line in lines {
+            if self.log.len() >= Self::MAX_LOG_LINES {
+                self.log.pop_front();
+            }
+            // SDL2_ttf has no text-wrapping primitive, so truncate long lines
+            // rather than let them overflow the screen width.
+            self.log.push_back(if line.chars().count() > 80 {
+                line.chars().take(80).collect::<String>() + "…"
+            } else {
+                line
+            });
+        }
+        self.last_update = Instant::now();
+    }
+}
+
 /// Main render loop.
 async fn run_render_loop(
     state: Arc<AppState>,
@@ -1101,6 +1145,13 @@ async fn run_render_loop(
     let mut is_paused = false;
     let mut pause_until: Option<Instant> = None;
     let mut is_realtime_connected = false;
+
+    // Set while an admin-triggered bulk upload is running; suspends the
+    // slideshow and video decode, and swaps the render path to a log/progress
+    // screen. Auto-cleared if no progress message arrives for a while, in case
+    // the admin's browser tab never sends the end signal (closed, crashed).
+    let mut bulk_upload: Option<BulkUploadState> = None;
+    const BULK_UPLOAD_SAFETY_TIMEOUT: Duration = Duration::from_secs(120);
 
     // Load first item
     load_current_item(
@@ -1257,6 +1308,22 @@ async fn run_render_loop(
             }
         }
 
+        // Safety backstop: if a bulk-upload screen is showing but no progress
+        // message has arrived in a while, the admin's browser likely never sent
+        // (or won't send) the end signal -- revert to the slideshow on our own
+        // rather than staying stuck here indefinitely.
+        if let Some(ref bu) = bulk_upload {
+            if bu.last_update.elapsed() > BULK_UPLOAD_SAFETY_TIMEOUT {
+                tracing::warn!(
+                    "Bulk upload screen timed out with no progress update, reverting to slideshow"
+                );
+                bulk_upload = None;
+                if is_video_playing {
+                    video_manager.resume();
+                }
+            }
+        }
+
         // Process realtime events
         if let Some(ref mut rx) = realtime_rx {
             while let Ok(event) = rx.try_recv() {
@@ -1406,6 +1473,40 @@ async fn run_render_loop(
                             Err(e) => tracing::error!("Failed to refresh playlist: {}", e),
                         }
                     }
+                    RealtimeEvent::BulkUploadStart => {
+                        tracing::info!("Remote: bulk upload started");
+                        bulk_upload = Some(BulkUploadState::new());
+                        if is_video_playing {
+                            video_manager.pause();
+                        }
+                    }
+                    RealtimeEvent::BulkUploadProgress {
+                        done,
+                        total,
+                        failed,
+                        lines,
+                    } => {
+                        if let Some(ref mut bu) = bulk_upload {
+                            bu.apply_progress(done, total, failed, lines);
+                        } else {
+                            // Progress arrived without a start (e.g. this device came
+                            // online mid-batch) -- start the screen now rather than
+                            // silently discarding it.
+                            let mut bu = BulkUploadState::new();
+                            bu.apply_progress(done, total, failed, lines);
+                            bulk_upload = Some(bu);
+                            if is_video_playing {
+                                video_manager.pause();
+                            }
+                        }
+                    }
+                    RealtimeEvent::BulkUploadEnd => {
+                        tracing::info!("Remote: bulk upload finished");
+                        bulk_upload = None;
+                        if is_video_playing {
+                            video_manager.resume();
+                        }
+                    }
                     other => {
                         handle_realtime_event(&state, other).await;
                     }
@@ -1421,8 +1522,9 @@ async fn run_render_loop(
             video_texture_dims = None;
         }
 
-        // Update video frame if playing and not paused
-        if is_video_playing && !is_paused {
+        // Update video frame if playing and not paused (video decode is also
+        // explicitly paused for the duration of a bulk upload, see above).
+        if is_video_playing && !is_paused && bulk_upload.is_none() {
             if let Some(frame) = video_manager.current_frame() {
                 // Reuse the existing texture in place when its dimensions
                 // already match (the common case, every frame after the
@@ -1519,8 +1621,9 @@ async fn run_render_loop(
         // Check if it's time to advance (for images, on the fixed interval).
         // Video advances via its own EOS check above instead, not this timer
         // -- so gate this out entirely while a video is playing.
-        // Don't auto-advance if paused.
+        // Don't auto-advance if paused, or while the bulk-upload screen is showing.
         let should_advance = !is_paused
+            && bulk_upload.is_none()
             && !renderer.is_transitioning()
             && !is_video_playing
             && last_advance.elapsed() >= slide_duration;
@@ -1547,109 +1650,121 @@ async fn run_render_loop(
             last_advance = Instant::now();
         }
 
-        // Render image + clock (no present yet).
-        //
-        // The outgoing (current_layout) and incoming (incoming_layout, only set
-        // mid-transition) layouts can have different shapes -- e.g. a Single slide
-        // transitioning into a DualPortrait one. Each side's panel count must come
-        // from its own layout, not a single shared `n`, or the outgoing panels get
-        // built with the incoming count (or vice versa): pushing stale textures from
-        // an unrelated older slide, or dropping panels that are still fading out.
-        let outgoing_layout = renderer.current_layout;
-        let incoming_layout = renderer.incoming_layout().unwrap_or(outgoing_layout);
-        if outgoing_layout.is_multi() || incoming_layout.is_multi() {
-            let old_n = outgoing_layout.image_count();
-            let mut p: Vec<&mut MediaTextures> = vec![&mut current_textures];
-            if old_n >= 2 {
-                p.push(&mut right_textures);
-            }
-            if old_n >= 3 {
-                p.push(&mut panel2_textures);
-            }
-            if old_n >= 4 {
-                p.push(&mut panel3_textures);
-            }
-            let new_n = incoming_layout.image_count();
-            let mut np: Vec<&mut MediaTextures> = Vec::new();
-            if let Some(ref mut t) = next_textures {
-                np.push(t);
-            }
-            if new_n >= 2 {
-                if let Some(ref mut t) = next_right_textures {
-                    np.push(t);
-                }
-            }
-            if new_n >= 3 {
-                if let Some(ref mut t) = next_panel2_textures {
-                    np.push(t);
-                }
-            }
-            if new_n >= 4 {
-                if let Some(ref mut t) = next_panel3_textures {
-                    np.push(t);
-                }
-            }
-            let has_next = !np.is_empty();
-            if has_next {
-                renderer.render_layout(&texture_creator, &mut p, Some(&mut np))?;
-            } else {
-                renderer.render_layout(&texture_creator, &mut p, None)?;
+        if let Some(ref bu) = bulk_upload {
+            // A bulk upload is in progress -- show its log/progress screen
+            // instead of the slideshow. Stays inside the main loop (rather
+            // than a separate mode like discovery) so realtime events keep
+            // being processed and further progress/end messages still land.
+            if let Err(e) =
+                renderer.render_bulk_upload_screen(bu.done, bu.total, bu.failed, &bu.log)
+            {
+                tracing::warn!("Failed to render bulk upload screen: {}", e);
             }
         } else {
-            renderer.render(
-                &texture_creator,
-                &mut current_textures,
-                next_textures.as_mut(),
-            )?;
-        }
-
-        // Render debug overlay on top
-        if overlay_visible {
-            let overlay_info = build_overlay_info(
-                &state,
-                &video_manager,
-                is_video_playing,
-                is_paused,
-                pause_until,
-                is_realtime_connected,
-            )
-            .await;
-            if let Err(e) = renderer.render_overlay(&overlay_info) {
-                tracing::warn!("Failed to render overlay: {}", e);
-            }
-        }
-
-        // Render media info overlay on top
-        if info_overlay_visible {
-            let n = renderer.current_layout.image_count();
-            if n > 1 {
-                let mut infos = Vec::new();
-                for i in 0..n {
-                    infos.push(build_media_info_overlay(&state, i).await);
+            // Render image + clock (no present yet).
+            //
+            // The outgoing (current_layout) and incoming (incoming_layout, only set
+            // mid-transition) layouts can have different shapes -- e.g. a Single slide
+            // transitioning into a DualPortrait one. Each side's panel count must come
+            // from its own layout, not a single shared `n`, or the outgoing panels get
+            // built with the incoming count (or vice versa): pushing stale textures from
+            // an unrelated older slide, or dropping panels that are still fading out.
+            let outgoing_layout = renderer.current_layout;
+            let incoming_layout = renderer.incoming_layout().unwrap_or(outgoing_layout);
+            if outgoing_layout.is_multi() || incoming_layout.is_multi() {
+                let old_n = outgoing_layout.image_count();
+                let mut p: Vec<&mut MediaTextures> = vec![&mut current_textures];
+                if old_n >= 2 {
+                    p.push(&mut right_textures);
                 }
-                if let Err(e) = renderer.render_info_overlay_multi(&infos) {
-                    tracing::warn!("Failed to render multi info overlay: {}", e);
+                if old_n >= 3 {
+                    p.push(&mut panel2_textures);
                 }
-            } else {
-                let media_info = build_media_info_overlay(&state, 0).await;
-                if let Err(e) = renderer.render_info_overlay(&media_info) {
-                    tracing::warn!("Failed to render info overlay: {}", e);
+                if old_n >= 4 {
+                    p.push(&mut panel3_textures);
                 }
-            }
-        } else if location_overlay_visible {
-            let n = renderer.current_layout.image_count();
-            if n > 1 {
-                let mut infos = Vec::new();
-                for i in 0..n {
-                    infos.push(build_location_info_overlay(&state, i).await);
+                let new_n = incoming_layout.image_count();
+                let mut np: Vec<&mut MediaTextures> = Vec::new();
+                if let Some(ref mut t) = next_textures {
+                    np.push(t);
                 }
-                if let Err(e) = renderer.render_info_overlay_multi(&infos) {
-                    tracing::warn!("Failed to render multi location overlay: {}", e);
+                if new_n >= 2 {
+                    if let Some(ref mut t) = next_right_textures {
+                        np.push(t);
+                    }
+                }
+                if new_n >= 3 {
+                    if let Some(ref mut t) = next_panel2_textures {
+                        np.push(t);
+                    }
+                }
+                if new_n >= 4 {
+                    if let Some(ref mut t) = next_panel3_textures {
+                        np.push(t);
+                    }
+                }
+                let has_next = !np.is_empty();
+                if has_next {
+                    renderer.render_layout(&texture_creator, &mut p, Some(&mut np))?;
+                } else {
+                    renderer.render_layout(&texture_creator, &mut p, None)?;
                 }
             } else {
-                let loc_info = build_location_info_overlay(&state, 0).await;
-                if let Err(e) = renderer.render_info_overlay(&loc_info) {
-                    tracing::warn!("Failed to render location overlay: {}", e);
+                renderer.render(
+                    &texture_creator,
+                    &mut current_textures,
+                    next_textures.as_mut(),
+                )?;
+            }
+
+            // Render debug overlay on top
+            if overlay_visible {
+                let overlay_info = build_overlay_info(
+                    &state,
+                    &video_manager,
+                    is_video_playing,
+                    is_paused,
+                    pause_until,
+                    is_realtime_connected,
+                )
+                .await;
+                if let Err(e) = renderer.render_overlay(&overlay_info) {
+                    tracing::warn!("Failed to render overlay: {}", e);
+                }
+            }
+
+            // Render media info overlay on top
+            if info_overlay_visible {
+                let n = renderer.current_layout.image_count();
+                if n > 1 {
+                    let mut infos = Vec::new();
+                    for i in 0..n {
+                        infos.push(build_media_info_overlay(&state, i).await);
+                    }
+                    if let Err(e) = renderer.render_info_overlay_multi(&infos) {
+                        tracing::warn!("Failed to render multi info overlay: {}", e);
+                    }
+                } else {
+                    let media_info = build_media_info_overlay(&state, 0).await;
+                    if let Err(e) = renderer.render_info_overlay(&media_info) {
+                        tracing::warn!("Failed to render info overlay: {}", e);
+                    }
+                }
+            } else if location_overlay_visible {
+                let n = renderer.current_layout.image_count();
+                if n > 1 {
+                    let mut infos = Vec::new();
+                    for i in 0..n {
+                        infos.push(build_location_info_overlay(&state, i).await);
+                    }
+                    if let Err(e) = renderer.render_info_overlay_multi(&infos) {
+                        tracing::warn!("Failed to render multi location overlay: {}", e);
+                    }
+                } else {
+                    let loc_info = build_location_info_overlay(&state, 0).await;
+                    if let Err(e) = renderer.render_info_overlay(&loc_info) {
+                        tracing::warn!("Failed to render location overlay: {}", e);
+                    }
                 }
             }
         }
@@ -2732,7 +2847,10 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
         | RealtimeEvent::RemotePause { .. }
         | RealtimeEvent::RemoteResume
         | RealtimeEvent::RemoteTagFilter { .. }
-        | RealtimeEvent::RemoteTagFilterClear => {}
+        | RealtimeEvent::RemoteTagFilterClear
+        | RealtimeEvent::BulkUploadStart
+        | RealtimeEvent::BulkUploadProgress { .. }
+        | RealtimeEvent::BulkUploadEnd => {}
     }
 }
 

@@ -69,6 +69,7 @@ export interface MediaRecord extends BaseRecord {
   checksum?: string;
   processingStatus?: ProcessingStatus;
   processingError?: string;
+  processingLog?: string[];
   displayUrl?: string;
   thumbUrl?: string;
   videoUrl?: string;
