@@ -415,7 +415,14 @@ export function DashboardPage() {
                                   ["Interval", `${Math.round((cfg?.interval ?? 8000) / 1000)}s`],
                                   ["Transition", cfg?.transition ?? "fade"],
                                   ["Shuffle", cfg?.shuffle ? "On" : "Off"],
-                                  ["Layout", cfg?.displayMode === "dynamic" ? "Dynamic" : "Single image"],
+                                  [
+                                    "Layout",
+                                    cfg?.displayMode === "dynamic"
+                                      ? "Dynamic"
+                                      : cfg?.displayMode === "portrait_pairs"
+                                        ? "Portrait pairs"
+                                        : "Single image",
+                                  ],
                                 ]}
                               />
                             </div>

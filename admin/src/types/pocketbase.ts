@@ -90,7 +90,7 @@ export interface DeviceConfig {
   showClock?: boolean;
   showInfo?: boolean;
   showLocationInfo?: boolean;
-  displayMode?: "single" | "dynamic";
+  displayMode?: "single" | "dynamic" | "portrait_pairs";
 }
 
 /**

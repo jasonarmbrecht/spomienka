@@ -123,7 +123,7 @@ struct AppConfig {
     #[serde(default)]
     pub show_location_info: bool,
 
-    /// Display layout mode: "single" or "dynamic" (default: "single").
+    /// Display layout mode: "single", "dynamic", or "portrait_pairs" (default: "single").
     #[serde(default = "default_display_mode")]
     pub display_mode: String,
 }
@@ -804,6 +804,9 @@ async fn main() -> Result<()> {
             // In dynamic mode always reorder into layout-compatible groups so that
             // multi-image layouts (quad-landscape, portrait+2-landscape, etc.) fire reliably.
             reorder_for_dynamic_layouts(&mut playlist, &VecDeque::new());
+        } else if state.config.display_mode == "portrait_pairs" {
+            // Likewise, always reorder so portrait pairs land adjacent to each other.
+            reorder_for_portrait_pairs(&mut playlist, &VecDeque::new());
         } else if state.config.shuffle {
             use rand::seq::SliceRandom;
             playlist.shuffle(&mut rand::thread_rng());
@@ -1139,7 +1142,7 @@ async fn run_render_loop(
     // Dynamic layout state
     let session_start = Instant::now();
     let mut layout_history: VecDeque<SlideLayoutKind> = VecDeque::new();
-    let is_dynamic = state.config.display_mode == "dynamic";
+    let is_dynamic = is_multi_panel_mode(&state.config.display_mode);
 
     // Timing
     let mut last_advance = Instant::now();
@@ -1185,6 +1188,7 @@ async fn run_render_loop(
         let peek_start = *state.current_index.read().await;
         let (layout, actual_start) = pick_dynamic_layout(
             &state,
+            &state.config.display_mode,
             &layout_history,
             session_start.elapsed().as_secs() < 120,
             peek_start,
@@ -2039,6 +2043,13 @@ fn media_visual_orientation(m: &assets::Media) -> ImageOrientation {
     }
 }
 
+/// Whether `mode` uses the multi-panel dynamic-layout machinery (reordering the
+/// playlist into layout-compatible groups, picking a `SlideLayout` per slide, and
+/// loading more than one panel of textures at a time).
+fn is_multi_panel_mode(mode: &str) -> bool {
+    mode == "dynamic" || mode == "portrait_pairs"
+}
+
 /// Reorder a playlist into layout-compatible groups so that the sequential layout picker
 /// reliably finds valid multi-image combinations (quad-landscape, portrait+2-landscape, etc.).
 ///
@@ -2172,6 +2183,67 @@ fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>, recent_shown: &V
     }
 }
 
+/// Reorder a playlist for "portrait pairs" mode: landscape and square images are
+/// shown solo (to make maximal use of screen space), while portrait images are
+/// grouped two at a time so they reliably land side by side instead of each
+/// eating a full slide alone.
+///
+/// Mirrors [`reorder_for_dynamic_layouts`] but only ever produces the two groups
+/// this mode uses: a single solo image, or a pair of portraits.
+fn reorder_for_portrait_pairs(images: &mut Vec<assets::Media>, recent_shown: &VecDeque<String>) {
+    use rand::seq::SliceRandom;
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+
+    fn avoid_leading_repeat(bucket: &mut [assets::Media], recent_shown: &VecDeque<String>) {
+        if bucket.len() < 2 || !recent_shown.contains(&bucket[0].id) {
+            return;
+        }
+        if let Some(swap_idx) = (1..bucket.len()).find(|&i| !recent_shown.contains(&bucket[i].id)) {
+            bucket.swap(0, swap_idx);
+        }
+    }
+
+    // Landscape and square images both display solo in this mode; only portraits pair up.
+    let mut solo: std::collections::VecDeque<assets::Media> = Default::default();
+    let mut portraits: std::collections::VecDeque<assets::Media> = Default::default();
+    for img in images.drain(..) {
+        match media_visual_orientation(&img) {
+            ImageOrientation::Portrait => portraits.push_back(img),
+            ImageOrientation::Landscape | ImageOrientation::Square => solo.push_back(img),
+        }
+    }
+    let (mut sv, mut pv): (Vec<_>, Vec<_>) =
+        (solo.into_iter().collect(), portraits.into_iter().collect());
+    sv.shuffle(&mut rng);
+    pv.shuffle(&mut rng);
+    avoid_leading_repeat(&mut sv, recent_shown);
+    avoid_leading_repeat(&mut pv, recent_shown);
+    let mut s = std::collections::VecDeque::from(sv);
+    let mut p = std::collections::VecDeque::from(pv);
+
+    loop {
+        let (sc, pc) = (s.len(), p.len());
+        if sc == 0 && pc == 0 {
+            break;
+        }
+        let pair_ok = pc >= 2;
+        let solo_ok = sc >= 1;
+        // Randomly interleave solo and paired groups when both are available;
+        // otherwise take whichever is possible. A single leftover portrait with
+        // no partner falls back to being shown solo (mirrors the analogous
+        // fallback in `pick_dynamic_layout`).
+        if pair_ok && (!solo_ok || rng.gen_bool(0.5)) {
+            images.push(p.pop_front().unwrap());
+            images.push(p.pop_front().unwrap());
+        } else if solo_ok {
+            images.push(s.pop_front().unwrap());
+        } else {
+            images.push(p.pop_front().unwrap());
+        }
+    }
+}
+
 /// Pick a dynamic layout for the upcoming slide.
 ///
 /// Returns `(layout, actual_start)` where `actual_start` is the playlist index the
@@ -2184,8 +2256,13 @@ fn reorder_for_dynamic_layouts(images: &mut Vec<assets::Media>, recent_shown: &V
 /// - Portrait images are NEVER shown alone; we scan forward until a valid layout exists.
 /// - The 3-image layout is strictly [portrait, landscape, landscape].
 /// - The 4-image layout requires 4 consecutive landscapes.
+///
+/// When `mode` is `"portrait_pairs"`, only `Single` (landscape or square) and
+/// `DualPortrait` are ever offered — the 3- and 4-image layouts and the
+/// square-pairing layouts are reserved for full `"dynamic"` mode.
 async fn pick_dynamic_layout(
     state: &AppState,
+    mode: &str,
     history: &VecDeque<SlideLayoutKind>,
     warmup: bool,
     peek_start: usize,
@@ -2222,6 +2299,8 @@ async fn pick_dynamic_layout(
         true
     };
 
+    let restrict_to_pairs = mode == "portrait_pairs";
+
     // Helper: build valid layout candidates for a given start index.
     let candidates_at =
         |start: usize, rng: &mut rand::rngs::ThreadRng| -> Vec<(SlideLayout, f32)> {
@@ -2238,7 +2317,12 @@ async fn pick_dynamic_layout(
             let mut c: Vec<(SlideLayout, f32)> = Vec::new();
             // Landscape photos may be shown alone; so may any video (regardless of
             // its orientation), since Single is the only layout a video can appear in.
-            if o0 == ImageOrientation::Landscape || v0 {
+            // In portrait-pairs mode, square photos have no pairing layout of their
+            // own either, so they're shown alone too.
+            if o0 == ImageOrientation::Landscape
+                || v0
+                || (restrict_to_pairs && o0 == ImageOrientation::Square)
+            {
                 c.push((SlideLayout::Single, 3.0));
             }
             if o0 == ImageOrientation::Portrait
@@ -2249,7 +2333,8 @@ async fn pick_dynamic_layout(
             {
                 c.push((SlideLayout::DualPortrait { flipped: rng.gen() }, 2.0));
             }
-            if o0 == ImageOrientation::Portrait
+            if !restrict_to_pairs
+                && o0 == ImageOrientation::Portrait
                 && o1 == ImageOrientation::Landscape
                 && o2 == ImageOrientation::Landscape
                 && !v0
@@ -2264,7 +2349,8 @@ async fn pick_dynamic_layout(
                     3.0,
                 ));
             }
-            if o0 == ImageOrientation::Landscape
+            if !restrict_to_pairs
+                && o0 == ImageOrientation::Landscape
                 && o1 == ImageOrientation::Landscape
                 && o2 == ImageOrientation::Landscape
                 && o3 == ImageOrientation::Landscape
@@ -2276,7 +2362,8 @@ async fn pick_dynamic_layout(
             {
                 c.push((SlideLayout::QuadLandscape { flipped: rng.gen() }, 4.0));
             }
-            if o0 == ImageOrientation::Square
+            if !restrict_to_pairs
+                && o0 == ImageOrientation::Square
                 && o1 == ImageOrientation::Square
                 && !v0
                 && !v1
@@ -2284,7 +2371,8 @@ async fn pick_dynamic_layout(
             {
                 c.push((SlideLayout::DualSquare { flipped: rng.gen() }, 2.0));
             }
-            if o0 == ImageOrientation::Square
+            if !restrict_to_pairs
+                && o0 == ImageOrientation::Square
                 && o1 == ImageOrientation::Portrait
                 && !v0
                 && !v1
@@ -2423,7 +2511,7 @@ async fn advance_to_next<'a>(
         }
     }
 
-    let is_dynamic = state.config.display_mode == "dynamic";
+    let is_dynamic = is_multi_panel_mode(&state.config.display_mode);
     let warmup = session_start.elapsed().as_secs() < 120;
 
     // Compute where the next slide starts (after current slide's images).
@@ -2432,13 +2520,21 @@ async fn advance_to_next<'a>(
     let current_index_val = *state.current_index.read().await;
     let next_start_raw = current_index_val + current_step;
 
-    // In dynamic mode, regroup the playlist whenever we complete a full cycle so that
-    // each new pass shows images in a freshly randomised layout-compatible order.
+    // In dynamic / portrait-pairs mode, regroup the playlist whenever we complete a
+    // full cycle so that each new pass shows images in a freshly randomised
+    // layout-compatible order.
     if is_dynamic && next_start_raw >= n {
         let recent = state.recent_shown.read().await.clone();
         let mut playlist = state.playlist.write().await;
-        reorder_for_dynamic_layouts(&mut playlist, &recent);
-        tracing::debug!("Dynamic mode: reordered playlist for new cycle");
+        if state.config.display_mode == "portrait_pairs" {
+            reorder_for_portrait_pairs(&mut playlist, &recent);
+        } else {
+            reorder_for_dynamic_layouts(&mut playlist, &recent);
+        }
+        tracing::debug!(
+            "{}: reordered playlist for new cycle",
+            state.config.display_mode
+        );
     }
 
     let next_start = next_start_raw % n;
@@ -2452,8 +2548,14 @@ async fn advance_to_next<'a>(
     // at the exact frame the texture swap occurs.
     // pick_dynamic_layout acquires the playlist lock internally — don't hold it here.
     let (next_index, mut next_layout) = if is_dynamic {
-        let (layout, actual_start) =
-            pick_dynamic_layout(state, layout_history, warmup, next_start).await;
+        let (layout, actual_start) = pick_dynamic_layout(
+            state,
+            &state.config.display_mode,
+            layout_history,
+            warmup,
+            next_start,
+        )
+        .await;
         layout_history.push_back(layout.kind());
         if layout_history.len() > 20 {
             layout_history.pop_front();
@@ -2777,7 +2879,7 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
                         );
                     }
 
-                    if state.config.display_mode == "dynamic" {
+                    if is_multi_panel_mode(&state.config.display_mode) {
                         // This refresh fires often (e.g. every realtime reconnect) --
                         // without reordering here, dynamic mode's grouping only ever
                         // survives until the next refresh, which replaces the playlist
@@ -2790,7 +2892,11 @@ async fn handle_realtime_event(state: &AppState, event: RealtimeEvent) {
                             old_playlist.get(idx).map(|m| m.id.clone())
                         };
                         let recent = state.recent_shown.read().await.clone();
-                        reorder_for_dynamic_layouts(&mut playlist, &recent);
+                        if state.config.display_mode == "portrait_pairs" {
+                            reorder_for_portrait_pairs(&mut playlist, &recent);
+                        } else {
+                            reorder_for_dynamic_layouts(&mut playlist, &recent);
+                        }
                         if let Some(id) = current_id {
                             if let Some(new_idx) = playlist.iter().position(|m| m.id == id) {
                                 *state.current_index.write().await = new_idx;

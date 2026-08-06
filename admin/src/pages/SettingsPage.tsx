@@ -318,6 +318,7 @@ function DeviceCard({ device, onRefresh, showMessage, showError }: DeviceCardPro
             >
               <SelectItem value="single" text="Single image" />
               <SelectItem value="dynamic" text="Dynamic random layout" />
+              <SelectItem value="portrait_pairs" text="Portrait pairs" />
             </Select>
           </Stack>
           {saveSuccess && (
