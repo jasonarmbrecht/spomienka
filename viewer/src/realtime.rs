@@ -27,9 +27,14 @@ pub enum RealtimeEvent {
     RemoteNext,
     RemotePrev,
     RemoteRandom,
-    RemotePause { secs: u64 },
+    RemotePause {
+        secs: u64,
+    },
     RemoteResume,
-    RemoteTagFilter { tags: Vec<String>, mode: String },
+    RemoteTagFilter {
+        tags: Vec<String>,
+        mode: String,
+    },
     RemoteTagFilterClear,
     BulkUploadStart,
     BulkUploadProgress {

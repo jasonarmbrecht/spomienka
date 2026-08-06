@@ -2290,7 +2290,10 @@ impl<'ttf> Renderer<'ttf> {
                 Color::RGB(180, 200, 240),
             )?;
 
-            let percent = (done + failed).checked_mul(100).and_then(|n| n.checked_div(total)).unwrap_or(0);
+            let percent = (done + failed)
+                .checked_mul(100)
+                .and_then(|n| n.checked_div(total))
+                .unwrap_or(0);
             let counts_text = if failed > 0 {
                 format!(
                     "{} / {} uploaded ({}%), {} failed",
@@ -2325,7 +2328,9 @@ impl<'ttf> Renderer<'ttf> {
                     self.canvas.set_draw_color(Color::RGB(100, 200, 255));
                     self.canvas
                         .fill_rect(Rect::new(bar_x, bar_y, progress_width, bar_height))
-                        .map_err(|e| anyhow::anyhow!("Failed to draw bulk upload progress: {}", e))?;
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to draw bulk upload progress: {}", e)
+                        })?;
                 }
             }
 

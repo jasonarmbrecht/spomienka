@@ -1314,7 +1314,9 @@ async fn run_render_loop(
         // rather than staying stuck here indefinitely.
         if let Some(ref bu) = bulk_upload {
             if bu.last_update.elapsed() > BULK_UPLOAD_SAFETY_TIMEOUT {
-                tracing::warn!("Bulk upload screen timed out with no progress update, reverting to slideshow");
+                tracing::warn!(
+                    "Bulk upload screen timed out with no progress update, reverting to slideshow"
+                );
                 bulk_upload = None;
                 if is_video_playing {
                     video_manager.resume();
@@ -1653,7 +1655,9 @@ async fn run_render_loop(
             // instead of the slideshow. Stays inside the main loop (rather
             // than a separate mode like discovery) so realtime events keep
             // being processed and further progress/end messages still land.
-            if let Err(e) = renderer.render_bulk_upload_screen(bu.done, bu.total, bu.failed, &bu.log) {
+            if let Err(e) =
+                renderer.render_bulk_upload_screen(bu.done, bu.total, bu.failed, &bu.log)
+            {
                 tracing::warn!("Failed to render bulk upload screen: {}", e);
             }
         } else {
