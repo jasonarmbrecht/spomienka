@@ -1,9 +1,9 @@
 import React, { FormEvent, useState, useRef } from "react";
-import { pb } from "../pb/client";
 import { useAuth } from "../pb/auth";
-import { MAX_FILE_SIZE, ALLOWED_IMAGE_TYPES, ALLOWED_VIDEO_TYPES, MAX_FILE_SIZE_DISPLAY } from "../constants";
+import { MAX_FILE_SIZE_DISPLAY, ALLOWED_IMAGE_TYPES, ALLOWED_VIDEO_TYPES } from "../constants";
 import { Notification } from "../components/Notification";
 import { useNotification } from "../hooks/useNotification";
+import { FileWithId, UploadProgress, generateFileId, validateFile, uploadOneFile } from "../uploadUtils";
 import {
   Grid,
   Column,
@@ -16,40 +16,12 @@ import {
 } from "@carbon/react";
 import { Upload } from "@carbon/icons-react";
 
-type FileWithId = {
-  id: string;
-  file: File;
-};
-
-type UploadProgress = {
-  file: File;
-  status: "pending" | "uploading" | "success" | "error";
-  error?: string;
-};
-
-function generateFileId(file: File): string {
-  return `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
 export function UploadPage() {
   const { user } = useAuth();
   const [files, setFiles] = useState<FileWithId[]>([]);
   const [uploadProgress, setUploadProgress] = useState<Record<string, UploadProgress>>({});
   const { error, message, setError, setMessage, showMessage } = useNotification();
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const validateFile = (file: File): string | null => {
-    if (file.size > MAX_FILE_SIZE) {
-      return `${file.name}: size (${(file.size / 1024 / 1024).toFixed(2)}MB) exceeds max ${MAX_FILE_SIZE_DISPLAY}`;
-    }
-    const isValidType =
-      (ALLOWED_IMAGE_TYPES as readonly string[]).includes(file.type) ||
-      (ALLOWED_VIDEO_TYPES as readonly string[]).includes(file.type);
-    if (!isValidType) {
-      return `${file.name}: invalid file type ${file.type}`;
-    }
-    return null;
-  };
 
   const handleFiles = (fileList: File[]) => {
     const validFilesWithIds: FileWithId[] = [];
@@ -87,18 +59,12 @@ export function UploadPage() {
 
     setUploadProgress((prev) => ({ ...prev, [id]: { ...prev[id], status: "uploading" } }));
 
-    const form = new FormData();
-    form.append("file", file);
-    form.append("type", file.type.startsWith("video/") ? "video" : "image");
-    form.append("status", user?.role === "admin" ? "published" : "pending");
-    form.append("owner", user?.id ?? "");
-
     try {
       // This request doesn't resolve until the server finishes processing the
       // file (thumbnail/poster generation, video transcode, etc. all run
       // synchronously server-side) — for video that can take a while, so
       // there's no meaningful progress percentage to show in the meantime.
-      await pb.collection("media").create(form);
+      await uploadOneFile(file, { ownerId: user?.id ?? "", role: user?.role });
       setUploadProgress((prev) => ({ ...prev, [id]: { ...prev[id], status: "success" } }));
     } catch (err) {
       setUploadProgress((prev) => ({

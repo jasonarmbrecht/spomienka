@@ -4,9 +4,12 @@
 // PocketBase 0.25 JSVM runs callbacks in isolated goja VM instances, so
 // module-level definitions are not in scope — require() is the solution.
 //
-// Two known PB 0.25 JSVM constraints:
-//   - e.requestInfo() auth is not available in executor VM contexts; auth is
-//     enforced by collection API rules and owner is read from the record body.
+// Known PB 0.25 JSVM constraints:
+//   - e.requestInfo is undefined inside model hooks like onRecordCreate (it
+//     only exists on custom route handlers) — there is no way to read a
+//     request field that isn't also a schema field. Auth is enforced by
+//     collection API rules and owner/role are read from the record body /
+//     a DB lookup instead of request auth.
 //   - $app.runInBackground does not exist; processing runs synchronously in
 //     after-hooks, wrapped in try/catch so failures never affect the response.
 
@@ -28,8 +31,28 @@ onRecordCreate((e) => {
         throw new BadRequestError("Owner field is required");
     }
 
-    if (!checkRateLimit("upload", ownerId)) {
-        throw new BadRequestError("Upload rate limit exceeded. Please try again later.");
+    // Look up owner role early: used both to decide auto-publish below and to
+    // scope the bulk-upload rate-limit bypass (admin + explicit bulkUpload flag
+    // only — never trust a client-supplied role claim).
+    let ownerRole = "user";
+    try {
+        const ownerRecord = $app.findRecordById("users", ownerId);
+        if (ownerRecord) ownerRole = ownerRecord.get("role") || "user";
+    } catch (_) {}
+
+    // e.requestInfo() is unavailable inside onRecordCreate hooks in this PB
+    // version (it returns null here, unlike in custom route handlers), so a
+    // non-schema request field can't be read this way — `bulkUpload` has to be
+    // an actual (if minimal) field on the collection for the record binder to
+    // populate it from the submitted multipart data before this hook runs.
+    const bulkUpload = record.get("bulkUpload") === true;
+    // Not persisted: this is a one-shot signal for this request only, cleared
+    // below before save so it never accumulates as stored data on records.
+
+    if (!(ownerRole === "admin" && bulkUpload)) {
+        if (!checkRateLimit("upload", ownerId)) {
+            throw new BadRequestError("Upload rate limit exceeded. Please try again later.");
+        }
     }
 
     const tags = record.get("tags");
@@ -44,19 +67,14 @@ onRecordCreate((e) => {
         if (!v.valid) throw new BadRequestError(v.error);
     }
 
-    // Look up owner role to decide whether to auto-publish
-    let ownerRole = "user";
-    try {
-        const ownerRecord = $app.findRecordById("users", ownerId);
-        if (ownerRecord) ownerRole = ownerRecord.get("role") || "user";
-    } catch (_) {}
-
     if (ownerRole === "admin") {
         record.set("status", "published");
         record.set("approvedBy", ownerId);
     } else {
         record.set("status", "pending");
     }
+
+    record.set("bulkUpload", false);
 
     e.next();
 }, "media");
@@ -148,6 +166,30 @@ cronAdd("cleanup_rate_limits", "*/10 * * * *", () => {
         }
     } catch (e) {
         console.error("cleanup_rate_limits cron failed:", e);
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Cron: clean up old device_inbox records every 30 minutes
+// ---------------------------------------------------------------------------
+
+cronAdd("cleanup_device_inbox", "*/30 * * * *", () => {
+    try {
+        const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const old = $app.findRecordsByFilter(
+            "device_inbox",
+            "created < {:cutoff}",
+            "-created", 0, 0,
+            { cutoff: cutoff }
+        );
+        for (const r of old) {
+            try { $app.delete(r); } catch (_) {}
+        }
+        if (old.length > 0) {
+            console.log("cleanup_device_inbox: removed", old.length, "old records");
+        }
+    } catch (e) {
+        console.error("cleanup_device_inbox cron failed:", e);
     }
 });
 

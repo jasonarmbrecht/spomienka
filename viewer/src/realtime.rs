@@ -31,6 +31,14 @@ pub enum RealtimeEvent {
     RemoteResume,
     RemoteTagFilter { tags: Vec<String>, mode: String },
     RemoteTagFilterClear,
+    BulkUploadStart,
+    BulkUploadProgress {
+        done: u32,
+        total: u32,
+        failed: u32,
+        lines: Vec<String>,
+    },
+    BulkUploadEnd,
 }
 
 #[derive(Debug, Default)]
@@ -230,6 +238,28 @@ impl RealtimeManager {
                 RealtimeEvent::RemoteTagFilter { tags, mode }
             }
             "tag-filter-clear" => RealtimeEvent::RemoteTagFilterClear,
+            "bulk-upload-start" => RealtimeEvent::BulkUploadStart,
+            "bulk-upload-progress" => {
+                let done = payload.get("done").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let total = payload.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let failed = payload.get("failed").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let lines = payload
+                    .get("lines")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                RealtimeEvent::BulkUploadProgress {
+                    done,
+                    total,
+                    failed,
+                    lines,
+                }
+            }
+            "bulk-upload-end" => RealtimeEvent::BulkUploadEnd,
             "repair_request" => RealtimeEvent::RepairRequested,
             _ => RealtimeEvent::ConfigChanged,
         }

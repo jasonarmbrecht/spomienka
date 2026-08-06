@@ -154,6 +154,15 @@
         ]
       },
       {
+        "id": "bool_bulk_upload",
+        "name": "bulkUpload",
+        "type": "bool",
+        "system": false,
+        "required": false,
+        "presentable": false,
+        "hidden": false
+      },
+      {
         "id": "f_title",
         "name": "title",
         "type": "text",

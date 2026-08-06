@@ -10,6 +10,7 @@ use sdl2::rect::Rect;
 use sdl2::render::{Canvas, Texture, TextureCreator};
 use sdl2::ttf::Sdl2TtfContext;
 use sdl2::video::{Window, WindowContext};
+use std::collections::VecDeque;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -2254,6 +2255,100 @@ impl<'ttf> Renderer<'ttf> {
         }
 
         self.canvas.present();
+        Ok(())
+    }
+
+    /// Shown in place of the slideshow while an admin-triggered bulk upload is
+    /// running (see BulkUploadStart/Progress/End handling in main.rs). Unlike
+    /// render_discovery_screen this does NOT call canvas.present() itself —
+    /// it's invoked from inside the main render loop, which presents once per
+    /// iteration regardless of which screen was drawn.
+    pub fn render_bulk_upload_screen(
+        &mut self,
+        done: u32,
+        total: u32,
+        failed: u32,
+        log: &VecDeque<String>,
+    ) -> Result<()> {
+        self.canvas.set_draw_color(Color::RGB(10, 18, 35));
+        self.canvas.clear();
+
+        if let (Some(font_small), Some(font_label)) =
+            (&self.font_discovery_small, &self.font_discovery_label)
+        {
+            let tc = self.canvas.texture_creator();
+            let cx = (self.screen_width / 2) as i32;
+            let top_margin = (self.screen_height as f32 * 0.12) as i32;
+
+            Self::render_text_centered(
+                &mut self.canvas,
+                font_label,
+                &tc,
+                "Bulk Upload In Progress",
+                cx,
+                top_margin,
+                Color::RGB(180, 200, 240),
+            )?;
+
+            let percent = (done + failed).checked_mul(100).and_then(|n| n.checked_div(total)).unwrap_or(0);
+            let counts_text = if failed > 0 {
+                format!(
+                    "{} / {} uploaded ({}%), {} failed",
+                    done, total, percent, failed
+                )
+            } else {
+                format!("{} / {} uploaded ({}%)", done, total, percent)
+            };
+            Self::render_text_centered(
+                &mut self.canvas,
+                font_small,
+                &tc,
+                &counts_text,
+                cx,
+                top_margin + 50,
+                Color::RGB(140, 160, 200),
+            )?;
+
+            // Progress bar
+            let bar_y = top_margin + 100;
+            let bar_width = (self.screen_width as f32 * 0.6) as u32;
+            let bar_x = cx - (bar_width as i32 / 2);
+            let bar_height = 10;
+            self.canvas.set_draw_color(Color::RGBA(100, 100, 100, 150));
+            self.canvas
+                .fill_rect(Rect::new(bar_x, bar_y, bar_width, bar_height))
+                .map_err(|e| anyhow::anyhow!("Failed to draw bulk upload progress bg: {}", e))?;
+            if total > 0 {
+                let progress = ((done + failed) as f32 / total as f32).min(1.0);
+                let progress_width = (bar_width as f32 * progress) as u32;
+                if progress_width > 0 {
+                    self.canvas.set_draw_color(Color::RGB(100, 200, 255));
+                    self.canvas
+                        .fill_rect(Rect::new(bar_x, bar_y, progress_width, bar_height))
+                        .map_err(|e| anyhow::anyhow!("Failed to draw bulk upload progress: {}", e))?;
+                }
+            }
+
+            // Log tail — left-aligned lines below the progress bar. Lines are
+            // already truncated to a fixed character cap by BulkUploadState
+            // (SDL2_ttf has no text-wrapping primitive of its own).
+            let log_left = (self.screen_width as f32 * 0.15) as i32;
+            let line_height = 32;
+            let mut y = bar_y + 50;
+            for line in log.iter() {
+                Self::render_text(
+                    &mut self.canvas,
+                    font_small,
+                    &tc,
+                    line,
+                    log_left,
+                    y,
+                    Color::RGB(200, 210, 230),
+                )?;
+                y += line_height;
+            }
+        }
+
         Ok(())
     }
 
